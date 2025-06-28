@@ -18,8 +18,7 @@ pub enum CoreError {
     /// GitHub API integration errors
     #[error("GitHub operation failed: {source}")]
     GitHub {
-        #[from]
-        source: release_regent_github_client::GitHubError,
+        source: Box<release_regent_github_client::GitHubError>,
     },
 
     /// I/O errors (file operations, network, etc.)
@@ -92,6 +91,14 @@ impl CoreError {
     pub fn internal_state(message: impl Into<String>) -> Self {
         Self::InternalState {
             message: message.into(),
+        }
+    }
+}
+
+impl From<release_regent_github_client::GitHubError> for CoreError {
+    fn from(error: release_regent_github_client::GitHubError) -> Self {
+        Self::GitHub {
+            source: Box::new(error),
         }
     }
 }

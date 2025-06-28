@@ -2,6 +2,7 @@ use thiserror::Error;
 
 /// Errors that can occur in CLI operations
 #[derive(Error, Debug)]
+#[allow(dead_code)] // Allow during foundation phase
 pub enum CliError {
     /// Core operation errors
     #[error("Core operation failed: {source}")]
@@ -13,8 +14,7 @@ pub enum CliError {
     /// GitHub client errors
     #[error("GitHub operation failed: {source}")]
     GitHub {
-        #[from]
-        source: release_regent_github_client::GitHubError,
+        source: Box<release_regent_github_client::GitHubError>,
     },
 
     /// Configuration file errors
@@ -48,6 +48,7 @@ pub enum CliError {
     MissingDependency { dependency: String, message: String },
 }
 
+#[allow(dead_code)] // Allow during foundation phase
 impl CliError {
     /// Create a new configuration file error
     pub fn config_file(message: impl Into<String>) -> Self {
@@ -77,6 +78,14 @@ impl CliError {
         Self::MissingDependency {
             dependency: dependency.into(),
             message: message.into(),
+        }
+    }
+}
+
+impl From<release_regent_github_client::GitHubError> for CliError {
+    fn from(error: release_regent_github_client::GitHubError) -> Self {
+        Self::GitHub {
+            source: Box::new(error),
         }
     }
 }

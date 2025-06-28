@@ -10,7 +10,6 @@ use axum::{
     Router,
 };
 use serde::{Deserialize, Serialize};
-use serde_json;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tracing::{debug, error, info, warn};
@@ -18,10 +17,11 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod errors;
 
-use errors::{Error, FunctionResult};
+use errors::FunctionResult;
 
 /// Application state shared across handlers
 #[derive(Clone)]
+#[allow(dead_code)] // Allow during foundation phase
 struct AppState {
     // Placeholder for shared state
     config: Arc<String>,
@@ -91,8 +91,7 @@ async fn process_webhook_request(payload: String) -> FunctionResult<serde_json::
     debug!("Processing webhook payload");
 
     // Parse the GitHub webhook payload
-    let webhook_data: serde_json::Value = serde_json::from_str(&payload)
-        .map_err(|e| Error::Parse(format!("Invalid JSON payload: {}", e)))?;
+    let webhook_data: serde_json::Value = serde_json::from_str(&payload)?;
 
     // Extract event type from headers (in a real implementation)
     let event_type = webhook_data

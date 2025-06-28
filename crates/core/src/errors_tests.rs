@@ -5,13 +5,16 @@ fn test_config_error_creation() {
     let error = CoreError::config("Invalid YAML format");
 
     match error {
-        CoreError::Config { message } => {
+        CoreError::Config { ref message } => {
             assert_eq!(message, "Invalid YAML format");
         }
         _ => panic!("Expected Config error"),
     }
 
-    assert_eq!(error.to_string(), "Configuration error: Invalid YAML format");
+    assert_eq!(
+        error.to_string(),
+        "Configuration error: Invalid YAML format"
+    );
 }
 
 #[test]
@@ -19,7 +22,7 @@ fn test_versioning_error_creation() {
     let error = CoreError::versioning("No conventional commits found");
 
     match error {
-        CoreError::Versioning { reason } => {
+        CoreError::Versioning { ref reason } => {
             assert_eq!(reason, "No conventional commits found");
         }
         _ => panic!("Expected Versioning error"),
@@ -36,7 +39,10 @@ fn test_webhook_error_creation() {
     let error = CoreError::webhook("signature_validation", "Invalid signature");
 
     match error {
-        CoreError::Webhook { stage, message } => {
+        CoreError::Webhook {
+            ref stage,
+            ref message,
+        } => {
             assert_eq!(stage, "signature_validation");
             assert_eq!(message, "Invalid signature");
         }
@@ -54,7 +60,10 @@ fn test_invalid_input_error_creation() {
     let error = CoreError::invalid_input("branch_name", "Invalid characters in branch name");
 
     match error {
-        CoreError::InvalidInput { field, message } => {
+        CoreError::InvalidInput {
+            ref field,
+            ref message,
+        } => {
             assert_eq!(field, "branch_name");
             assert_eq!(message, "Invalid characters in branch name");
         }
@@ -72,7 +81,10 @@ fn test_not_supported_error_creation() {
     let error = CoreError::not_supported("external_versioning", "No external script configured");
 
     match error {
-        CoreError::NotSupported { operation, context } => {
+        CoreError::NotSupported {
+            ref operation,
+            ref context,
+        } => {
             assert_eq!(operation, "external_versioning");
             assert_eq!(context, "No external script configured");
         }
@@ -90,7 +102,7 @@ fn test_internal_state_error_creation() {
     let error = CoreError::internal_state("Unexpected state transition");
 
     match error {
-        CoreError::InternalState { message } => {
+        CoreError::InternalState { ref message } => {
             assert_eq!(message, "Unexpected state transition");
         }
         _ => panic!("Expected InternalState error"),

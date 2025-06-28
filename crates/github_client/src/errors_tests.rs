@@ -5,7 +5,7 @@ fn test_authentication_error_creation() {
     let error = GitHubError::authentication("Invalid token");
 
     match error {
-        GitHubError::Authentication { message } => {
+        GitHubError::Authentication { ref message } => {
             assert_eq!(message, "Invalid token");
         }
         _ => panic!("Expected Authentication error"),
@@ -22,7 +22,10 @@ fn test_api_request_error_creation() {
     let error = GitHubError::api_request(404, "Repository not found");
 
     match error {
-        GitHubError::ApiRequest { status, message } => {
+        GitHubError::ApiRequest {
+            status,
+            ref message,
+        } => {
             assert_eq!(status, 404);
             assert_eq!(message, "Repository not found");
         }
@@ -41,7 +44,7 @@ fn test_rate_limit_error_creation() {
     let error = GitHubError::rate_limit(reset_time);
 
     match error {
-        GitHubError::RateLimit { reset_time: rt } => {
+        GitHubError::RateLimit { reset_time: ref rt } => {
             assert_eq!(rt, reset_time);
         }
         _ => panic!("Expected RateLimit error"),
@@ -59,8 +62,8 @@ fn test_not_found_error_creation() {
 
     match error {
         GitHubError::NotFound {
-            resource_type,
-            resource_id,
+            ref resource_type,
+            ref resource_id,
         } => {
             assert_eq!(resource_type, "Pull Request");
             assert_eq!(resource_id, "123");
@@ -79,7 +82,7 @@ fn test_permission_denied_error_creation() {
     let error = GitHubError::permission_denied("create release");
 
     match error {
-        GitHubError::PermissionDenied { operation } => {
+        GitHubError::PermissionDenied { ref operation } => {
             assert_eq!(operation, "create release");
         }
         _ => panic!("Expected PermissionDenied error"),
@@ -96,7 +99,10 @@ fn test_invalid_input_error_creation() {
     let error = GitHubError::invalid_input("version", "Invalid semantic version format");
 
     match error {
-        GitHubError::InvalidInput { field, message } => {
+        GitHubError::InvalidInput {
+            ref field,
+            ref message,
+        } => {
             assert_eq!(field, "version");
             assert_eq!(message, "Invalid semantic version format");
         }

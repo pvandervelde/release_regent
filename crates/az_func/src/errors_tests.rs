@@ -5,7 +5,10 @@ fn test_http_request_error_creation() {
     let error = Error::http_request(400, "Bad Request");
 
     match error {
-        Error::HttpRequest { status, message } => {
+        Error::HttpRequest {
+            status,
+            ref message,
+        } => {
             assert_eq!(status, 400);
             assert_eq!(message, "Bad Request");
         }
@@ -20,7 +23,7 @@ fn test_authentication_error_creation() {
     let error = Error::authentication("Invalid GitHub App token");
 
     match error {
-        Error::Authentication { message } => {
+        Error::Authentication { ref message } => {
             assert_eq!(message, "Invalid GitHub App token");
         }
         _ => panic!("Expected Authentication error"),
@@ -37,7 +40,10 @@ fn test_environment_error_creation() {
     let error = Error::environment("GITHUB_APP_ID", "Environment variable not set");
 
     match error {
-        Error::Environment { variable, message } => {
+        Error::Environment {
+            ref variable,
+            ref message,
+        } => {
             assert_eq!(variable, "GITHUB_APP_ID");
             assert_eq!(message, "Environment variable not set");
         }
@@ -55,7 +61,7 @@ fn test_internal_error_creation() {
     let error = Error::internal("Unexpected state during processing");
 
     match error {
-        Error::Internal { message } => {
+        Error::Internal { ref message } => {
             assert_eq!(message, "Unexpected state during processing");
         }
         _ => panic!("Expected Internal error"),

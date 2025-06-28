@@ -5,7 +5,7 @@ fn test_config_file_error_creation() {
     let error = CliError::config_file("Configuration file not found");
 
     match error {
-        CliError::ConfigFile { message } => {
+        CliError::ConfigFile { ref message } => {
             assert_eq!(message, "Configuration file not found");
         }
         _ => panic!("Expected ConfigFile error"),
@@ -22,7 +22,10 @@ fn test_command_execution_error_creation() {
     let error = CliError::command_execution("init", "Failed to create directory");
 
     match error {
-        CliError::CommandExecution { command, message } => {
+        CliError::CommandExecution {
+            ref command,
+            ref message,
+        } => {
             assert_eq!(command, "init");
             assert_eq!(message, "Failed to create directory");
         }
@@ -40,7 +43,10 @@ fn test_invalid_argument_error_creation() {
     let error = CliError::invalid_argument("--config", "File does not exist");
 
     match error {
-        CliError::InvalidArgument { argument, message } => {
+        CliError::InvalidArgument {
+            ref argument,
+            ref message,
+        } => {
             assert_eq!(argument, "--config");
             assert_eq!(message, "File does not exist");
         }
@@ -58,7 +64,10 @@ fn test_missing_dependency_error_creation() {
     let error = CliError::missing_dependency("git", "Git command not found in PATH");
 
     match error {
-        CliError::MissingDependency { dependency, message } => {
+        CliError::MissingDependency {
+            ref dependency,
+            ref message,
+        } => {
             assert_eq!(dependency, "git");
             assert_eq!(message, "Git command not found in PATH");
         }

@@ -2,17 +2,19 @@ use thiserror::Error;
 
 /// Errors that can occur in Azure Function operations
 #[derive(Error, Debug)]
+#[allow(dead_code)] // Allow during foundation phase
 pub enum Error {
     /// Authentication errors
     #[error("Authentication failed: {message}")]
     Authentication { message: String },
 
-    /// Azure Functions runtime errors
-    #[error("Azure Functions runtime error: {source}")]
-    AzureFunctions {
-        #[from]
-        source: azure_functions::error::Error,
-    },
+    /// Azure identity errors
+    #[error("Azure identity error: {message}")]
+    AzureIdentity { message: String },
+
+    /// Azure Key Vault errors
+    #[error("Azure Key Vault error: {message}")]
+    AzureKeyVault { message: String },
 
     /// Core operation errors
     #[error("Core operation failed: {source}")]
@@ -51,6 +53,7 @@ pub enum Error {
     Parse { message: String },
 }
 
+#[allow(dead_code)] // Allow during foundation phase
 impl Error {
     /// Create a new HTTP request error
     pub fn http_request(status: u16, message: impl Into<String>) -> Self {
@@ -78,6 +81,27 @@ impl Error {
     /// Create a new internal error
     pub fn internal(message: impl Into<String>) -> Self {
         Self::Internal {
+            message: message.into(),
+        }
+    }
+
+    /// Create a new parse error
+    pub fn parse(message: impl Into<String>) -> Self {
+        Self::Parse {
+            message: message.into(),
+        }
+    }
+
+    /// Create a new Azure identity error
+    pub fn azure_identity(message: impl Into<String>) -> Self {
+        Self::AzureIdentity {
+            message: message.into(),
+        }
+    }
+
+    /// Create a new Azure Key Vault error
+    pub fn azure_key_vault(message: impl Into<String>) -> Self {
+        Self::AzureKeyVault {
             message: message.into(),
         }
     }
