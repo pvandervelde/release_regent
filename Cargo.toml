@@ -1,0 +1,55 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/github_client",
+    "crates/core",
+    "crates/cli",
+    "crates/az_func",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.70"
+authors = ["Release Regent Contributors"]
+license = "Apache-2.0"
+homepage = "https://github.com/pvandervelde/release_regent"
+repository = "https://github.com/pvandervelde/release_regent"
+
+[workspace.dependencies]
+# Core dependencies
+tokio = { version = "1.45", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+thiserror = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "time"] }
+
+# GitHub integration
+octocrab = "0.38"
+reqwest = { version = "0.11", features = ["json", "rustls-tls"] }
+
+# CLI dependencies
+clap = { version = "4.4", features = ["derive"] }
+
+# Observability
+opentelemetry = "0.21"
+opentelemetry-jaeger = "0.20"
+opentelemetry_sdk = "0.21"
+
+# Azure integration
+azure_identity = "0.25"
+azure_security_keyvault_secrets = "0.4"
+
+# Testing
+tokio-test = "0.4"
+mockall = "0.12"
+
+# Web server dependencies
+axum = "0.7"
+hyper = "1.6"
+
+# Local crate dependencies
+release-regent-core = { path = "crates/core" }
+release-regent-github-client = { path = "crates/github_client" }

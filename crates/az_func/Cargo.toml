@@ -1,0 +1,35 @@
+[package]
+name = "release-regent-az-func"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Web server host for Release Regent webhook processing"
+
+[dependencies]
+# Core dependencies
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Web server dependencies
+axum = { workspace = true }
+hyper = { workspace = true }
+
+# Azure integration
+azure_identity = { workspace = true }
+azure_security_keyvault_secrets = { workspace = true }
+
+# Release Regent dependencies
+release-regent-core = { workspace = true }
+release-regent-github-client = { workspace = true }
+
+[dev-dependencies]
+tokio-test = { workspace = true }

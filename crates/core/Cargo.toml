@@ -1,0 +1,25 @@
+[package]
+name = "release-regent-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Core business logic for Release Regent"
+
+[dependencies]
+# Core dependencies
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+# GitHub client
+release-regent-github-client = { workspace = true }
+
+[dev-dependencies]
+tokio-test = { workspace = true }
