@@ -233,7 +233,7 @@ skip = [
     { crate = "rustls@0.21.12", reason = "ecosystem transition from 0.21 to 0.23 in progress" },
     { crate = "sync_wrapper@0.1.2", reason = "legacy version required by some dependencies" },
     { crate = "tower@0.4.13", reason = "ecosystem transition from 0.4 to 0.5 in progress" },
-    # Windows crates often have multiple versions due to different feature requirements  
+    # Windows crates often have multiple versions due to different feature requirements
     { crate = "windows-sys@0.48.0", reason = "different windows-sys versions for different feature sets" },
     { crate = "windows-targets@0.48.5", reason = "windows ecosystem version differences" },
 ]
