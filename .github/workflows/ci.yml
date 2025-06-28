@@ -13,96 +13,96 @@ permissions:
   contents: read
 
 jobs:
-  calculate-version:
-    name: Calculate version
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
-        with:
-          # Fetch all history for version calculation and changelog generation
-          fetch-depth: 0
+  # calculate-version:
+  #   name: Calculate version
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - name: Checkout code
+  #       uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+  #       with:
+  #         # Fetch all history for version calculation and changelog generation
+  #         fetch-depth: 0
 
-      - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+  #     - name: Set up Rust toolchain
+  #       uses: dtolnay/rust-toolchain@stable
 
-      - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2
+  #     - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2
 
-      - name: Install cargo binstall
-        uses: cargo-bins/cargo-binstall@main
+  #     - name: Install cargo binstall
+  #       uses: cargo-bins/cargo-binstall@main
 
-      - name: Install Conventional Commits Next Version
-        run: cargo install conventional_commits_next_version
+  #     - name: Install Conventional Commits Next Version
+  #       run: cargo install conventional_commits_next_version
 
-      - name: Install git-cliff
-        run: cargo install git-cliff
+  #     - name: Install git-cliff
+  #       run: cargo install git-cliff
 
-      - name: Install cargo typos
-        run: cargo install typos-cli
+  #     - name: Install cargo typos
+  #       run: cargo install typos-cli
 
-      - name: Calculate next version
-        id: calc_version
-        run: |
-          # Use Conventional Commits Next Version to calculate the next version
-          NEXT_VERSION=$(conventional_commits_next_version --from-commit-hash $(git rev-parse $(git describe --tags --abbrev=0)) --from-version $(git describe --tags --abbrev=0) --calculation-mode "Batch")
-          echo "NEXT_VERSION=${NEXT_VERSION}" >> $GITHUB_OUTPUT
-          echo "The next version is: ${NEXT_VERSION}"
+  #     - name: Calculate next version
+  #       id: calc_version
+  #       run: |
+  #         # Use Conventional Commits Next Version to calculate the next version
+  #         NEXT_VERSION=$(conventional_commits_next_version --from-commit-hash $(git rev-parse $(git describe --tags --abbrev=0)) --from-version $(git describe --tags --abbrev=0) --calculation-mode "Batch")
+  #         echo "NEXT_VERSION=${NEXT_VERSION}" >> $GITHUB_OUTPUT
+  #         echo "The next version is: ${NEXT_VERSION}"
 
-      - name: Show stale release branches
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          NEXT_VERSION="${{ steps.calc_version.outputs.NEXT_VERSION }}"
-          echo "Next calculated version: ${NEXT_VERSION}"
-          # List all remote release branches
-          git fetch origin 'refs/heads/release/*:refs/remotes/origin/release/*'
-          for branch in $(git branch -r --list 'origin/release/*' | sed 's|origin/||'); do
-            # Extract version from branch name (e.g., release/1.2.3 -> 1.2.3)
-            branch_version=$(echo "$branch" | sed 's|release/||')
-            echo "Found existing release branch: ${branch} (version: ${branch_version})"
+  #     - name: Show stale release branches
+  #       env:
+  #         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  #       run: |
+  #         NEXT_VERSION="${{ steps.calc_version.outputs.NEXT_VERSION }}"
+  #         echo "Next calculated version: ${NEXT_VERSION}"
+  #         # List all remote release branches
+  #         git fetch origin 'refs/heads/release/*:refs/remotes/origin/release/*'
+  #         for branch in $(git branch -r --list 'origin/release/*' | sed 's|origin/||'); do
+  #           # Extract version from branch name (e.g., release/1.2.3 -> 1.2.3)
+  #           branch_version=$(echo "$branch" | sed 's|release/||')
+  #           echo "Found existing release branch: ${branch} (version: ${branch_version})"
 
-            if [[ "$branch_version" != "$NEXT_VERSION" ]]; then
-              echo "Branch ${branch} is stale (version ${branch_version} != ${NEXT_VERSION}). Cleaning up..."
-              # Find PR associated with the stale branch
-              PR_NUMBER=$(gh pr list --head "$branch" --state open --json number --jq '.[0].number // empty')
-              if [[ -n "$PR_NUMBER" ]]; then
-                echo "PR #${PR_NUMBER} is on stale branch ${branch}..."
-              else
-                echo "No open PR found for stale branch ${branch}."
-              fi
-              # Delete the stale remote branch
-              echo "stale remote branch ${branch}..."
-            fi
-          done
+  #           if [[ "$branch_version" != "$NEXT_VERSION" ]]; then
+  #             echo "Branch ${branch} is stale (version ${branch_version} != ${NEXT_VERSION}). Cleaning up..."
+  #             # Find PR associated with the stale branch
+  #             PR_NUMBER=$(gh pr list --head "$branch" --state open --json number --jq '.[0].number // empty')
+  #             if [[ -n "$PR_NUMBER" ]]; then
+  #               echo "PR #${PR_NUMBER} is on stale branch ${branch}..."
+  #             else
+  #               echo "No open PR found for stale branch ${branch}."
+  #             fi
+  #             # Delete the stale remote branch
+  #             echo "stale remote branch ${branch}..."
+  #           fi
+  #         done
 
-      - name: Check if release branch already exists
-        id: check_branch
-        run: |
-          NEXT_VERSION="${{ steps.calc_version.outputs.NEXT_VERSION }}"
-          BRANCH_NAME="release/${NEXT_VERSION}"
-          if git rev-parse --verify --quiet "origin/${BRANCH_NAME}"; then
-            echo "Branch ${BRANCH_NAME} already exists."
-            echo "exists=true" >> $GITHUB_OUTPUT
-          else
-            echo "Branch ${BRANCH_NAME} does not exist."
-            echo "exists=false" >> $GITHUB_OUTPUT
-          fi
+  #     - name: Check if release branch already exists
+  #       id: check_branch
+  #       run: |
+  #         NEXT_VERSION="${{ steps.calc_version.outputs.NEXT_VERSION }}"
+  #         BRANCH_NAME="release/${NEXT_VERSION}"
+  #         if git rev-parse --verify --quiet "origin/${BRANCH_NAME}"; then
+  #           echo "Branch ${BRANCH_NAME} already exists."
+  #           echo "exists=true" >> $GITHUB_OUTPUT
+  #         else
+  #           echo "Branch ${BRANCH_NAME} does not exist."
+  #           echo "exists=false" >> $GITHUB_OUTPUT
+  #         fi
 
-      - name: Generate Changelog Section
-        id: generate_changelog
-        run: |
-          NEXT_VERSION="${{ steps.calc_version.outputs.NEXT_VERSION }}"
-          # Generate notes for the upcoming version
-          # Use the tag format decided earlier (no 'v' prefix)
-          git-cliff --tag "${NEXT_VERSION}" --unreleased --strip all > release_notes.md
-          echo "Generated release notes for ${NEXT_VERSION}"
-          # Check if notes were actually generated (might be empty if no relevant commits)
-          if [ -s release_notes.md ]; then
-            echo "has_notes=true" >> $GITHUB_OUTPUT
-          else
-            echo "No relevant commits found for changelog."
-            echo "has_notes=false" >> $GITHUB_OUTPUT
-          fi
+  #     - name: Generate Changelog Section
+  #       id: generate_changelog
+  #       run: |
+  #         NEXT_VERSION="${{ steps.calc_version.outputs.NEXT_VERSION }}"
+  #         # Generate notes for the upcoming version
+  #         # Use the tag format decided earlier (no 'v' prefix)
+  #         git-cliff --tag "${NEXT_VERSION}" --unreleased --strip all > release_notes.md
+  #         echo "Generated release notes for ${NEXT_VERSION}"
+  #         # Check if notes were actually generated (might be empty if no relevant commits)
+  #         if [ -s release_notes.md ]; then
+  #           echo "has_notes=true" >> $GITHUB_OUTPUT
+  #         else
+  #           echo "No relevant commits found for changelog."
+  #           echo "has_notes=false" >> $GITHUB_OUTPUT
+  #         fi
 
   test:
     name: unit-tests
