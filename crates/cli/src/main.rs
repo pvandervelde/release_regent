@@ -4,7 +4,7 @@
 
 use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
-use tracing::{debug, error, info};
+use tracing::{debug, info};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod errors;
@@ -180,7 +180,7 @@ async fn execute_run(args: RunArgs) -> CliResult<()> {
         )));
     }
 
-    let config =
+    let _config =
         release_regent_core::config::ReleaseRegentConfig::load_from_file(&config_path).await?;
     info!("Loaded configuration from: {}", config_path.display());
 
@@ -192,7 +192,7 @@ async fn execute_run(args: RunArgs) -> CliResult<()> {
         ));
     }
 
-    let event_json = tokio::fs::read_to_string(&args.event_file).await?;
+    let _event_json = tokio::fs::read_to_string(&args.event_file).await?;
     info!("Loaded webhook event from: {}", args.event_file.display());
 
     // TODO: Parse webhook JSON and create WebhookEvent

@@ -58,7 +58,10 @@ impl GitHubClient {
             options.tag_name, owner, repo
         );
         debug!("Release name: {}", options.name);
-        debug!("Draft: {}, Prerelease: {}", options.draft, options.prerelease);
+        debug!(
+            "Draft: {}, Prerelease: {}",
+            options.draft, options.prerelease
+        );
 
         // TODO: Implement actual release creation via Octocrab
         // This will be implemented in subsequent issues
@@ -105,10 +108,7 @@ impl GitHubClient {
         repo: &str,
         limit: Option<u32>,
     ) -> GitHubResult<Vec<Release>> {
-        debug!(
-            "Listing releases in {}/{}, limit: {:?}",
-            owner, repo, limit
-        );
+        debug!("Listing releases in {}/{}, limit: {:?}", owner, repo, limit);
 
         // TODO: Implement release listing via Octocrab
         // This will be implemented in subsequent issues

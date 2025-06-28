@@ -1,5 +1,4 @@
 use super::*;
-use crate::{GitHubClient, GitHubConfig};
 
 #[test]
 fn test_create_pull_request_options() {

@@ -47,6 +47,8 @@ impl GitHubClient {
     /// ```no_run
     /// use release_regent_github_client::{GitHubClient, GitHubConfig};
     ///
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let config = GitHubConfig {
     ///     app_id: 123456,
     ///     private_key: "-----BEGIN RSA PRIVATE KEY-----\n...".to_string(),
@@ -55,7 +57,8 @@ impl GitHubClient {
     /// };
     ///
     /// let client = GitHubClient::new(config).await?;
-    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// # Ok(())
+    /// # }
     /// ```
     pub async fn new(config: GitHubConfig) -> GitHubResult<Self> {
         debug!("Creating GitHub client for app_id: {}", config.app_id);
@@ -82,7 +85,10 @@ impl GitHubClient {
     ///
     /// This method generates a JWT token and exchanges it for an installation token.
     pub async fn authenticate(&self) -> GitHubResult<()> {
-        info!("Authenticating with GitHub for installation: {}", self.config.installation_id);
+        info!(
+            "Authenticating with GitHub for installation: {}",
+            self.config.installation_id
+        );
 
         // TODO: Implement JWT generation and token exchange
         // This will be implemented in subsequent issues

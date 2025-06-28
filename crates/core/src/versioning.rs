@@ -137,11 +137,7 @@ impl VersionCalculator {
     }
 
     /// Apply version bump to base version
-    fn apply_version_bump(
-        &self,
-        base: &SemanticVersion,
-        bump: VersionBump,
-    ) -> SemanticVersion {
+    fn apply_version_bump(&self, base: &SemanticVersion, bump: VersionBump) -> SemanticVersion {
         match bump {
             VersionBump::Major => SemanticVersion {
                 major: base.major + 1,
@@ -184,17 +180,17 @@ impl VersionCalculator {
             )));
         }
 
-        let major = parts[0].parse().map_err(|_| {
-            CoreError::versioning(format!("Invalid major version: {}", parts[0]))
-        })?;
+        let major = parts[0]
+            .parse()
+            .map_err(|_| CoreError::versioning(format!("Invalid major version: {}", parts[0])))?;
 
-        let minor = parts[1].parse().map_err(|_| {
-            CoreError::versioning(format!("Invalid minor version: {}", parts[1]))
-        })?;
+        let minor = parts[1]
+            .parse()
+            .map_err(|_| CoreError::versioning(format!("Invalid minor version: {}", parts[1])))?;
 
-        let patch = parts[2].parse().map_err(|_| {
-            CoreError::versioning(format!("Invalid patch version: {}", parts[2]))
-        })?;
+        let patch = parts[2]
+            .parse()
+            .map_err(|_| CoreError::versioning(format!("Invalid patch version: {}", parts[2])))?;
 
         Ok(SemanticVersion {
             major,
@@ -206,7 +202,9 @@ impl VersionCalculator {
     }
 
     /// Parse conventional commits from commit messages
-    pub fn parse_conventional_commits(commit_messages: &[(String, String)]) -> Vec<ConventionalCommit> {
+    pub fn parse_conventional_commits(
+        commit_messages: &[(String, String)],
+    ) -> Vec<ConventionalCommit> {
         debug!("Parsing {} commit messages", commit_messages.len());
 
         // TODO: Implement full conventional commit parsing

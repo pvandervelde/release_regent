@@ -129,11 +129,11 @@ impl WebhookProcessor {
     }
 
     /// Validate webhook signature
-    fn validate_signature(&self, event: &WebhookEvent, secret: &str) -> CoreResult<()> {
+    fn validate_signature(&self, event: &WebhookEvent, _secret: &str) -> CoreResult<()> {
         debug!("Validating webhook signature");
 
         // Get signature from headers
-        let signature = event
+        let _signature = event
             .headers
             .get("x-hub-signature-256")
             .or_else(|| event.headers.get("X-Hub-Signature-256"))
@@ -152,7 +152,7 @@ impl WebhookProcessor {
     /// Extract pull request information from payload
     fn extract_pull_request_info(
         &self,
-        payload: &serde_json::Value,
+        _payload: &serde_json::Value,
     ) -> CoreResult<PullRequestInfo> {
         debug!("Extracting pull request information from payload");
 
@@ -171,7 +171,7 @@ impl WebhookProcessor {
     }
 
     /// Extract repository information from payload
-    fn extract_repository_info(&self, payload: &serde_json::Value) -> CoreResult<RepositoryInfo> {
+    fn extract_repository_info(&self, _payload: &serde_json::Value) -> CoreResult<RepositoryInfo> {
         debug!("Extracting repository information from payload");
 
         // TODO: Implement actual payload parsing
