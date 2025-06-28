@@ -20,3 +20,6 @@ target/
 .github/copilot-instructions.md
 .roo/
 .roomodes
+
+# Development memory bank and AI assistant files
+.llm/
