@@ -18,17 +18,24 @@ repository = "https://github.com/pvandervelde/release_regent"
 
 [workspace.dependencies]
 # Core dependencies
-tokio = { version = "1.45", features = ["full"] }
+async-trait = "0.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.9"
 thiserror = "1.0"
+tokio = { version = "1.45", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "time"] }
 
 # GitHub integration
 octocrab = "0.38"
 reqwest = { version = "0.11", features = ["json", "rustls-tls"] }
+
+# JWT and security
+jsonwebtoken = "9.2"
+secrecy = "0.8"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.6", features = ["v4", "serde"] }
 
 # CLI dependencies
 clap = { version = "4.4", features = ["derive"] }

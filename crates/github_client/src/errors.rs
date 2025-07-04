@@ -2,7 +2,7 @@ use thiserror::Error;
 
 /// Errors that can occur when interacting with GitHub API
 #[derive(Error, Debug)]
-pub enum GitHubError {
+pub enum Error {
     /// Authentication-related errors
     #[error("GitHub authentication failed: {message}")]
     Authentication { message: String },
@@ -52,7 +52,7 @@ pub enum GitHubError {
     InvalidInput { field: String, message: String },
 }
 
-impl GitHubError {
+impl Error {
     /// Create a new authentication error
     pub fn authentication(message: impl Into<String>) -> Self {
         Self::Authentication {
@@ -100,7 +100,7 @@ impl GitHubError {
 }
 
 /// Result type for GitHub operations
-pub type GitHubResult<T> = Result<T, GitHubError>;
+pub type GitHubResult<T> = Result<T, Error>;
 
 #[cfg(test)]
 #[path = "errors_tests.rs"]

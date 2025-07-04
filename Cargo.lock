@@ -1707,6 +1707,7 @@ dependencies = [
 name = "release-regent-github-client"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "mockall",
  "octocrab",
  "reqwest 0.11.27",
