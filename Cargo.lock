@@ -343,8 +343,10 @@ checksum = "c469d952047f47f91b68d1cba3f10d63c11d73e4636f24f08daf0278abf01c4d"
 dependencies = [
  "android-tzdata",
  "iana-time-zone",
+ "js-sys",
  "num-traits",
  "serde",
+ "wasm-bindgen",
  "windows-link",
 ]
 
@@ -1708,15 +1710,21 @@ name = "release-regent-github-client"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "chrono",
+ "fastrand",
+ "jsonwebtoken",
  "mockall",
  "octocrab",
  "reqwest 0.11.27",
+ "secrecy",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
  "tokio",
  "tokio-test",
  "tracing",
+ "url",
+ "uuid",
 ]
 
 [[package]]
@@ -2688,6 +2696,7 @@ checksum = "3cf4199d1e5d15ddd86a694e4d0dffa9c323ce759fea589f00fef9d81cc1931d"
 dependencies = [
  "getrandom 0.3.3",
  "js-sys",
+ "serde",
  "wasm-bindgen",
 ]
 
