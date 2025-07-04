@@ -31,7 +31,7 @@ mod tests;
 /// # Examples
 ///
 /// ```rust,no_run
-/// use github_client::{GitHubClient, create_app_client};
+/// use release_regent_github_client::{GitHubClient, create_app_client};
 ///
 /// #[tokio::main]
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -97,7 +97,7 @@ impl GitHubClient {
     /// # Example
     ///
     /// ```rust
-    /// # use github_client::{GitHubClient, create_app_client};
+    /// # use release_regent_github_client::{GitHubClient, create_app_client};
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
     /// #     let app_id = 123456;
     /// #     let private_key = "-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----";
@@ -160,7 +160,7 @@ impl GitHubClient {
     /// # Examples
     ///
     /// ```rust,no_run
-    /// use github_client::{GitHubClient, create_app_client};
+    /// use release_regent_github_client::{GitHubClient, create_app_client};
     ///
     /// #[tokio::main]
     /// async fn main() -> Result<(), Box<dyn std::error::Error>> {

@@ -12,7 +12,7 @@ async fn test_auth_config_basic_creation() {
         jwt_expiration_seconds: 600,
         token_refresh_buffer_seconds: 300,
     };
-    
+
     assert_eq!(config.app_id, 12345);
     assert_eq!(config.jwt_expiration_seconds, 600);
     assert_eq!(config.token_refresh_buffer_seconds, 300);

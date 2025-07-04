@@ -75,7 +75,7 @@ impl From<octocrab::models::Installation> for Installation {
 /// # Examples
 ///
 /// ```
-/// use github_client::models::Label;
+/// use release_regent_github_client::models::Label;
 ///
 /// let label = Label {
 ///     name: "bug".to_string(),
@@ -95,7 +95,7 @@ pub struct Label {
 /// # Examples
 ///
 /// ```rust
-/// use github_client::models::Organization;
+/// use release_regent_github_client::models::Organization;
 ///
 /// let org = Organization {
 ///     name: "my-organization".to_string(),
@@ -116,7 +116,7 @@ pub struct Organization {
 /// # Examples
 ///
 /// ```rust
-/// use github_client::models::Repository;
+/// use release_regent_github_client::models::Repository;
 ///
 /// let repo = Repository::new(
 ///     "my-repo".to_string(),
@@ -226,7 +226,7 @@ impl From<octocrab::models::Repository> for Repository {
 /// # Examples
 ///
 /// ```rust
-/// use github_client::models::User;
+/// use release_regent_github_client::models::User;
 ///
 /// let user = User {
 ///     id: 12345,

@@ -6,7 +6,7 @@ async fn test_github_client_new() {
     let octocrab = octocrab::Octocrab::builder()
         .build()
         .expect("Failed to create Octocrab client");
-    
+
     let _client = crate::GitHubClient::new(octocrab);
     // If we get here without panicking, the test passes
     assert!(true);

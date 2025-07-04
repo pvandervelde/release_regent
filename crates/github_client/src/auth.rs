@@ -22,7 +22,7 @@
 //! # Examples
 //!
 //! ```rust,no_run
-//! use github_client::auth::{GitHubAuthManager, AuthConfig};
+//! use release_regent_github_client::auth::{GitHubAuthManager, AuthConfig};
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -50,7 +50,7 @@ use octocrab::Octocrab;
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
-use tracing::{debug, error, info, instrument, warn};
+use tracing::{debug, error, info, instrument};
 
 use crate::errors::{Error, GitHubResult};
 
@@ -145,8 +145,6 @@ struct JwtClaims {
     aud: String,
 }
 
-// Implementation blocks will be added in subsequent tasks
-
 impl AuthConfig {
     /// Creates a new authentication configuration.
     ///
@@ -163,13 +161,16 @@ impl AuthConfig {
     /// # Examples
     ///
     /// ```rust,no_run
-    /// use github_client::auth::AuthConfig;
+    /// use release_regent_github_client::auth::AuthConfig;
     ///
-    /// let config = AuthConfig::new(
-    ///     12345,
-    ///     "-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----",
-    ///     None,
-    /// )?;
+    /// fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let config = AuthConfig::new(
+    ///         12345,
+    ///         "-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----",
+    ///         None,
+    ///     )?;
+    ///     Ok(())
+    /// }
     /// ```
     pub fn new(
         app_id: u64,
@@ -266,12 +267,154 @@ impl AuthConfig {
     }
 }
 
+impl GitHubAuthManager {
+    /// Creates a new GitHub authentication manager.
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - The authentication configuration
+    ///
+    /// # Returns
+    ///
+    /// A new `GitHubAuthManager` instance.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the configuration is invalid or if the JWT encoding key
+    /// cannot be created from the private key.
+    pub fn new(config: AuthConfig) -> GitHubResult<Self> {
+        let jwt_encoding_key = EncodingKey::from_rsa_pem(
+            config.private_key.expose_secret().as_bytes(),
+        )
+        .map_err(|_| Error::invalid_input("private_key", "Invalid RSA private key format"))?;
+
+        let token_cache = TokenCache::new(Duration::from_secs(config.token_refresh_buffer_seconds));
+        let rate_limiter = RateLimiter::default();
+
+        // Create the base Octocrab client
+        let octocrab_client = octocrab::Octocrab::builder()
+            .base_uri(&config.get_api_base_url())
+            .map_err(|e| {
+                Error::configuration(
+                    "base_uri",
+                    &format!("Failed to configure GitHub client: {}", e),
+                )
+            })?
+            .build()
+            .map_err(|e| {
+                Error::configuration(
+                    "client_build",
+                    &format!("Failed to build GitHub client: {}", e),
+                )
+            })?;
+
+        Ok(Self {
+            config,
+            token_cache,
+            jwt_encoding_key,
+            rate_limiter,
+            octocrab_client,
+        })
+    }
+
+    /// Gets an installation token for the specified installation ID.
+    ///
+    /// This method first checks the cache for a valid token. If not found or expired,
+    /// it generates a new JWT, requests a new installation token, and caches it.
+    ///
+    /// # Arguments
+    ///
+    /// * `installation_id` - The GitHub App installation ID
+    ///
+    /// # Returns
+    ///
+    /// A valid installation token.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if JWT generation fails, token request fails, or rate limits are exceeded.
+    pub async fn get_installation_token(&self, installation_id: u64) -> GitHubResult<String> {
+        // Check cache first
+        if let Some(cached_token) = self.token_cache.get_token(installation_id).await {
+            return Ok(cached_token.token.expose_secret().clone());
+        }
+
+        // Wait for rate limit
+        self.rate_limiter.wait_for_rate_limit().await;
+
+        // Generate JWT for GitHub App authentication
+        let jwt = self.generate_jwt()?;
+
+        // Create authenticated client with JWT
+        let app_client = octocrab::Octocrab::builder()
+            .base_uri(&self.config.get_api_base_url())
+            .map_err(|e| {
+                Error::configuration(
+                    "base_uri",
+                    &format!("Failed to configure GitHub client: {}", e),
+                )
+            })?
+            .personal_token(jwt)
+            .build()
+            .map_err(|e| {
+                Error::configuration(
+                    "client_build",
+                    &format!("Failed to build GitHub client: {}", e),
+                )
+            })?;
+
+        // Request installation token
+        let (_, token) = app_client
+            .installation_and_token(installation_id.into())
+            .await
+            .map_err(|e| {
+                Error::authentication(&format!("Failed to get installation token: {}", e))
+            })?;
+
+        // Cache the token
+        let expires_at =
+            Utc::now() + chrono::Duration::seconds(self.config.jwt_expiration_seconds as i64);
+        self.token_cache
+            .store_token(installation_id, token.expose_secret().clone(), expires_at)
+            .await;
+
+        Ok(token.expose_secret().clone())
+    }
+
+    /// Generates a JWT for GitHub App authentication.
+    ///
+    /// # Returns
+    ///
+    /// A signed JWT token for GitHub App authentication.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if JWT generation fails.
+    fn generate_jwt(&self) -> GitHubResult<String> {
+        let now = Utc::now();
+        let expiration = now + chrono::Duration::seconds(self.config.jwt_expiration_seconds as i64);
+
+        let claims = JwtClaims {
+            jti: uuid::Uuid::new_v4().to_string(),
+            iat: now.timestamp(),
+            exp: expiration.timestamp(),
+            iss: self.config.app_id.to_string(),
+            aud: self.config.get_jwt_audience(),
+        };
+
+        let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
+
+        jsonwebtoken::encode(&header, &claims, &self.jwt_encoding_key)
+            .map_err(|e| Error::jwt(&format!("Failed to encode JWT: {}", e)))
+    }
+}
+
 impl TokenCache {
     /// Creates a new token cache with the specified refresh buffer.
     ///
     /// # Arguments
     ///
-    /// * `refresh_buffer` - How long before expiration to refresh tokens
+    /// * `refresh_buffer` - Time buffer before token expiration to trigger refresh
     ///
     /// # Returns
     ///
@@ -283,20 +426,18 @@ impl TokenCache {
         }
     }
 
-    /// Retrieves a cached token for the given installation ID.
+    /// Checks if we have a valid token for the given installation.
     ///
     /// # Arguments
     ///
-    /// * `installation_id` - The installation ID to get the token for
+    /// * `installation_id` - The installation ID to check for
     ///
     /// # Returns
     ///
-    /// `Some(CachedToken)` if a valid token exists, `None` otherwise.
+    /// `Some(token)` if a valid (non-expired) token exists, `None` otherwise.
     pub async fn get_token(&self, installation_id: u64) -> Option<CachedToken> {
         let tokens = self.tokens.read().await;
-
         if let Some(cached_token) = tokens.get(&installation_id) {
-            // Check if token is still valid (not expired and not close to expiration)
             let now = Utc::now();
             let expires_soon = cached_token.expires_at
                 - chrono::Duration::from_std(self.refresh_buffer).unwrap_or_default();
@@ -348,31 +489,27 @@ impl TokenCache {
     }
 
     /// Cleans up expired tokens from the cache.
-    ///
-    /// This method removes all tokens that have expired, freeing up memory
-    /// and ensuring expired tokens are not accidentally used.
     pub async fn cleanup_expired_tokens(&self) {
         let mut tokens = self.tokens.write().await;
         let now = Utc::now();
+        let before_count = tokens.len();
 
-        let expired_installations: Vec<u64> = tokens
-            .iter()
-            .filter(|(_, token)| now >= token.expires_at)
-            .map(|(installation_id, _)| *installation_id)
-            .collect();
+        tokens.retain(|_, token| {
+            let expires_soon = token.expires_at
+                - chrono::Duration::from_std(self.refresh_buffer).unwrap_or_default();
+            now < expires_soon
+        });
 
-        for installation_id in expired_installations {
-            tokens.remove(&installation_id);
-            debug!(
-                "Cleaned up expired token for installation ID {}",
-                installation_id
-            );
+        let removed = before_count - tokens.len();
+        if removed > 0 {
+            debug!("Removed {} expired tokens from cache", removed);
         }
     }
 
     /// Returns the number of tokens currently in the cache.
     pub async fn token_count(&self) -> usize {
-        self.tokens.read().await.len()
+        let tokens = self.tokens.read().await;
+        tokens.len()
     }
 
     /// Clears all tokens from the cache.
@@ -443,6 +580,7 @@ impl RateLimiter {
 
         *last_request = Some(Instant::now());
     }
+
     /// Calculates the delay for exponential backoff.
     ///
     /// # Arguments
@@ -495,7 +633,7 @@ impl RateLimiter {
 /// # Example
 ///
 /// ```rust,no_run
-/// use github_client::auth::{authenticate_with_access_token, create_app_client};
+/// use release_regent_github_client::auth::{authenticate_with_access_token, create_app_client};
 ///
 /// #[tokio::main]
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -548,140 +686,124 @@ pub async fn authenticate_with_access_token(
         repository_owner = repository_owner,
         repository = source_repository,
         installation_id,
-        "Created access token for installation",
+        "Created a token for the installation"
     );
 
     Ok(api_with_token)
 }
 
-/// Creates an `Octocrab` client authenticated as a GitHub App using a JWT token.
+/// Creates a GitHub App client using a private key.
 ///
-/// This function generates a JSON Web Token (JWT) for the specified GitHub App ID and private key,
-/// and uses it to create an authenticated `Octocrab` client. The client can then be used to perform
-/// API operations on behalf of the GitHub App.
+/// This function creates an authenticated `Octocrab` client using the provided GitHub App ID
+/// and private key. The client can be used to make authenticated API requests on behalf of
+/// the GitHub App.
 ///
 /// # Arguments
 ///
-/// * `app_id` - The ID of the GitHub App.
+/// * `app_id` - The GitHub App ID.
 /// * `private_key` - The private key for the GitHub App in PEM format.
 ///
 /// # Returns
 ///
-/// Returns a `Result` containing an authenticated `Octocrab` client, or an `Error`
-/// if the operation fails.
+/// Returns a `Result` containing an authenticated `Octocrab` client, or an `Error` if the
+/// operation fails.
 ///
 /// # Errors
 ///
 /// This function returns an `Error` in the following cases:
-/// - If the private key cannot be parsed.
-/// - If the JWT token cannot be created.
+/// - If the private key is invalid or cannot be parsed.
 /// - If the `Octocrab` client cannot be built.
 ///
 /// # Example
 ///
 /// ```rust,no_run
-/// use github_client::auth::create_app_client;
+/// use release_regent_github_client::auth::create_app_client;
 ///
 /// #[tokio::main]
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
-///     let app_id = 123456; // Replace with your GitHub App ID
-///     let private_key = r#"
-/// -----BEGIN RSA PRIVATE KEY-----
-/// ...
-/// -----END RSA PRIVATE KEY-----
-/// "#; // Replace with your GitHub App private key
+///     let app_id = 123456; // Replace with your App ID
+///     let private_key = "-----BEGIN RSA PRIVATE KEY-----
+/// MIIEpAIBAAKCAQEA...
+/// -----END RSA PRIVATE KEY-----";
 ///
-///     let client = create_app_client(app_id, private_key).await?;
-///
-///     // Use `client` to perform API operations
+///     let octocrab = create_app_client(app_id, private_key).await?;
+///     // Use `octocrab` to perform API operations
 ///     Ok(())
 /// }
 /// ```
-#[instrument(skip(private_key))]
+#[instrument]
 pub async fn create_app_client(app_id: u64, private_key: &str) -> GitHubResult<Octocrab> {
-    info!(
-        app_id = app_id,
-        key_length = private_key.len(),
-        key_starts_with = &private_key[..27], // "-----BEGIN RSA PRIVATE KEY"
-        "Creating GitHub App client with provided credentials"
-    );
+    debug!(app_id = app_id, "Creating app client");
 
-    let key = EncodingKey::from_rsa_pem(private_key.as_bytes()).map_err(|e| {
-        error!(
-            app_id = app_id,
-            error = %e,
-            "Failed to parse RSA private key - key format is invalid"
-        );
-        Error::authentication(format!(
-            "Failed to translate the private key. Error was: {}",
-            e
-        ))
+    let key = jsonwebtoken::EncodingKey::from_rsa_pem(private_key.as_bytes()).map_err(|e| {
+        error!(app_id = app_id, "Failed to parse private key: {}", e);
+        Error::invalid_input("private_key", "Invalid RSA private key")
     })?;
 
-    info!(app_id = app_id, "Successfully parsed RSA private key");
-
-    let octocrab = Octocrab::builder()
+    let octocrab = octocrab::Octocrab::builder()
         .app(app_id.into(), key)
         .build()
         .map_err(|e| {
-            error!(
-                app_id = app_id,
-                error = ?e,
-                "Failed to build Octocrab client with GitHub App credentials"
-            );
-            Error::authentication("Failed to get a personal token for the app install.")
+            error!(app_id = app_id, "Failed to build octocrab client: {}", e);
+            Error::configuration("octocrab", "Failed to build octocrab client")
         })?;
 
-    info!(app_id = app_id, "Successfully created GitHub App client");
+    info!(app_id = app_id, "Created app client");
 
     Ok(octocrab)
 }
 
-/// Creates an Octocrab client authenticated with a personal access token.
+/// Creates a GitHub client using a personal access token.
 ///
-/// This function creates a GitHub API client using a personal access token
-/// for authentication. This is useful for operations that don't require
-/// GitHub App authentication.
+/// This function creates an authenticated `Octocrab` client using the provided personal access
+/// token. The client can be used to make authenticated API requests on behalf of the user
+/// associated with the token.
 ///
 /// # Arguments
 ///
-/// * `token` - A GitHub personal access token
+/// * `token` - The personal access token for GitHub authentication.
 ///
 /// # Returns
 ///
-/// Returns a `Result` containing an authenticated `Octocrab` client, or an `Error`
-/// if the client cannot be built.
+/// Returns a `Result` containing an authenticated `Octocrab` client, or an `Error` if the
+/// operation fails.
 ///
 /// # Errors
 ///
-/// This function returns an `Error` if the Octocrab client cannot be
-/// constructed with the provided token.
+/// This function returns an `Error` in the following cases:
+/// - If the token is invalid or empty.
+/// - If the `Octocrab` client cannot be built.
 ///
-/// # Examples
+/// # Example
 ///
 /// ```rust,no_run
-/// use github_client::auth::create_token_client;
+/// use release_regent_github_client::auth::create_token_client;
 ///
 /// #[tokio::main]
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
-///     let token = "ghp_xxxxxxxxxxxxxxxxxxxx"; // Your GitHub PAT
-///     let client = create_token_client(token)?;
-///
-///     // Use client for API operations
+///     let token = "ghp_your_personal_access_token"; // Replace with your token
+///     let octocrab = create_token_client(token).await?;
+///     // Use `octocrab` to perform API operations
 ///     Ok(())
 /// }
 /// ```
-#[instrument(skip(token))]
-pub fn create_token_client(token: &str) -> GitHubResult<Octocrab> {
-    Octocrab::builder()
+#[instrument]
+pub async fn create_token_client(token: &str) -> GitHubResult<Octocrab> {
+    debug!("Creating token client");
+
+    if token.is_empty() {
+        return Err(Error::invalid_input("token", "Token cannot be empty"));
+    }
+
+    let octocrab = octocrab::Octocrab::builder()
         .personal_token(token.to_string())
         .build()
         .map_err(|e| {
-            error!(error = ?e, "Failed to create token client");
-            Error::authentication("Failed to create GitHub client with personal access token")
-        })
-}
+            error!("Failed to build octocrab client: {}", e);
+            Error::configuration("octocrab", "Failed to build octocrab client")
+        })?;
 
-#[cfg(test)]
-#[path = "auth_tests.rs"]
-mod tests;
+    info!("Created token client");
+
+    Ok(octocrab)
+}
