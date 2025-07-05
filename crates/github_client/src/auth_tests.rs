@@ -213,12 +213,16 @@ async fn test_jwt_multiple_generation() {
     for _i in 0..5 {
         let jwt_result = auth_manager.generate_jwt();
         assert!(jwt_result.is_ok());
-        
+
         let jwt = jwt_result.unwrap();
         assert!(!jwt.is_empty());
-        
+
         // JWT should have the expected structure
         let parts: Vec<&str> = jwt.split('.').collect();
-        assert_eq!(parts.len(), 3, "JWT should have three parts separated by dots");
+        assert_eq!(
+            parts.len(),
+            3,
+            "JWT should have three parts separated by dots"
+        );
     }
 }
