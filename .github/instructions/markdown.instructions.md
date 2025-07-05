@@ -1,8 +1,4 @@
----
-applyTo: "**"
----
-
-# Copilot Instructions (Repository)
+# Copilot Instructions (Repository) - Markdown
 
 ## coding-markdown
 
