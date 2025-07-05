@@ -415,3 +415,166 @@ async fn test_token_cache_update_existing() {
         "updated-token"
     );
 }
+
+// Rate Limiting and Retry Logic Tests (Task 4.0)
+
+#[tokio::test]
+async fn test_rate_limiter_update_from_headers() {
+    let rate_limiter = RateLimiter::default();
+    let mut headers = reqwest::header::HeaderMap::new();
+
+    // Add rate limit headers
+    headers.insert("x-ratelimit-limit", "5000".parse().unwrap());
+    headers.insert("x-ratelimit-remaining", "4999".parse().unwrap());
+    headers.insert("x-ratelimit-reset", "1609459200".parse().unwrap());
+    headers.insert("x-ratelimit-used", "1".parse().unwrap());    rate_limiter.update_rate_limit_from_headers(&headers).await;
+    
+    let rate_limit_info = rate_limiter.get_rate_limit_info().await;
+    assert_eq!(rate_limit_info.limit, Some(5000));
+    assert_eq!(rate_limit_info.remaining, Some(4999));
+    assert_eq!(rate_limit_info.reset, Some(1609459200));
+    assert_eq!(rate_limit_info.used, Some(1));
+}
+
+#[tokio::test]
+async fn test_rate_limiter_should_wait_for_rate_limit_with_remaining() {
+    let rate_limiter = RateLimiter::default();
+    let mut headers = reqwest::header::HeaderMap::new();    // Set headers indicating we have remaining requests
+    headers.insert("x-ratelimit-remaining", "100".parse().unwrap());
+    rate_limiter.update_rate_limit_from_headers(&headers).await;
+    
+    // Should not need to wait when we have remaining requests
+    let wait_duration = rate_limiter.should_wait_for_rate_limit().await;
+    assert!(wait_duration.is_none());
+}
+
+#[tokio::test]
+async fn test_rate_limiter_should_wait_for_rate_limit_exhausted() {
+    let rate_limiter = RateLimiter::default();
+    let mut headers = reqwest::header::HeaderMap::new();
+
+    // Set headers indicating we have no remaining requests
+    headers.insert("x-ratelimit-remaining", "0".parse().unwrap());
+
+    // Set reset time to 1 hour from now
+    let reset_time = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 3600;    headers.insert("x-ratelimit-reset", reset_time.to_string().parse().unwrap());
+    
+    rate_limiter.update_rate_limit_from_headers(&headers).await;
+    
+    // Should need to wait when we have no remaining requests
+    let wait_duration = rate_limiter.should_wait_for_rate_limit().await;
+    assert!(wait_duration.is_some());
+    assert!(wait_duration.unwrap() > Duration::from_secs(3590)); // Should be close to 1 hour
+}
+
+#[tokio::test]
+async fn test_rate_limiter_should_retry_error() {
+    let rate_limiter = RateLimiter::default();
+    let policy = RetryPolicy::default();    // Test rate limit error
+    let rate_limit_error = Error::rate_limit("60 seconds");
+    assert!(rate_limiter.should_retry_error(&rate_limit_error, &policy));
+    
+    // Test API request error
+    let api_error = Error::api_request(500, "Network error");
+    assert!(rate_limiter.should_retry_error(&api_error, &policy));
+
+    // Test authentication error (should not retry)
+    let auth_error = Error::authentication("Invalid credentials");
+    assert!(!rate_limiter.should_retry_error(&auth_error, &policy));
+}
+
+#[tokio::test]
+async fn test_retry_policy_default() {
+    let policy = RetryPolicy::default();
+
+    assert_eq!(policy.max_retries, 3);
+    assert_eq!(policy.base_delay, Duration::from_millis(500));
+    assert_eq!(policy.max_delay, Duration::from_secs(60));
+    assert!(policy.retry_on_rate_limit);
+    assert!(policy.retry_on_network_error);
+    assert!(policy.retry_on_server_error);
+}
+
+#[tokio::test]
+async fn test_rate_limiter_execute_with_retry_success() {
+    let rate_limiter = RateLimiter::default();
+    let policy = RetryPolicy::default();
+
+    // Test successful execution on first attempt
+    let result = rate_limiter
+        .execute_with_retry(
+            || async { Ok::<String, Error>("success".to_string()) },
+            &policy,
+        )
+        .await;
+
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap(), "success");
+}
+
+#[tokio::test]
+async fn test_rate_limiter_execute_with_retry_failure() {
+    let rate_limiter = RateLimiter::default();
+    let mut policy = RetryPolicy::default();
+    policy.max_retries = 0; // No retries
+
+    // Test execution that always fails
+    let result = rate_limiter
+        .execute_with_retry(
+            || async { Err::<String, Error>(Error::authentication("Always fails")) },
+            &policy,
+        )
+        .await;
+
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn test_rate_limiter_execute_with_retry_eventual_success() {
+    let rate_limiter = RateLimiter::default();
+    let mut policy = RetryPolicy::default();
+    policy.max_retries = 2;
+    policy.base_delay = Duration::from_millis(1); // Very short delay for testing
+
+    // Counter to track attempts
+    let attempt_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let attempt_count_clone = attempt_count.clone();
+
+    // Test execution that succeeds on the second attempt
+    let result = rate_limiter
+        .execute_with_retry(
+            move || {
+                let count = attempt_count_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                async move {
+                    if count == 0 {
+                        Err::<String, Error>(Error::rate_limit("1 second"))
+                    } else {
+                        Ok("success".to_string())
+                    }
+                }
+            },
+            &policy,
+        )
+        .await;
+
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap(), "success");
+    assert_eq!(
+        attempt_count.load(std::sync::atomic::Ordering::SeqCst),
+        2
+    );
+}
+
+#[tokio::test]
+async fn test_rate_limit_info_default() {
+    let rate_limit_info = RateLimitInfo::default();
+
+    assert_eq!(rate_limit_info.limit, None);
+    assert_eq!(rate_limit_info.remaining, None);
+    assert_eq!(rate_limit_info.reset, None);
+    assert_eq!(rate_limit_info.used, None);
+}

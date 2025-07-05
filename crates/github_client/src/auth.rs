@@ -1,6 +1,6 @@
 //! GitHub App authentication module.
 //!
-//! This module provides comprehensive GitHub App authentication functionality including
+//! This module provides comprehensive GitHub App authentication functiona/// Rate limiter for GitHub API requests with exponential backoff and jitter.
 //! JWT generation, installation token management, rate limiting, and secure token storage.
 //!
 //! # Architecture
@@ -53,6 +53,66 @@ use tokio::sync::RwLock;
 use tracing::{debug, error, info, instrument};
 
 use crate::errors::{Error, GitHubResult};
+
+///
+/// This struct implements rate limiting and retry logic with exponential backoff
+/// to respect GitHub's API rate limits for authentication operations.
+#[derive(Debug)]
+pub struct RateLimiter {
+    /// Last request timestamp
+    last_request: Arc<RwLock<Option<Instant>>>,
+    /// Minimum time between requests
+    min_interval: Duration,
+    /// Maximum retry attempts
+    max_retries: u32,
+    /// Base delay for exponential backoff
+    base_delay: Duration,
+    /// GitHub rate limit tracking
+    rate_limit_info: Arc<RwLock<RateLimitInfo>>,
+}
+
+/// Information about GitHub API rate limits.
+#[derive(Debug, Clone, Default)]
+pub struct RateLimitInfo {
+    /// The maximum number of requests per hour
+    pub limit: Option<u32>,
+    /// The number of requests remaining in the current rate limit window
+    pub remaining: Option<u32>,
+    /// The time when the current rate limit window resets (Unix timestamp)
+    pub reset: Option<u64>,
+    /// The number of requests used in the current rate limit window
+    pub used: Option<u32>,
+}
+
+/// Retry policy configuration for different error scenarios.
+#[derive(Debug, Clone)]
+pub struct RetryPolicy {
+    /// Maximum number of retry attempts
+    pub max_retries: u32,
+    /// Base delay for exponential backoff
+    pub base_delay: Duration,
+    /// Maximum delay between retries
+    pub max_delay: Duration,
+    /// Whether to retry on rate limit errors
+    pub retry_on_rate_limit: bool,
+    /// Whether to retry on network errors
+    pub retry_on_network_error: bool,
+    /// Whether to retry on server errors (5xx)
+    pub retry_on_server_error: bool,
+}
+
+impl Default for RetryPolicy {
+    fn default() -> Self {
+        Self {
+            max_retries: 3,
+            base_delay: Duration::from_millis(500),
+            max_delay: Duration::from_secs(60),
+            retry_on_rate_limit: true,
+            retry_on_network_error: true,
+            retry_on_server_error: true,
+        }
+    }
+}
 
 /// Configuration for GitHub App authentication.
 ///
@@ -114,22 +174,6 @@ pub struct GitHubAuthManager {
     rate_limiter: RateLimiter,
     /// Base Octocrab client for API requests
     octocrab_client: Octocrab,
-}
-
-/// Rate limiter for authentication endpoints.
-///
-/// This struct implements rate limiting and retry logic with exponential backoff
-/// to respect GitHub's API rate limits for authentication operations.
-#[derive(Debug)]
-pub struct RateLimiter {
-    /// Last request timestamp
-    last_request: Arc<RwLock<Option<Instant>>>,
-    /// Minimum time between requests
-    min_interval: Duration,
-    /// Maximum retry attempts
-    max_retries: u32,
-    /// Base delay for exponential backoff
-    base_delay: Duration,
 }
 
 /// JWT claims for GitHub App authentication.
@@ -673,6 +717,7 @@ impl RateLimiter {
             min_interval,
             max_retries,
             base_delay,
+            rate_limit_info: Arc::new(RwLock::new(RateLimitInfo::default())),
         }
     }
 
@@ -726,8 +771,182 @@ impl RateLimiter {
     pub fn max_retries(&self) -> u32 {
         self.max_retries
     }
+
+    /// Updates rate limit information from GitHub API response headers.
+    ///
+    /// # Arguments
+    ///
+    /// * `headers` - HTTP response headers from a GitHub API call
+    pub async fn update_rate_limit_from_headers(&self, headers: &reqwest::header::HeaderMap) {
+        let mut rate_limit = self.rate_limit_info.write().await;
+
+        if let Some(limit) = headers.get("x-ratelimit-limit") {
+            if let Ok(limit_str) = limit.to_str() {
+                rate_limit.limit = limit_str.parse().ok();
+            }
+        }
+
+        if let Some(remaining) = headers.get("x-ratelimit-remaining") {
+            if let Ok(remaining_str) = remaining.to_str() {
+                rate_limit.remaining = remaining_str.parse().ok();
+            }
+        }
+
+        if let Some(reset) = headers.get("x-ratelimit-reset") {
+            if let Ok(reset_str) = reset.to_str() {
+                rate_limit.reset = reset_str.parse().ok();
+            }
+        }
+
+        if let Some(used) = headers.get("x-ratelimit-used") {
+            if let Ok(used_str) = used.to_str() {
+                rate_limit.used = used_str.parse().ok();
+            }
+        }
+    }
+
+    /// Checks if we should wait due to rate limiting.
+    ///
+    /// # Returns
+    ///
+    /// `Some(Duration)` if we should wait, `None` if we can proceed immediately.
+    pub async fn should_wait_for_rate_limit(&self) -> Option<Duration> {
+        let rate_limit = self.rate_limit_info.read().await;
+
+        // If we have remaining requests, we don't need to wait
+        if let Some(remaining) = rate_limit.remaining {
+            if remaining > 0 {
+                return None;
+            }
+        }
+
+        // If we're at the limit, check when it resets
+        if let Some(reset_time) = rate_limit.reset {
+            let current_time = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+
+            if reset_time > current_time {
+                let wait_duration = Duration::from_secs(reset_time - current_time);
+                return Some(wait_duration);
+            }
+        }
+
+        None
+    }
+
+    /// Gets the current rate limit information.
+    ///
+    /// # Returns
+    ///
+    /// A clone of the current `RateLimitInfo`.
+    pub async fn get_rate_limit_info(&self) -> RateLimitInfo {
+        self.rate_limit_info.read().await.clone()
+    }
+
+    /// Determines if an error should be retried based on retry policy.
+    ///
+    /// # Arguments
+    ///
+    /// * `error` - The error to check
+    /// * `policy` - The retry policy to apply
+    ///
+    /// # Returns
+    ///
+    /// `true` if the error should be retried, `false` otherwise.
+    pub fn should_retry_error(&self, error: &crate::Error, policy: &RetryPolicy) -> bool {
+        match error {
+            crate::Error::RateLimit { .. } => policy.retry_on_rate_limit,
+            crate::Error::ApiRequest { .. } => policy.retry_on_network_error,
+            _ => false,
+        }
+    }
+
+    /// Executes a request with retry logic and rate limiting.
+    ///
+    /// # Arguments
+    ///
+    /// * `request_fn` - Async function that makes the request
+    /// * `policy` - Retry policy configuration
+    ///
+    /// # Returns
+    ///
+    /// Result of the request execution.
+    pub async fn execute_with_retry<F, Fut, T>(
+        &self,
+        request_fn: F,
+        policy: &RetryPolicy,
+    ) -> Result<T, crate::Error>
+    where
+        F: Fn() -> Fut,
+        Fut: std::future::Future<Output = Result<T, crate::Error>>,
+    {
+        let mut attempt = 0;
+
+        loop {
+            // Check if we should wait due to rate limiting
+            if let Some(wait_duration) = self.should_wait_for_rate_limit().await {
+                debug!("Rate limit exceeded, waiting {:?}", wait_duration);
+                tokio::time::sleep(wait_duration).await;
+            }
+
+            // Wait for rate limiting between requests
+            self.wait_for_rate_limit().await;
+
+            // Execute the request
+            match request_fn().await {
+                Ok(result) => return Ok(result),
+                Err(error) => {
+                    if attempt >= policy.max_retries || !self.should_retry_error(&error, policy) {
+                        return Err(error);
+                    }
+
+                    let backoff_delay = self.calculate_backoff_delay(attempt);
+                    let actual_delay = std::cmp::min(backoff_delay, policy.max_delay);
+
+                    debug!(
+                        "Request failed (attempt {}), retrying in {:?}: {:?}",
+                        attempt + 1,
+                        actual_delay,
+                        error
+                    );
+
+                    tokio::time::sleep(actual_delay).await;
+                    attempt += 1;
+                }
+            }
+        }
+    }
 }
 
+/// Authenticates with GitHub using an installation access token.
+///
+/// This function takes an existing `Octocrab` client and creates a new authenticated client
+/// using an installation access token. The token is obtained by providing the installation ID
+/// and repository information.
+///
+/// # Arguments
+///
+/// * `octocrab` - An existing `Octocrab` client (typically authenticated as a GitHub App).
+/// * `installation_id` - The installation ID for the GitHub App.
+/// * `repository_owner` - The owner of the repository.
+/// * `source_repository` - The name of the repository.
+///
+/// # Returns
+///
+/// Returns a `Result` containing an authenticated `Octocrab` client with installation token,
+/// or an `Error` if the operation fails.
+///
+/// # Errors
+///
+/// This function returns an `Error` in the following cases:
+/// - If the app installation cannot be found.
+/// - If the access token cannot be created.
+/// - If the new `Octocrab` client cannot be built.
+///
+/// # Example
+///
 /// Authenticates with GitHub using an installation access token.
 ///
 /// This function takes an existing `Octocrab` client and creates a new authenticated client
@@ -777,6 +996,7 @@ impl RateLimiter {
 ///     Ok(())
 /// }
 /// ```
+///
 #[instrument]
 pub async fn authenticate_with_access_token(
     octocrab: &Octocrab,
