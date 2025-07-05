@@ -1,0 +1,1 @@
+use hmac::{Hmac, Mac}; use sha2::Sha256; let mut mac = Hmac::<Sha256>::new_from_slice(b"test-secret").unwrap(); mac.update(b"test payload"); let result = mac.finalize().into_bytes(); println!("Computed signature: {}", hex::encode(result));

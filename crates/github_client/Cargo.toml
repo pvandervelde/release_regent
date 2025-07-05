@@ -30,6 +30,11 @@ chrono = { workspace = true }
 uuid = { workspace = true }
 fastrand = "2.0"
 
+# Cryptography for webhook signature verification
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+
 [dev-dependencies]
 tokio-test = { workspace = true }
 mockall = { workspace = true }

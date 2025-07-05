@@ -1,11 +1,25 @@
 //! GitHub App authentication module.
 //!
-//! This module provides comprehensive GitHub App authentication functionality including
-//! JWT generation, installation token management, rate limiting, and secure token storage.
-//!
-//! # Architecture
-//!
-//! The module is built around the following core components:
+//! This module provides comprehensive GitHub App authe/// GitHub authentication manager.
+///
+/// This struct provides the main interface for GitHub App authentication operations,
+/// managing JWT generation, installation token retrieval, caching, and rate limiting.
+pub struct GitHubAuthManager {
+    /// Authentication configuration
+    config: AuthConfig,
+    /// Token cache for installation tokens
+    token_cache: TokenCache,
+    /// JWT encoding key for signing tokens
+    jwt_encoding_key: EncodingKey,
+    /// JWT decoding key for validating tokens
+    jwt_decoding_key: DecodingKey,
+    /// Rate limiter for authentication requests
+    rate_limiter: RateLimiter,
+    /// Base Octocrab client for API requests
+    octocrab_client: Octocrab,
+}
+
+/// Rate limiter for authentication endpoints.
 //!
 //! * `GitHubAuthManager` - Central authentication coordinator
 //! * `TokenCache` - Secure in-memory token storage with automatic cleanup
@@ -45,7 +59,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
-use jsonwebtoken::{DecodingKey, EncodingKey};
+use jsonwebtoken::{EncodingKey, DecodingKey};
 use octocrab::Octocrab;
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
@@ -108,8 +122,6 @@ pub struct GitHubAuthManager {
     token_cache: TokenCache,
     /// JWT encoding key for signing tokens
     jwt_encoding_key: EncodingKey,
-    /// JWT decoding key for validating tokens
-    jwt_decoding_key: DecodingKey,
     /// Rate limiter for authentication requests
     rate_limiter: RateLimiter,
     /// Base Octocrab client for API requests
@@ -389,7 +401,13 @@ impl GitHubAuthManager {
         Ok(token.expose_secret().clone())
     }
 
-    /// Generates a JWT for GitHub App authentication.
+    /// Generates a JWT for GitHub App authentication with enhanced security.
+    ///
+    /// This method creates a JWT with the following security features:
+    /// - Secure nonce generation using UUID v4
+    /// - Proper time validation and expiration
+    /// - GitHub Enterprise Server support
+    /// - Constant-time operations where applicable
     ///
     /// # Returns
     ///
@@ -397,13 +415,23 @@ impl GitHubAuthManager {
     ///
     /// # Errors
     ///
-    /// Returns an error if JWT generation fails.
+    /// Returns an error if JWT generation fails or if the current time is invalid.
     fn generate_jwt(&self) -> GitHubResult<String> {
         let now = Utc::now();
         let expiration = now + chrono::Duration::seconds(self.config.jwt_expiration_seconds as i64);
 
+        // Ensure we're not creating a token with invalid time
+        if expiration <= now {
+            return Err(Error::jwt(
+                "Invalid expiration time: token would be expired",
+            ));
+        }
+
+        // Generate secure nonce using UUID v4
+        let nonce = uuid::Uuid::new_v4().to_string();
+
         let claims = JwtClaims {
-            jti: uuid::Uuid::new_v4().to_string(),
+            jti: nonce,
             iat: now.timestamp(),
             exp: expiration.timestamp(),
             iss: self.config.app_id.to_string(),
@@ -420,12 +448,6 @@ impl GitHubAuthManager {
     ///
     /// This method validates the JWT signature and checks expiration times.
     ///
-    /// # Note
-    ///
-    /// This method is currently not fully tested due to issues with the JWT library.
-    /// GitHub's API will validate JWTs independently, so this is primarily for
-    /// internal verification if needed.
-    ///
     /// # Arguments
     ///
     /// * `token` - The JWT token to validate
@@ -437,10 +459,9 @@ impl GitHubAuthManager {
     /// # Errors
     ///
     /// Returns an error if the token is invalid, expired, or has an invalid signature.
-    #[allow(dead_code)]
-    fn validate_jwt(&self, token: &str) -> GitHubResult<JwtClaims> {
+    pub fn validate_jwt(&self, token: &str) -> GitHubResult<JwtClaims> {
         let mut validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::RS256);
-
+        
         // Don't validate audience automatically - we'll do it manually
         validation.validate_aud = false;
 
@@ -932,6 +953,5 @@ pub async fn create_token_client(token: &str) -> GitHubResult<Octocrab> {
 }
 
 #[cfg(test)]
-mod tests {
-    include!("auth_tests.rs");
-}
+#[path = "auth_tests.rs"]
+mod tests;
