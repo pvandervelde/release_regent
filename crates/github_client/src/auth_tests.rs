@@ -226,3 +226,192 @@ async fn test_jwt_multiple_generation() {
         );
     }
 }
+
+// Token Caching and Management Tests (Task 3.6)
+
+#[tokio::test]
+async fn test_token_cache_refresh_buffer() {
+    let refresh_buffer = Duration::from_secs(300); // 5 minutes
+    let cache = TokenCache::new(refresh_buffer);
+    let installation_id = 12345;
+    let token = "test-token";
+
+    // Store a token that expires in 10 minutes
+    let expires_at = Utc::now() + chrono::Duration::minutes(10);
+    cache
+        .store_token(installation_id, token.to_string(), expires_at)
+        .await;
+
+    // Token should be available (expires in 10 minutes, refresh buffer is 5 minutes)
+    let cached_token = cache.get_token(installation_id).await;
+    assert!(cached_token.is_some());
+
+    // Store a token that expires in 4 minutes (within refresh buffer)
+    let expires_soon = Utc::now() + chrono::Duration::minutes(4);
+    cache
+        .store_token(installation_id, token.to_string(), expires_soon)
+        .await;
+
+    // Token should NOT be available (within refresh buffer)
+    let cached_token = cache.get_token(installation_id).await;
+    assert!(cached_token.is_none());
+}
+
+#[tokio::test]
+async fn test_token_cache_multiple_installations() {
+    let cache = TokenCache::new(Duration::from_secs(300));
+    let expires_at = Utc::now() + chrono::Duration::hours(1);
+
+    // Store tokens for multiple installations
+    cache
+        .store_token(11111, "token-1".to_string(), expires_at)
+        .await;
+    cache
+        .store_token(22222, "token-2".to_string(), expires_at)
+        .await;
+    cache
+        .store_token(33333, "token-3".to_string(), expires_at)
+        .await;
+
+    assert_eq!(cache.token_count().await, 3);
+
+    // Verify each token can be retrieved independently
+    let token1 = cache.get_token(11111).await;
+    let token2 = cache.get_token(22222).await;
+    let token3 = cache.get_token(33333).await;
+
+    assert!(token1.is_some());
+    assert!(token2.is_some());
+    assert!(token3.is_some());
+
+    assert_eq!(token1.unwrap().installation_id, 11111);
+    assert_eq!(token2.unwrap().installation_id, 22222);
+    assert_eq!(token3.unwrap().installation_id, 33333);
+}
+
+#[tokio::test]
+async fn test_token_cache_cleanup_expired() {
+    let cache = TokenCache::new(Duration::from_secs(60));
+
+    // Store some tokens with different expiration times
+    let now = Utc::now();
+    let valid_expires = now + chrono::Duration::hours(1);
+    let expired_expires = now - chrono::Duration::hours(1);
+    let expires_soon = now + chrono::Duration::seconds(30); // Within refresh buffer
+
+    cache
+        .store_token(11111, "valid-token".to_string(), valid_expires)
+        .await;
+    cache
+        .store_token(22222, "expired-token".to_string(), expired_expires)
+        .await;
+    cache
+        .store_token(33333, "expires-soon-token".to_string(), expires_soon)
+        .await;
+
+    assert_eq!(cache.token_count().await, 3);
+
+    // Clean up expired tokens
+    cache.cleanup_expired_tokens().await;
+
+    // Only the valid token should remain
+    assert_eq!(cache.token_count().await, 1);
+
+    let remaining_token = cache.get_token(11111).await;
+    assert!(remaining_token.is_some());
+
+    let expired_token = cache.get_token(22222).await;
+    assert!(expired_token.is_none());
+
+    let soon_expired_token = cache.get_token(33333).await;
+    assert!(soon_expired_token.is_none());
+}
+
+#[tokio::test]
+async fn test_token_cache_remove_specific() {
+    let cache = TokenCache::new(Duration::from_secs(300));
+    let expires_at = Utc::now() + chrono::Duration::hours(1);
+
+    // Store multiple tokens
+    cache
+        .store_token(11111, "token-1".to_string(), expires_at)
+        .await;
+    cache
+        .store_token(22222, "token-2".to_string(), expires_at)
+        .await;
+
+    assert_eq!(cache.token_count().await, 2);
+
+    // Remove one specific token
+    cache.remove_token(11111).await;
+
+    assert_eq!(cache.token_count().await, 1);
+    assert!(cache.get_token(11111).await.is_none());
+    assert!(cache.get_token(22222).await.is_some());
+}
+
+#[tokio::test]
+async fn test_token_cache_clear_all() {
+    let cache = TokenCache::new(Duration::from_secs(300));
+    let expires_at = Utc::now() + chrono::Duration::hours(1);
+
+    // Store multiple tokens
+    cache
+        .store_token(11111, "token-1".to_string(), expires_at)
+        .await;
+    cache
+        .store_token(22222, "token-2".to_string(), expires_at)
+        .await;
+    cache
+        .store_token(33333, "token-3".to_string(), expires_at)
+        .await;
+
+    assert_eq!(cache.token_count().await, 3);
+
+    // Clear all tokens
+    cache.clear_all_tokens().await;
+
+    assert_eq!(cache.token_count().await, 0);
+    assert!(cache.get_token(11111).await.is_none());
+    assert!(cache.get_token(22222).await.is_none());
+    assert!(cache.get_token(33333).await.is_none());
+}
+
+#[tokio::test]
+async fn test_token_cache_update_existing() {
+    let cache = TokenCache::new(Duration::from_secs(300));
+    let installation_id = 12345;
+
+    // Store initial token
+    let initial_expires = Utc::now() + chrono::Duration::minutes(30);
+    cache
+        .store_token(
+            installation_id,
+            "initial-token".to_string(),
+            initial_expires,
+        )
+        .await;
+
+    let initial_token = cache.get_token(installation_id).await;
+    assert!(initial_token.is_some());
+    assert_eq!(
+        initial_token.unwrap().token.expose_secret(),
+        "initial-token"
+    );
+
+    // Update with new token
+    let new_expires = Utc::now() + chrono::Duration::hours(1);
+    cache
+        .store_token(installation_id, "updated-token".to_string(), new_expires)
+        .await;
+
+    // Should still have only one token, but with updated value
+    assert_eq!(cache.token_count().await, 1);
+
+    let updated_token = cache.get_token(installation_id).await;
+    assert!(updated_token.is_some());
+    assert_eq!(
+        updated_token.unwrap().token.expose_secret(),
+        "updated-token"
+    );
+}

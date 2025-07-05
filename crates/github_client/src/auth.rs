@@ -379,9 +379,9 @@ impl GitHubAuthManager {
                 Error::authentication(&format!("Failed to get installation token: {}", e))
             })?;
 
-        // Cache the token
-        let expires_at =
-            Utc::now() + chrono::Duration::seconds(self.config.jwt_expiration_seconds as i64);
+        // Cache the token with proper expiration (GitHub installation tokens typically expire in 1 hour)
+        // Using a conservative 55 minutes to ensure we refresh before expiration
+        let expires_at = Utc::now() + chrono::Duration::minutes(55);
         self.token_cache
             .store_token(installation_id, token.expose_secret().clone(), expires_at)
             .await;
