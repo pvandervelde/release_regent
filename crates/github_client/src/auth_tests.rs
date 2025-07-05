@@ -427,8 +427,9 @@ async fn test_rate_limiter_update_from_headers() {
     headers.insert("x-ratelimit-limit", "5000".parse().unwrap());
     headers.insert("x-ratelimit-remaining", "4999".parse().unwrap());
     headers.insert("x-ratelimit-reset", "1609459200".parse().unwrap());
-    headers.insert("x-ratelimit-used", "1".parse().unwrap());    rate_limiter.update_rate_limit_from_headers(&headers).await;
-    
+    headers.insert("x-ratelimit-used", "1".parse().unwrap());
+    rate_limiter.update_rate_limit_from_headers(&headers).await;
+
     let rate_limit_info = rate_limiter.get_rate_limit_info().await;
     assert_eq!(rate_limit_info.limit, Some(5000));
     assert_eq!(rate_limit_info.remaining, Some(4999));
@@ -439,10 +440,10 @@ async fn test_rate_limiter_update_from_headers() {
 #[tokio::test]
 async fn test_rate_limiter_should_wait_for_rate_limit_with_remaining() {
     let rate_limiter = RateLimiter::default();
-    let mut headers = reqwest::header::HeaderMap::new();    // Set headers indicating we have remaining requests
+    let mut headers = reqwest::header::HeaderMap::new(); // Set headers indicating we have remaining requests
     headers.insert("x-ratelimit-remaining", "100".parse().unwrap());
     rate_limiter.update_rate_limit_from_headers(&headers).await;
-    
+
     // Should not need to wait when we have remaining requests
     let wait_duration = rate_limiter.should_wait_for_rate_limit().await;
     assert!(wait_duration.is_none());
@@ -461,10 +462,11 @@ async fn test_rate_limiter_should_wait_for_rate_limit_exhausted() {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs()
-        + 3600;    headers.insert("x-ratelimit-reset", reset_time.to_string().parse().unwrap());
-    
+        + 3600;
+    headers.insert("x-ratelimit-reset", reset_time.to_string().parse().unwrap());
+
     rate_limiter.update_rate_limit_from_headers(&headers).await;
-    
+
     // Should need to wait when we have no remaining requests
     let wait_duration = rate_limiter.should_wait_for_rate_limit().await;
     assert!(wait_duration.is_some());
@@ -474,10 +476,10 @@ async fn test_rate_limiter_should_wait_for_rate_limit_exhausted() {
 #[tokio::test]
 async fn test_rate_limiter_should_retry_error() {
     let rate_limiter = RateLimiter::default();
-    let policy = RetryPolicy::default();    // Test rate limit error
+    let policy = RetryPolicy::default(); // Test rate limit error
     let rate_limit_error = Error::rate_limit("60 seconds");
     assert!(rate_limiter.should_retry_error(&rate_limit_error, &policy));
-    
+
     // Test API request error
     let api_error = Error::api_request(500, "Network error");
     assert!(rate_limiter.should_retry_error(&api_error, &policy));
@@ -563,10 +565,7 @@ async fn test_rate_limiter_execute_with_retry_eventual_success() {
 
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), "success");
-    assert_eq!(
-        attempt_count.load(std::sync::atomic::Ordering::SeqCst),
-        2
-    );
+    assert_eq!(attempt_count.load(std::sync::atomic::Ordering::SeqCst), 2);
 }
 
 #[tokio::test]
