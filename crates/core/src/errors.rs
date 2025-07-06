@@ -1,5 +1,9 @@
 use thiserror::Error;
 
+#[cfg(test)]
+#[path = "errors_tests.rs"]
+mod tests;
+
 /// Errors that can occur in core Release Regent operations
 #[derive(Error, Debug)]
 pub enum CoreError {
@@ -56,17 +60,9 @@ impl CoreError {
         }
     }
 
-    /// Create a new versioning error
-    pub fn versioning(reason: impl Into<String>) -> Self {
-        Self::Versioning {
-            reason: reason.into(),
-        }
-    }
-
-    /// Create a new webhook processing error
-    pub fn webhook(stage: impl Into<String>, message: impl Into<String>) -> Self {
-        Self::Webhook {
-            stage: stage.into(),
+    /// Create a new internal state error
+    pub fn internal_state(message: impl Into<String>) -> Self {
+        Self::InternalState {
             message: message.into(),
         }
     }
@@ -87,9 +83,17 @@ impl CoreError {
         }
     }
 
-    /// Create a new internal state error
-    pub fn internal_state(message: impl Into<String>) -> Self {
-        Self::InternalState {
+    /// Create a new versioning error
+    pub fn versioning(reason: impl Into<String>) -> Self {
+        Self::Versioning {
+            reason: reason.into(),
+        }
+    }
+
+    /// Create a new webhook processing error
+    pub fn webhook(stage: impl Into<String>, message: impl Into<String>) -> Self {
+        Self::Webhook {
+            stage: stage.into(),
             message: message.into(),
         }
     }
@@ -105,7 +109,3 @@ impl From<release_regent_github_client::Error> for CoreError {
 
 /// Result type for core operations
 pub type CoreResult<T> = Result<T, CoreError>;
-
-#[cfg(test)]
-#[path = "errors_tests.rs"]
-mod tests;

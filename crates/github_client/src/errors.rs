@@ -1,5 +1,9 @@
 use thiserror::Error;
 
+#[cfg(test)]
+#[path = "errors_tests.rs"]
+mod tests;
+
 /// Errors that can occur when interacting with GitHub API
 #[derive(Error, Debug)]
 pub enum Error {
@@ -84,23 +88,17 @@ pub enum Error {
 }
 
 impl Error {
+    /// Create a new API request error
+    pub fn api_request(status: u16, message: impl Into<String>) -> Self {
+        Self::ApiRequest {
+            status,
+            message: message.into(),
+        }
+    }
+
     /// Create a new authentication error
     pub fn authentication(message: impl Into<String>) -> Self {
         Self::Authentication {
-            message: message.into(),
-        }
-    }
-
-    /// Create a new JWT error
-    pub fn jwt(message: impl Into<String>) -> Self {
-        Self::Jwt {
-            message: message.into(),
-        }
-    }
-
-    /// Create a new token cache error
-    pub fn token_cache(message: impl Into<String>) -> Self {
-        Self::TokenCache {
             message: message.into(),
         }
     }
@@ -113,18 +111,18 @@ impl Error {
         }
     }
 
-    /// Create a new API request error
-    pub fn api_request(status: u16, message: impl Into<String>) -> Self {
-        Self::ApiRequest {
-            status,
+    /// Create a new invalid input error
+    pub fn invalid_input(field: impl Into<String>, message: impl Into<String>) -> Self {
+        Self::InvalidInput {
+            field: field.into(),
             message: message.into(),
         }
     }
 
-    /// Create a new rate limit error
-    pub fn rate_limit(reset_time: impl Into<String>) -> Self {
-        Self::RateLimit {
-            reset_time: reset_time.into(),
+    /// Create a new JWT error
+    pub fn jwt(message: impl Into<String>) -> Self {
+        Self::Jwt {
+            message: message.into(),
         }
     }
 
@@ -143,10 +141,16 @@ impl Error {
         }
     }
 
-    /// Create a new invalid input error
-    pub fn invalid_input(field: impl Into<String>, message: impl Into<String>) -> Self {
-        Self::InvalidInput {
-            field: field.into(),
+    /// Create a new rate limit error
+    pub fn rate_limit(reset_time: impl Into<String>) -> Self {
+        Self::RateLimit {
+            reset_time: reset_time.into(),
+        }
+    }
+
+    /// Create a new token cache error
+    pub fn token_cache(message: impl Into<String>) -> Self {
+        Self::TokenCache {
             message: message.into(),
         }
     }
@@ -154,7 +158,3 @@ impl Error {
 
 /// Result type for GitHub operations
 pub type GitHubResult<T> = Result<T, Error>;
-
-#[cfg(test)]
-#[path = "errors_tests.rs"]
-mod tests;
