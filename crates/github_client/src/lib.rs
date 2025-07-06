@@ -8,9 +8,14 @@ use tracing::{error, info, instrument};
 
 pub mod errors;
 pub use errors::{Error, GitHubResult};
+// For backward compatibility
+pub use errors::Error as GitHubError;
 
 pub mod auth;
-pub use auth::{authenticate_with_access_token, create_app_client, create_token_client};
+pub use auth::{
+    authenticate_with_access_token, create_app_client, create_token_client, AuthConfig,
+    GitHubAuthManager,
+};
 
 pub mod models;
 
@@ -51,6 +56,8 @@ mod tests;
 pub struct GitHubClient {
     /// The underlying Octocrab client used for API requests
     client: Octocrab,
+    /// Optional authentication manager for advanced token management
+    auth_manager: Option<GitHubAuthManager>,
 }
 
 impl GitHubClient {
@@ -174,7 +181,94 @@ impl GitHubClient {
     /// }
     /// ```
     pub fn new(client: Octocrab) -> Self {
-        Self { client }
+        Self {
+            client,
+            auth_manager: None,
+        }
+    }
+
+    /// Creates a new `GitHubClient` instance with the provided authentication manager.
+    ///
+    /// This constructor creates a GitHubClient with an integrated authentication manager
+    /// that provides advanced token management features including caching, rate limiting,
+    /// and automatic token refresh.
+    ///
+    /// # Arguments
+    ///
+    /// * `auth_manager` - A GitHubAuthManager instance configured with GitHub App credentials
+    ///
+    /// # Returns
+    ///
+    /// Returns a new `GitHubClient` instance with integrated authentication management.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use release_regent_github_client::{GitHubClient, AuthConfig, GitHubAuthManager};
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let config = AuthConfig::new(123456, "private_key", None)?;
+    ///     let auth_manager = GitHubAuthManager::new(config)?;
+    ///     let github_client = GitHubClient::with_auth_manager(auth_manager).await?;
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
+    pub async fn with_auth_manager(auth_manager: GitHubAuthManager) -> GitHubResult<Self> {
+        let client = auth_manager.create_app_client().await?;
+        Ok(Self {
+            client,
+            auth_manager: Some(auth_manager),
+        })
+    }
+
+    /// Creates an installation client for the specified installation ID.
+    ///
+    /// This method creates a new GitHubClient instance that is authenticated with
+    /// an installation token for the specified installation ID. If an authentication
+    /// manager is available, it will use token caching for better performance.
+    ///
+    /// # Arguments
+    ///
+    /// * `installation_id` - The GitHub App installation ID
+    ///
+    /// # Returns
+    ///
+    /// Returns a new `GitHubClient` instance authenticated for the installation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no authentication manager is available or if the
+    /// installation token cannot be acquired.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use release_regent_github_client::{GitHubClient, AuthConfig, GitHubAuthManager};
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let config = AuthConfig::new(123456, "private_key", None)?;
+    ///     let auth_manager = GitHubAuthManager::new(config)?;
+    ///     let github_client = GitHubClient::with_auth_manager(auth_manager).await?;
+    ///     let installation_client = github_client.create_installation_client(987654).await?;
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
+    pub async fn create_installation_client(&self, installation_id: u64) -> GitHubResult<Self> {
+        let auth_manager = self.auth_manager.as_ref().ok_or_else(|| {
+            Error::configuration("auth_manager", "Authentication manager not available")
+        })?;
+
+        let client = auth_manager
+            .create_installation_client(installation_id)
+            .await?;
+        Ok(Self {
+            client,
+            auth_manager: Some(auth_manager.clone()),
+        })
     }
 }
 

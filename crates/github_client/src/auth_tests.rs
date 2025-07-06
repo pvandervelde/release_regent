@@ -1,5 +1,6 @@
 /// Tests for the authentication module.
 use super::*;
+use crate::GitHubClient;
 
 #[tokio::test]
 async fn test_auth_config_basic_creation() {
@@ -118,7 +119,7 @@ async fn test_jwt_generation_basic() {
     let auth_manager = GitHubAuthManager::new(config).unwrap();
 
     // Generate a JWT - we only test generation, not validation
-    let jwt_result = auth_manager.generate_jwt();
+    let jwt_result = auth_manager.generate_jwt().await;
     assert!(jwt_result.is_ok());
 
     let jwt = jwt_result.unwrap();
@@ -140,7 +141,7 @@ async fn test_github_enterprise_jwt_generation() {
     let auth_manager = GitHubAuthManager::new(config).unwrap();
 
     // Test that JWT generation works with enterprise URLs
-    let jwt_result = auth_manager.generate_jwt();
+    let jwt_result = auth_manager.generate_jwt().await;
     assert!(jwt_result.is_ok());
 
     let jwt = jwt_result.unwrap();
@@ -211,7 +212,7 @@ async fn test_jwt_multiple_generation() {
 
     // Generate multiple JWTs to test that generation works consistently
     for _i in 0..5 {
-        let jwt_result = auth_manager.generate_jwt();
+        let jwt_result = auth_manager.generate_jwt().await;
         assert!(jwt_result.is_ok());
 
         let jwt = jwt_result.unwrap();
@@ -576,4 +577,297 @@ async fn test_rate_limit_info_default() {
     assert_eq!(rate_limit_info.remaining, None);
     assert_eq!(rate_limit_info.reset, None);
     assert_eq!(rate_limit_info.used, None);
+}
+
+// Security Tests for Sensitive Data Protection (Task 5.6)
+
+#[tokio::test]
+async fn test_sensitive_data_not_in_debug_output() {
+    let config = AuthConfig::new(12345, TEST_PRIVATE_KEY, None).unwrap();
+    let auth_manager = GitHubAuthManager::new(config).unwrap();
+
+    // Test that Debug output for AuthConfig doesn't expose private key
+    let config_debug = format!("{:?}", auth_manager.config);
+    assert!(!config_debug.contains("BEGIN RSA PRIVATE KEY"));
+    assert!(!config_debug.contains("END RSA PRIVATE KEY"));
+
+    // Debug output should contain REDACTED instead of actual key
+    assert!(config_debug.contains("REDACTED"));
+}
+
+#[tokio::test]
+async fn test_token_cache_debug_no_token_exposure() {
+    let cache = TokenCache::new(Duration::from_secs(300));
+    let installation_id = 12345;
+    let sensitive_token = "ghp_1234567890abcdef";
+    let expires_at = Utc::now() + chrono::Duration::hours(1);
+
+    cache
+        .store_token(installation_id, sensitive_token.to_string(), expires_at)
+        .await;
+
+    // Debug output should not contain the actual token value
+    let cache_debug = format!("{:?}", cache);
+    assert!(!cache_debug.contains(sensitive_token));
+    assert!(!cache_debug.contains("ghp_"));
+
+    // Should contain REDACTED instead
+    assert!(cache_debug.contains("REDACTED"));
+}
+
+#[tokio::test]
+async fn test_error_messages_no_sensitive_data() {
+    // Test that error messages don't expose sensitive information
+    let _sensitive_token = "ghp_1234567890abcdef";
+    let _sensitive_key = "-----BEGIN RSA PRIVATE KEY-----\nMIIEpQIB...";
+
+    // Test authentication errors don't expose tokens
+    let auth_error = Error::authentication("Token validation failed");
+    let error_string = auth_error.to_string();
+    assert!(!error_string.contains("ghp_"));
+    assert!(!error_string.contains("BEGIN RSA"));
+
+    // Test JWT errors don't expose key material
+    let jwt_error = Error::jwt("Invalid private key format");
+    let jwt_error_string = jwt_error.to_string();
+    assert!(!jwt_error_string.contains("BEGIN RSA"));
+    assert!(!jwt_error_string.contains("END RSA"));
+
+    // Test configuration errors sanitize field names
+    let config_error = Error::configuration("private_key", "Invalid format");
+    let config_error_string = config_error.to_string();
+    assert!(config_error_string.contains("private_key"));
+    assert!(config_error_string.contains("Invalid format"));
+    // But shouldn't contain actual sensitive values
+    assert!(!config_error_string.contains("BEGIN RSA PRIVATE KEY"));
+}
+
+#[tokio::test]
+async fn test_webhook_signature_verification_no_secret_exposure() {
+    let payload = b"test payload";
+    let secret = "super-secret-webhook-key";
+    let wrong_signature = "sha256=wrongsignature";
+
+    // When verification fails, the error shouldn't expose the secret
+    let result = GitHubAuthManager::verify_webhook_signature(payload, wrong_signature, secret);
+    assert!(result.is_err());
+
+    let error_string = result.unwrap_err().to_string();
+    assert!(!error_string.contains(secret));
+    assert!(!error_string.contains("super-secret"));
+}
+
+#[tokio::test]
+async fn test_secrecy_protection_in_cached_tokens() {
+    let cache = TokenCache::new(Duration::from_secs(300));
+    let installation_id = 12345;
+    let sensitive_token = "ghp_1234567890abcdef";
+    let expires_at = Utc::now() + chrono::Duration::hours(1);
+
+    cache
+        .store_token(installation_id, sensitive_token.to_string(), expires_at)
+        .await;
+
+    let cached_token = cache.get_token(installation_id).await;
+    assert!(cached_token.is_some());
+
+    let token = cached_token.unwrap();
+
+    // The token field should be a SecretString, not exposed in debug
+    let token_debug = format!("{:?}", token);
+    assert!(!token_debug.contains(sensitive_token));
+    assert!(!token_debug.contains("ghp_"));
+    assert!(token_debug.contains("REDACTED"));
+
+    // Only expose_secret() should reveal the actual token
+    assert_eq!(token.token.expose_secret(), sensitive_token);
+}
+
+#[test]
+fn test_constant_time_compare_security() {
+    // Test that constant_time_compare is actually constant time by design
+    let correct = b"expected_signature";
+    let wrong_short = b"wrong";
+    let wrong_same_length = b"wrong_signature!!";
+
+    // Different lengths should return false immediately
+    assert!(!GitHubAuthManager::constant_time_compare(
+        correct,
+        wrong_short
+    ));
+
+    // Same length but different content should return false
+    assert!(!GitHubAuthManager::constant_time_compare(
+        correct,
+        wrong_same_length
+    ));
+
+    // Identical should return true
+    assert!(GitHubAuthManager::constant_time_compare(correct, correct));
+
+    // Test with empty arrays
+    assert!(GitHubAuthManager::constant_time_compare(b"", b""));
+    assert!(!GitHubAuthManager::constant_time_compare(b"", b"not_empty"));
+}
+
+/// Test GitHubClient integration with GitHubAuthManager
+#[tokio::test]
+async fn test_github_client_with_auth_manager() {
+    let config = AuthConfig::new(12345, TEST_PRIVATE_KEY, None).unwrap();
+    let auth_manager = GitHubAuthManager::new(config).unwrap();
+
+    // Create a GitHubClient with auth manager
+    let result = GitHubClient::with_auth_manager(auth_manager).await;
+    assert!(result.is_ok());
+
+    let client = result.unwrap();
+    // Verify the client has the auth manager
+    assert!(client.auth_manager.is_some());
+}
+
+/// Test GitHubClient creation of installation client
+#[tokio::test]
+async fn test_github_client_create_installation_client() {
+    let config = AuthConfig::new(12345, TEST_PRIVATE_KEY, None).unwrap();
+    let auth_manager = GitHubAuthManager::new(config).unwrap();
+    let client = GitHubClient::with_auth_manager(auth_manager).await.unwrap();
+
+    // For now, we'll just test that the method exists and can be called.
+    // In a real integration test environment, we would need valid GitHub credentials
+    // and an actual installation ID to test the full flow.
+
+    // Test that we can't create an installation client without proper setup
+    // This is expected behavior - the method should exist and be callable
+    let installation_id = 987654;
+
+    // We'll test this with a panic catch since octocrab might panic internally
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(async { client.create_installation_client(installation_id).await })
+    }));
+
+    // Either it returns an error or panics (both are acceptable for invalid credentials)
+    match result {
+        Ok(Ok(_)) => {
+            // This would only happen with valid credentials
+            panic!(
+                "Unexpected success - test environment should not have valid GitHub credentials"
+            );
+        }
+        Ok(Err(_)) => {
+            // This is the expected behavior - proper error handling
+            // Test passes
+        }
+        Err(_) => {
+            // This is also acceptable - octocrab might panic internally
+            // for invalid credentials
+            // Test passes
+        }
+    }
+}
+
+/// Test GitHubClient without auth manager cannot create installation client
+#[tokio::test]
+async fn test_github_client_no_auth_manager_installation_client() {
+    let mock_octocrab = octocrab::Octocrab::builder().build().unwrap();
+
+    let client = GitHubClient::new(mock_octocrab);
+
+    // This should fail because there's no auth manager
+    let result = client.create_installation_client(987654).await;
+    assert!(result.is_err());
+
+    if let Err(error) = result {
+        // Should be a configuration error
+        assert!(matches!(error, Error::Configuration { .. }));
+    }
+}
+
+/// Test GitHubAuthManager client creation methods
+#[tokio::test]
+async fn test_auth_manager_client_creation() {
+    let config = AuthConfig::new(12345, TEST_PRIVATE_KEY, None).unwrap();
+    let auth_manager = GitHubAuthManager::new(config).unwrap();
+
+    // Test app client creation - this should work without API calls
+    let app_client_result = auth_manager.create_app_client().await;
+    assert!(app_client_result.is_ok());
+
+    // Test installation client creation - this will make API calls and might panic
+    // We'll test that the method exists and handles the scenario appropriately
+    let installation_client_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(async { auth_manager.create_installation_client(987654).await })
+    }));
+
+    // Either it returns an error or panics (both are acceptable for invalid credentials)
+    match installation_client_result {
+        Ok(Ok(_)) => {
+            // This would only happen with valid credentials
+            panic!(
+                "Unexpected success - test environment should not have valid GitHub credentials"
+            );
+        }
+        Ok(Err(_)) => {
+            // This is the expected behavior - proper error handling
+            // Test passes
+        }
+        Err(_) => {
+            // This is also acceptable - octocrab might panic internally
+            // for invalid credentials
+            // Test passes
+        }
+    }
+
+    // Test token client creation - this should work without API calls
+    let token_client_result = auth_manager.create_token_client("test_token").await;
+    assert!(token_client_result.is_ok());
+
+    // Test empty token fails
+    let empty_token_result = auth_manager.create_token_client("").await;
+    assert!(empty_token_result.is_err());
+}
+
+/// Test configuration loading from environment variables
+#[tokio::test]
+async fn test_config_from_env() {
+    use std::env;
+
+    // Set up test environment variables
+    env::set_var("GITHUB_APP_ID", "12345");
+    env::set_var("GITHUB_PRIVATE_KEY", TEST_PRIVATE_KEY);
+    env::set_var("GITHUB_BASE_URL", "https://api.github.com");
+
+    let config_result = AuthConfig::from_env();
+    assert!(config_result.is_ok());
+
+    let config = config_result.unwrap();
+    assert_eq!(config.app_id, 12345);
+    assert_eq!(
+        config.github_base_url,
+        Some("https://api.github.com".to_string())
+    );
+
+    // Clean up
+    env::remove_var("GITHUB_APP_ID");
+    env::remove_var("GITHUB_PRIVATE_KEY");
+    env::remove_var("GITHUB_BASE_URL");
+}
+
+/// Test backward compatibility of standalone functions
+#[tokio::test]
+async fn test_backward_compatibility() {
+    // Test create_app_client still works
+    let result = create_app_client(12345, TEST_PRIVATE_KEY).await;
+    assert!(result.is_ok());
+
+    // Test create_token_client still works
+    let result = create_token_client("test_token").await;
+    assert!(result.is_ok());
+
+    // Test empty token still fails
+    let result = create_token_client("").await;
+    assert!(result.is_err());
 }

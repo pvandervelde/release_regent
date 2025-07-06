@@ -51,13 +51,14 @@ use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, instrument};
+use uuid::Uuid;
 
 use crate::errors::{Error, GitHubResult};
 
 ///
 /// This struct implements rate limiting and retry logic with exponential backoff
 /// to respect GitHub's API rate limits for authentication operations.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RateLimiter {
     /// Last request timestamp
     last_request: Arc<RwLock<Option<Instant>>>,
@@ -149,7 +150,7 @@ pub struct CachedToken {
 ///
 /// This cache automatically handles token expiration and cleanup, ensuring
 /// that expired tokens are removed from memory securely.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TokenCache {
     /// Map of installation_id -> cached token
     tokens: Arc<RwLock<HashMap<u64, CachedToken>>>,
@@ -161,6 +162,7 @@ pub struct TokenCache {
 ///
 /// This struct provides the main interface for GitHub App authentication operations,
 /// managing JWT generation, installation token retrieval, caching, and rate limiting.
+#[derive(Clone)]
 pub struct GitHubAuthManager {
     /// Authentication configuration
     config: AuthConfig,
@@ -395,7 +397,7 @@ impl GitHubAuthManager {
         self.rate_limiter.wait_for_rate_limit().await;
 
         // Generate JWT for GitHub App authentication
-        let jwt = self.generate_jwt()?;
+        let jwt = self.generate_jwt().await?;
 
         // Create authenticated client with JWT
         let app_client = octocrab::Octocrab::builder()
@@ -433,31 +435,198 @@ impl GitHubAuthManager {
         Ok(token.expose_secret().clone())
     }
 
-    /// Generates a JWT for GitHub App authentication.
+    /// Creates a GitHub App client using JWT authentication.
+    ///
+    /// This method creates an authenticated Octocrab client using the authentication
+    /// manager's configured GitHub App credentials. The client is authenticated with
+    /// a JWT token and can be used for GitHub App operations.
     ///
     /// # Returns
     ///
-    /// A signed JWT token for GitHub App authentication.
+    /// Returns a `Result` containing an authenticated `Octocrab` client.
     ///
     /// # Errors
     ///
-    /// Returns an error if JWT generation fails.
-    fn generate_jwt(&self) -> GitHubResult<String> {
+    /// Returns an error if the JWT cannot be generated or if the client cannot be built.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use release_regent_github_client::auth::{GitHubAuthManager, AuthConfig};
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let config = AuthConfig::new(12345, "private_key", None)?;
+    ///     let auth_manager = GitHubAuthManager::new(config)?;
+    ///     let app_client = auth_manager.create_app_client().await?;
+    ///     Ok(())
+    /// }
+    /// ```
+    pub async fn create_app_client(&self) -> GitHubResult<Octocrab> {
+        let client = octocrab::Octocrab::builder()
+            .base_uri(&self.config.get_api_base_url())
+            .map_err(|e| {
+                Error::configuration(
+                    "base_uri",
+                    &format!("Failed to configure GitHub client: {}", e),
+                )
+            })?
+            .app(self.config.app_id.into(), self.jwt_encoding_key.clone())
+            .build()
+            .map_err(|e| {
+                Error::configuration(
+                    "client_build",
+                    &format!("Failed to build GitHub client: {}", e),
+                )
+            })?;
+
+        Ok(client)
+    }
+
+    /// Creates an installation client using a cached or newly acquired installation token.
+    ///
+    /// This method creates an authenticated Octocrab client using an installation token
+    /// for the specified installation ID. The token is cached for future use and
+    /// automatically refreshed when necessary.
+    ///
+    /// # Arguments
+    ///
+    /// * `installation_id` - The GitHub App installation ID
+    ///
+    /// # Returns
+    ///
+    /// Returns a `Result` containing an authenticated `Octocrab` client.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the installation token cannot be acquired or if the client
+    /// cannot be built.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use release_regent_github_client::auth::{GitHubAuthManager, AuthConfig};
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let config = AuthConfig::new(12345, "private_key", None)?;
+    ///     let auth_manager = GitHubAuthManager::new(config)?;
+    ///     let installation_client = auth_manager.create_installation_client(987654).await?;
+    ///     Ok(())
+    /// }
+    /// ```
+    pub async fn create_installation_client(&self, installation_id: u64) -> GitHubResult<Octocrab> {
+        let token = self.get_installation_token(installation_id).await?;
+
+        let client = octocrab::Octocrab::builder()
+            .base_uri(&self.config.get_api_base_url())
+            .map_err(|e| {
+                Error::configuration(
+                    "base_uri",
+                    &format!("Failed to configure GitHub client: {}", e),
+                )
+            })?
+            .personal_token(token)
+            .build()
+            .map_err(|e| {
+                Error::configuration(
+                    "client_build",
+                    &format!("Failed to build GitHub client: {}", e),
+                )
+            })?;
+
+        Ok(client)
+    }
+
+    /// Creates a client using a personal access token.
+    ///
+    /// This method creates an authenticated Octocrab client using a personal access token.
+    /// This is useful for operations that require user authentication rather than
+    /// GitHub App authentication.
+    ///
+    /// # Arguments
+    ///
+    /// * `token` - The personal access token
+    ///
+    /// # Returns
+    ///
+    /// Returns a `Result` containing an authenticated `Octocrab` client.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the token is invalid or if the client cannot be built.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use release_regent_github_client::auth::{GitHubAuthManager, AuthConfig};
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let config = AuthConfig::new(12345, "private_key", None)?;
+    ///     let auth_manager = GitHubAuthManager::new(config)?;
+    ///     let token_client = auth_manager.create_token_client("ghp_token").await?;
+    ///     Ok(())
+    /// }
+    /// ```
+    pub async fn create_token_client(&self, token: &str) -> GitHubResult<Octocrab> {
+        if token.is_empty() {
+            return Err(Error::invalid_input("token", "Token cannot be empty"));
+        }
+
+        let client = octocrab::Octocrab::builder()
+            .base_uri(&self.config.get_api_base_url())
+            .map_err(|e| {
+                Error::configuration(
+                    "base_uri",
+                    &format!("Failed to configure GitHub client: {}", e),
+                )
+            })?
+            .personal_token(token.to_string())
+            .build()
+            .map_err(|e| {
+                Error::configuration(
+                    "client_build",
+                    &format!("Failed to build GitHub client: {}", e),
+                )
+            })?;
+
+        Ok(client)
+    }
+
+    /// Generates a JWT token for GitHub App authentication.
+    ///
+    /// This method creates a JWT token that can be used for GitHub App authentication.
+    /// The token is signed with the configured private key and includes the necessary
+    /// claims for GitHub App operations.
+    ///
+    /// # Returns
+    ///
+    /// Returns a `Result` containing the JWT token as a string.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the JWT cannot be generated or signed.
+    pub async fn generate_jwt(&self) -> GitHubResult<String> {
         let now = Utc::now();
-        let expiration = now + chrono::Duration::seconds(self.config.jwt_expiration_seconds as i64);
+        let iat = now.timestamp();
+        let exp = (now + chrono::Duration::minutes(10)).timestamp();
+        let jti = uuid::Uuid::new_v4().to_string();
 
         let claims = JwtClaims {
-            jti: uuid::Uuid::new_v4().to_string(),
-            iat: now.timestamp(),
-            exp: expiration.timestamp(),
+            jti,
+            iat,
+            exp,
             iss: self.config.app_id.to_string(),
             aud: self.config.get_jwt_audience(),
         };
 
         let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
 
-        jsonwebtoken::encode(&header, &claims, &self.jwt_encoding_key)
-            .map_err(|e| Error::jwt(&format!("Failed to encode JWT: {}", e)))
+        jsonwebtoken::encode(&header, &claims, &self.jwt_encoding_key).map_err(|e| {
+            error!("Failed to generate JWT: {}", e);
+            Error::authentication("Failed to generate JWT token")
+        })
     }
 
     /// Validates a JWT token for GitHub App authentication.
@@ -1011,6 +1180,9 @@ pub async fn authenticate_with_access_token(
         "Finding installation"
     );
 
+    // For now, maintain backward compatibility by using the existing octocrab method
+    // In the future, this could be enhanced to use GitHubAuthManager with caching
+    // if the octocrab client provides access to the app configuration
     let (api_with_token, _) = octocrab
         .installation_and_token(installation_id.into())
         .await
@@ -1078,22 +1250,15 @@ pub async fn authenticate_with_access_token(
 pub async fn create_app_client(app_id: u64, private_key: &str) -> GitHubResult<Octocrab> {
     debug!(app_id = app_id, "Creating app client");
 
-    let key = jsonwebtoken::EncodingKey::from_rsa_pem(private_key.as_bytes()).map_err(|e| {
-        error!(app_id = app_id, "Failed to parse private key: {}", e);
-        Error::invalid_input("private_key", "Invalid RSA private key")
-    })?;
+    // Create an AuthConfig and GitHubAuthManager for the operation
+    let config = AuthConfig::new(app_id, private_key, None)?;
+    let auth_manager = GitHubAuthManager::new(config)?;
 
-    let octocrab = octocrab::Octocrab::builder()
-        .app(app_id.into(), key)
-        .build()
-        .map_err(|e| {
-            error!(app_id = app_id, "Failed to build octocrab client: {}", e);
-            Error::configuration("octocrab", "Failed to build octocrab client")
-        })?;
+    // Use the auth manager to create the client
+    let client = auth_manager.create_app_client().await?;
 
     info!(app_id = app_id, "Created app client");
-
-    Ok(octocrab)
+    Ok(client)
 }
 
 /// Creates a GitHub client using a personal access token.
@@ -1138,6 +1303,7 @@ pub async fn create_token_client(token: &str) -> GitHubResult<Octocrab> {
         return Err(Error::invalid_input("token", "Token cannot be empty"));
     }
 
+    // For token clients, we don't need a full auth manager, just create the client directly
     let octocrab = octocrab::Octocrab::builder()
         .personal_token(token.to_string())
         .build()
@@ -1149,6 +1315,19 @@ pub async fn create_token_client(token: &str) -> GitHubResult<Octocrab> {
     info!("Created token client");
 
     Ok(octocrab)
+}
+
+impl std::fmt::Debug for GitHubAuthManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GitHubAuthManager")
+            .field("config", &self.config)
+            .field("token_cache", &self.token_cache)
+            .field("jwt_encoding_key", &"<redacted>")
+            .field("jwt_decoding_key", &"<redacted>")
+            .field("rate_limiter", &self.rate_limiter)
+            .field("octocrab_client", &"<octocrab_client>")
+            .finish()
+    }
 }
 
 #[cfg(test)]
