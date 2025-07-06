@@ -9,10 +9,6 @@
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-#[cfg(test)]
-#[path = "models_tests.rs"]
-mod tests;
-
 /// Represents a GitHub account (user or organization).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Account {
@@ -26,9 +22,6 @@ pub struct Account {
     /// The node ID for GraphQL operations
     pub node_id: String,
 }
-
-// Remove the Account conversion since octocrab::models::Account might not be available
-// We'll construct Account directly in the Installation conversion above
 
 /// Represents a GitHub App installation.
 ///
@@ -242,3 +235,7 @@ pub struct User {
     /// The login name of the user
     pub login: String,
 }
+
+#[cfg(test)]
+#[path = "models_tests.rs"]
+mod tests;

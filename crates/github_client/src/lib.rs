@@ -22,11 +22,6 @@ pub mod models;
 pub mod pr_management;
 pub mod release;
 
-// Reference the tests module in the separate file
-#[cfg(test)]
-#[path = "lib_tests.rs"]
-mod tests;
-
 /// A client for interacting with the GitHub API, authenticated as a GitHub App.
 ///
 /// This struct provides a high-level interface for GitHub API operations using
@@ -316,3 +311,8 @@ fn log_octocrab_error(message: &str, e: octocrab::Error) {
         _ => error!(error_message = e.to_string(), message),
     };
 }
+
+// Reference the tests module in the separate file
+#[cfg(test)]
+#[path = "lib_tests.rs"]
+mod tests;

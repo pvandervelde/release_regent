@@ -28,6 +28,21 @@ fn test_label_serialization() {
     assert_eq!(parsed["name"], "bug");
 }
 
+#[test]
+fn test_user_deserialization() {
+    // Create JSON
+    let json_str = r#"{
+        "id": 404,
+        "login": "contributor"
+    }"#;
+
+    // Deserialize from JSON
+    let user: User = from_str(json_str).expect("Failed to deserialize User");
+
+    // Verify fields
+    assert_eq!(user.id, 404);
+    assert_eq!(user.login, "contributor");
+}
 
 #[test]
 fn test_user_serialization() {
@@ -44,20 +59,4 @@ fn test_user_serialization() {
     let parsed: serde_json::Value = serde_json::from_str(&json_str).expect("Failed to parse JSON");
     assert_eq!(parsed["id"], 303);
     assert_eq!(parsed["login"], "developer");
-}
-
-#[test]
-fn test_user_deserialization() {
-    // Create JSON
-    let json_str = r#"{
-        "id": 404,
-        "login": "contributor"
-    }"#;
-
-    // Deserialize from JSON
-    let user: User = from_str(json_str).expect("Failed to deserialize User");
-
-    // Verify fields
-    assert_eq!(user.id, 404);
-    assert_eq!(user.login, "contributor");
 }

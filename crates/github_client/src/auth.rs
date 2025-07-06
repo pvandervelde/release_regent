@@ -54,66 +54,6 @@ use tracing::{debug, error, info, instrument};
 
 use crate::errors::{Error, GitHubResult};
 
-///
-/// This struct implements rate limiting and retry logic with exponential backoff
-/// to respect GitHub's API rate limits for authentication operations.
-#[derive(Debug, Clone)]
-pub struct RateLimiter {
-    /// Last request timestamp
-    last_request: Arc<RwLock<Option<Instant>>>,
-    /// Minimum time between requests
-    min_interval: Duration,
-    /// Maximum retry attempts
-    max_retries: u32,
-    /// Base delay for exponential backoff
-    base_delay: Duration,
-    /// GitHub rate limit tracking
-    rate_limit_info: Arc<RwLock<RateLimitInfo>>,
-}
-
-/// Information about GitHub API rate limits.
-#[derive(Debug, Clone, Default)]
-pub struct RateLimitInfo {
-    /// The maximum number of requests per hour
-    pub limit: Option<u32>,
-    /// The number of requests remaining in the current rate limit window
-    pub remaining: Option<u32>,
-    /// The time when the current rate limit window resets (Unix timestamp)
-    pub reset: Option<u64>,
-    /// The number of requests used in the current rate limit window
-    pub used: Option<u32>,
-}
-
-/// Retry policy configuration for different error scenarios.
-#[derive(Debug, Clone)]
-pub struct RetryPolicy {
-    /// Maximum number of retry attempts
-    pub max_retries: u32,
-    /// Base delay for exponential backoff
-    pub base_delay: Duration,
-    /// Maximum delay between retries
-    pub max_delay: Duration,
-    /// Whether to retry on rate limit errors
-    pub retry_on_rate_limit: bool,
-    /// Whether to retry on network errors
-    pub retry_on_network_error: bool,
-    /// Whether to retry on server errors (5xx)
-    pub retry_on_server_error: bool,
-}
-
-impl Default for RetryPolicy {
-    fn default() -> Self {
-        Self {
-            max_retries: 3,
-            base_delay: Duration::from_millis(500),
-            max_delay: Duration::from_secs(60),
-            retry_on_rate_limit: true,
-            retry_on_network_error: true,
-            retry_on_server_error: true,
-        }
-    }
-}
-
 /// Configuration for GitHub App authentication.
 ///
 /// This struct holds the necessary configuration for authenticating as a GitHub App,
@@ -130,66 +70,6 @@ pub struct AuthConfig {
     pub jwt_expiration_seconds: u64,
     /// Token refresh buffer time in seconds (default: 5 minutes)
     pub token_refresh_buffer_seconds: u64,
-}
-
-/// A cached installation token with expiration tracking.
-#[derive(Debug, Clone)]
-pub struct CachedToken {
-    /// The token value (kept secret)
-    pub token: SecretString,
-    /// When the token expires
-    pub expires_at: DateTime<Utc>,
-    /// When the token was created
-    pub created_at: DateTime<Utc>,
-    /// Installation ID this token belongs to
-    pub installation_id: u64,
-}
-
-/// Secure in-memory cache for installation tokens.
-///
-/// This cache automatically handles token expiration and cleanup, ensuring
-/// that expired tokens are removed from memory securely.
-#[derive(Debug, Clone)]
-pub struct TokenCache {
-    /// Map of installation_id -> cached token
-    tokens: Arc<RwLock<HashMap<u64, CachedToken>>>,
-    /// Buffer time before expiration to refresh tokens
-    refresh_buffer: Duration,
-}
-
-/// Central GitHub App authentication manager.
-///
-/// This struct provides the main interface for GitHub App authentication operations,
-/// managing JWT generation, installation token retrieval, caching, and rate limiting.
-#[derive(Clone)]
-pub struct GitHubAuthManager {
-    /// Authentication configuration
-    config: AuthConfig,
-    /// Token cache for installation tokens
-    token_cache: TokenCache,
-    /// JWT encoding key for signing tokens
-    jwt_encoding_key: EncodingKey,
-    /// JWT decoding key for validating tokens
-    jwt_decoding_key: DecodingKey,
-    /// Rate limiter for authentication requests
-    rate_limiter: RateLimiter,
-    /// Base Octocrab client for API requests
-    octocrab_client: Octocrab,
-}
-
-/// JWT claims for GitHub App authentication.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct JwtClaims {
-    /// JWT ID (unique identifier)
-    jti: String,
-    /// Issued at time
-    iat: i64,
-    /// Expiration time
-    exp: i64,
-    /// Issuer (GitHub App ID)
-    iss: String,
-    /// Audience (GitHub or Enterprise URL)
-    aud: String,
 }
 
 impl AuthConfig {
@@ -312,6 +192,39 @@ impl AuthConfig {
             None => "https://api.github.com".to_string(),
         }
     }
+}
+
+/// A cached installation token with expiration tracking.
+#[derive(Debug, Clone)]
+pub struct CachedToken {
+    /// The token value (kept secret)
+    pub token: SecretString,
+    /// When the token expires
+    pub expires_at: DateTime<Utc>,
+    /// When the token was created
+    pub created_at: DateTime<Utc>,
+    /// Installation ID this token belongs to
+    pub installation_id: u64,
+}
+
+/// Central GitHub App authentication manager.
+///
+/// This struct provides the main interface for GitHub App authentication operations,
+/// managing JWT generation, installation token retrieval, caching, and rate limiting.
+#[derive(Clone)]
+pub struct GitHubAuthManager {
+    /// Authentication configuration
+    config: AuthConfig,
+    /// Token cache for installation tokens
+    token_cache: TokenCache,
+    /// JWT encoding key for signing tokens
+    jwt_encoding_key: EncodingKey,
+    /// JWT decoding key for validating tokens
+    jwt_decoding_key: DecodingKey,
+    /// Rate limiter for authentication requests
+    rate_limiter: RateLimiter,
+    /// Base Octocrab client for API requests
+    octocrab_client: Octocrab,
 }
 
 impl GitHubAuthManager {
@@ -744,127 +657,63 @@ impl GitHubAuthManager {
     }
 }
 
-impl TokenCache {
-    /// Creates a new token cache with the specified refresh buffer.
-    ///
-    /// # Arguments
-    ///
-    /// * `refresh_buffer` - Time buffer before token expiration to trigger refresh
-    ///
-    /// # Returns
-    ///
-    /// A new `TokenCache` instance ready for use.
-    pub fn new(refresh_buffer: Duration) -> Self {
-        Self {
-            tokens: Arc::new(RwLock::new(HashMap::new())),
-            refresh_buffer,
-        }
-    }
-
-    /// Checks if we have a valid token for the given installation.
-    ///
-    /// # Arguments
-    ///
-    /// * `installation_id` - The installation ID to check for
-    ///
-    /// # Returns
-    ///
-    /// `Some(token)` if a valid (non-expired) token exists, `None` otherwise.
-    pub async fn get_token(&self, installation_id: u64) -> Option<CachedToken> {
-        let tokens = self.tokens.read().await;
-        if let Some(cached_token) = tokens.get(&installation_id) {
-            let now = Utc::now();
-            let expires_soon = cached_token.expires_at
-                - chrono::Duration::from_std(self.refresh_buffer).unwrap_or_default();
-
-            if now < expires_soon {
-                return Some(cached_token.clone());
-            }
-        }
-
-        None
-    }
-
-    /// Stores a token in the cache.
-    ///
-    /// # Arguments
-    ///
-    /// * `installation_id` - The installation ID this token belongs to
-    /// * `token` - The token value to store
-    /// * `expires_at` - When the token expires
-    pub async fn store_token(
-        &self,
-        installation_id: u64,
-        token: String,
-        expires_at: DateTime<Utc>,
-    ) {
-        let cached_token = CachedToken {
-            token: SecretString::new(token),
-            expires_at,
-            created_at: Utc::now(),
-            installation_id,
-        };
-
-        let mut tokens = self.tokens.write().await;
-        tokens.insert(installation_id, cached_token);
-
-        debug!("Stored token for installation ID {}", installation_id);
-    }
-
-    /// Removes a token from the cache.
-    ///
-    /// # Arguments
-    ///
-    /// * `installation_id` - The installation ID to remove the token for
-    pub async fn remove_token(&self, installation_id: u64) {
-        let mut tokens = self.tokens.write().await;
-        if tokens.remove(&installation_id).is_some() {
-            debug!("Removed token for installation ID {}", installation_id);
-        }
-    }
-
-    /// Cleans up expired tokens from the cache.
-    pub async fn cleanup_expired_tokens(&self) {
-        let mut tokens = self.tokens.write().await;
-        let now = Utc::now();
-        let before_count = tokens.len();
-
-        tokens.retain(|_, token| {
-            let expires_soon = token.expires_at
-                - chrono::Duration::from_std(self.refresh_buffer).unwrap_or_default();
-            now < expires_soon
-        });
-
-        let removed = before_count - tokens.len();
-        if removed > 0 {
-            debug!("Removed {} expired tokens from cache", removed);
-        }
-    }
-
-    /// Returns the number of tokens currently in the cache.
-    pub async fn token_count(&self) -> usize {
-        let tokens = self.tokens.read().await;
-        tokens.len()
-    }
-
-    /// Clears all tokens from the cache.
-    ///
-    /// This is useful for testing or when shutting down the application
-    /// to ensure all tokens are cleared from memory.
-    pub async fn clear_all_tokens(&self) {
-        let mut tokens = self.tokens.write().await;
-        let count = tokens.len();
-        tokens.clear();
-        debug!("Cleared {} tokens from cache", count);
+impl std::fmt::Debug for GitHubAuthManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GitHubAuthManager")
+            .field("config", &self.config)
+            .field("token_cache", &self.token_cache)
+            .field("jwt_encoding_key", &"<redacted>")
+            .field("jwt_decoding_key", &"<redacted>")
+            .field("rate_limiter", &self.rate_limiter)
+            .field("octocrab_client", &"<octocrab_client>")
+            .finish()
     }
 }
 
-impl Drop for TokenCache {
-    fn drop(&mut self) {
-        // Note: We can't await in Drop, so we'll do our best to clear immediately
-        // In a real implementation, this would be handled by the runtime shutdown
-        debug!("TokenCache dropped - tokens will be cleared by runtime");
-    }
+/// JWT claims for GitHub App authentication.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct JwtClaims {
+    /// JWT ID (unique identifier)
+    jti: String,
+    /// Issued at time
+    iat: i64,
+    /// Expiration time
+    exp: i64,
+    /// Issuer (GitHub App ID)
+    iss: String,
+    /// Audience (GitHub or Enterprise URL)
+    aud: String,
+}
+
+/// Information about GitHub API rate limits.
+#[derive(Debug, Clone, Default)]
+pub struct RateLimitInfo {
+    /// The maximum number of requests per hour
+    pub limit: Option<u32>,
+    /// The number of requests remaining in the current rate limit window
+    pub remaining: Option<u32>,
+    /// The time when the current rate limit window resets (Unix timestamp)
+    pub reset: Option<u64>,
+    /// The number of requests used in the current rate limit window
+    pub used: Option<u32>,
+}
+
+/// Rate limiter for GitHub API requests with exponential backoff and jitter.
+///
+/// This struct implements rate limiting and retry logic with exponential backoff
+/// to respect GitHub's API rate limits for authentication operations.
+#[derive(Debug, Clone)]
+pub struct RateLimiter {
+    /// Last request timestamp
+    last_request: Arc<RwLock<Option<Instant>>>,
+    /// Minimum time between requests
+    min_interval: Duration,
+    /// Maximum retry attempts
+    max_retries: u32,
+    /// Base delay for exponential backoff
+    base_delay: Duration,
+    /// GitHub rate limit tracking
+    rate_limit_info: Arc<RwLock<RateLimitInfo>>,
 }
 
 impl RateLimiter {
@@ -1085,6 +934,171 @@ impl RateLimiter {
                 }
             }
         }
+    }
+}
+
+/// Retry policy configuration for different error scenarios.
+#[derive(Debug, Clone)]
+pub struct RetryPolicy {
+    /// Maximum number of retry attempts
+    pub max_retries: u32,
+    /// Base delay for exponential backoff
+    pub base_delay: Duration,
+    /// Maximum delay between retries
+    pub max_delay: Duration,
+    /// Whether to retry on rate limit errors
+    pub retry_on_rate_limit: bool,
+    /// Whether to retry on network errors
+    pub retry_on_network_error: bool,
+    /// Whether to retry on server errors (5xx)
+    pub retry_on_server_error: bool,
+}
+
+impl Default for RetryPolicy {
+    fn default() -> Self {
+        Self {
+            max_retries: 3,
+            base_delay: Duration::from_millis(500),
+            max_delay: Duration::from_secs(60),
+            retry_on_rate_limit: true,
+            retry_on_network_error: true,
+            retry_on_server_error: true,
+        }
+    }
+}
+
+/// Secure in-memory cache for installation tokens.
+///
+/// This cache automatically handles token expiration and cleanup, ensuring
+/// that expired tokens are removed from memory securely.
+#[derive(Debug, Clone)]
+pub struct TokenCache {
+    /// Map of installation_id -> cached token
+    tokens: Arc<RwLock<HashMap<u64, CachedToken>>>,
+    /// Buffer time before expiration to refresh tokens
+    refresh_buffer: Duration,
+}
+
+impl TokenCache {
+    /// Creates a new token cache with the specified refresh buffer.
+    ///
+    /// # Arguments
+    ///
+    /// * `refresh_buffer` - Time buffer before token expiration to trigger refresh
+    ///
+    /// # Returns
+    ///
+    /// A new `TokenCache` instance ready for use.
+    pub fn new(refresh_buffer: Duration) -> Self {
+        Self {
+            tokens: Arc::new(RwLock::new(HashMap::new())),
+            refresh_buffer,
+        }
+    }
+
+    /// Checks if we have a valid token for the given installation.
+    ///
+    /// # Arguments
+    ///
+    /// * `installation_id` - The installation ID to check for
+    ///
+    /// # Returns
+    ///
+    /// `Some(token)` if a valid (non-expired) token exists, `None` otherwise.
+    pub async fn get_token(&self, installation_id: u64) -> Option<CachedToken> {
+        let tokens = self.tokens.read().await;
+        if let Some(cached_token) = tokens.get(&installation_id) {
+            let now = Utc::now();
+            let expires_soon = cached_token.expires_at
+                - chrono::Duration::from_std(self.refresh_buffer).unwrap_or_default();
+
+            if now < expires_soon {
+                return Some(cached_token.clone());
+            }
+        }
+
+        None
+    }
+
+    /// Stores a token in the cache.
+    ///
+    /// # Arguments
+    ///
+    /// * `installation_id` - The installation ID this token belongs to
+    /// * `token` - The token value to store
+    /// * `expires_at` - When the token expires
+    pub async fn store_token(
+        &self,
+        installation_id: u64,
+        token: String,
+        expires_at: DateTime<Utc>,
+    ) {
+        let cached_token = CachedToken {
+            token: SecretString::new(token),
+            expires_at,
+            created_at: Utc::now(),
+            installation_id,
+        };
+
+        let mut tokens = self.tokens.write().await;
+        tokens.insert(installation_id, cached_token);
+
+        debug!("Stored token for installation ID {}", installation_id);
+    }
+
+    /// Removes a token from the cache.
+    ///
+    /// # Arguments
+    ///
+    /// * `installation_id` - The installation ID to remove the token for
+    pub async fn remove_token(&self, installation_id: u64) {
+        let mut tokens = self.tokens.write().await;
+        if tokens.remove(&installation_id).is_some() {
+            debug!("Removed token for installation ID {}", installation_id);
+        }
+    }
+
+    /// Cleans up expired tokens from the cache.
+    pub async fn cleanup_expired_tokens(&self) {
+        let mut tokens = self.tokens.write().await;
+        let now = Utc::now();
+        let before_count = tokens.len();
+
+        tokens.retain(|_, token| {
+            let expires_soon = token.expires_at
+                - chrono::Duration::from_std(self.refresh_buffer).unwrap_or_default();
+            now < expires_soon
+        });
+
+        let removed = before_count - tokens.len();
+        if removed > 0 {
+            debug!("Removed {} expired tokens from cache", removed);
+        }
+    }
+
+    /// Returns the number of tokens currently in the cache.
+    pub async fn token_count(&self) -> usize {
+        let tokens = self.tokens.read().await;
+        tokens.len()
+    }
+
+    /// Clears all tokens from the cache.
+    ///
+    /// This is useful for testing or when shutting down the application
+    /// to ensure all tokens are cleared from memory.
+    pub async fn clear_all_tokens(&self) {
+        let mut tokens = self.tokens.write().await;
+        let count = tokens.len();
+        tokens.clear();
+        debug!("Cleared {} tokens from cache", count);
+    }
+}
+
+impl Drop for TokenCache {
+    fn drop(&mut self) {
+        // Note: We can't await in Drop, so we'll do our best to clear immediately
+        // In a real implementation, this would be handled by the runtime shutdown
+        debug!("TokenCache dropped - tokens will be cleared by runtime");
     }
 }
 
@@ -1314,19 +1328,6 @@ pub async fn create_token_client(token: &str) -> GitHubResult<Octocrab> {
     info!("Created token client");
 
     Ok(octocrab)
-}
-
-impl std::fmt::Debug for GitHubAuthManager {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("GitHubAuthManager")
-            .field("config", &self.config)
-            .field("token_cache", &self.token_cache)
-            .field("jwt_encoding_key", &"<redacted>")
-            .field("jwt_decoding_key", &"<redacted>")
-            .field("rate_limiter", &self.rate_limiter)
-            .field("octocrab_client", &"<octocrab_client>")
-            .finish()
-    }
 }
 
 #[cfg(test)]

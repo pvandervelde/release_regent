@@ -1,9 +1,5 @@
 use thiserror::Error;
 
-#[cfg(test)]
-#[path = "errors_tests.rs"]
-mod tests;
-
 /// Errors that can occur when interacting with GitHub API
 #[derive(Error, Debug)]
 pub enum Error {
@@ -15,13 +11,13 @@ pub enum Error {
     #[error("JWT generation or validation failed: {message}")]
     Jwt { message: String },
 
-    /// Token cache errors
-    #[error("Token cache operation failed: {message}")]
-    TokenCache { message: String },
-
     /// Rate limiting errors
     #[error("GitHub API rate limit exceeded. Reset at: {reset_time}")]
     RateLimit { reset_time: String },
+
+    /// Token cache errors
+    #[error("Token cache operation failed: {message}")]
+    TokenCache { message: String },
 
     /// Configuration errors
     #[error("Invalid configuration: {field} - {message}")]
@@ -158,3 +154,7 @@ impl Error {
 
 /// Result type for GitHub operations
 pub type GitHubResult<T> = Result<T, Error>;
+
+#[cfg(test)]
+#[path = "errors_tests.rs"]
+mod tests;
