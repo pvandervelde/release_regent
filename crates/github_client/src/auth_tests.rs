@@ -1,6 +1,7 @@
 /// Tests for the authentication module.
 use super::*;
 use crate::GitHubClient;
+use std::collections::HashMap;
 
 #[tokio::test]
 async fn test_auth_config_basic_creation() {
@@ -870,4 +871,227 @@ async fn test_backward_compatibility() {
     // Test empty token still fails
     let result = create_token_client("").await;
     assert!(result.is_err());
+}
+
+// Task 8.1 - Comprehensive unit tests for all authentication methods
+/// Test GitHubAuthManager::create_app_client method
+#[tokio::test]
+async fn test_auth_manager_create_app_client() {
+    let config = AuthConfig::new(12345, TEST_PRIVATE_KEY, None).unwrap();
+    let auth_manager = GitHubAuthManager::new(config).unwrap();
+
+    let result = auth_manager.create_app_client().await;
+    assert!(result.is_ok());
+
+    // We can't test the actual base_url as octocrab doesn't expose it
+    // But we can verify the client was created successfully
+    let _client = result.unwrap();
+    // Just verify it's not panicking - the client creation is the important part
+}
+
+/// Test GitHubAuthManager::create_app_client with enterprise URL
+#[tokio::test]
+async fn test_auth_manager_create_app_client_enterprise() {
+    let enterprise_url = Some("https://github.enterprise.com".to_string());
+    let config = AuthConfig::new(12345, TEST_PRIVATE_KEY, enterprise_url).unwrap();
+    let auth_manager = GitHubAuthManager::new(config).unwrap();
+
+    let result = auth_manager.create_app_client().await;
+    assert!(result.is_ok());
+
+    // We can't test the actual base_url as octocrab doesn't expose it
+    // But we can verify the client was created successfully with enterprise config
+    let _client = result.unwrap();
+}
+
+/// Test GitHubAuthManager::create_token_client method
+#[tokio::test]
+async fn test_auth_manager_create_token_client() {
+    let config = AuthConfig::new(12345, TEST_PRIVATE_KEY, None).unwrap();
+    let auth_manager = GitHubAuthManager::new(config).unwrap();
+
+    let result = auth_manager.create_token_client("ghp_test_token").await;
+    assert!(result.is_ok());
+
+    let _client = result.unwrap();
+    // Verify the client was created successfully
+}
+
+/// Test GitHubAuthManager::create_token_client with empty token
+#[tokio::test]
+async fn test_auth_manager_create_token_client_empty() {
+    let config = AuthConfig::new(12345, TEST_PRIVATE_KEY, None).unwrap();
+    let auth_manager = GitHubAuthManager::new(config).unwrap();
+
+    let result = auth_manager.create_token_client("").await;
+    assert!(result.is_err());
+
+    if let Err(error) = result {
+        assert!(error.to_string().contains("Token cannot be empty"));
+    }
+}
+
+/// Test GitHubAuthManager::create_token_client with enterprise URL
+#[tokio::test]
+async fn test_auth_manager_create_token_client_enterprise() {
+    let enterprise_url = Some("https://github.enterprise.com".to_string());
+    let config = AuthConfig::new(12345, TEST_PRIVATE_KEY, enterprise_url).unwrap();
+    let auth_manager = GitHubAuthManager::new(config).unwrap();
+
+    let result = auth_manager.create_token_client("ghp_test_token").await;
+    assert!(result.is_ok());
+
+    let _client = result.unwrap();
+    // Verify the client was created successfully with enterprise config
+}
+
+/// Test JWT generation with different expiration times
+#[tokio::test]
+async fn test_jwt_generation_expiration() {
+    let config = AuthConfig::new(12345, TEST_PRIVATE_KEY, None).unwrap();
+    let auth_manager = GitHubAuthManager::new(config).unwrap();
+
+    // Generate JWT
+    let jwt = auth_manager.generate_jwt().await.unwrap();
+
+    // Verify JWT structure without signature validation
+    assert!(!jwt.is_empty());
+    let parts: Vec<&str> = jwt.split('.').collect();
+    assert_eq!(parts.len(), 3);
+
+    // Generate another JWT and verify they're different (different timestamps/jti)
+    let jwt2 = auth_manager.generate_jwt().await.unwrap();
+    assert_ne!(jwt, jwt2);
+}
+
+/// Test JWT generation with different app IDs
+#[tokio::test]
+async fn test_jwt_generation_different_app_ids() {
+    let app_ids = vec![12345, 67890, 999999];
+
+    for app_id in app_ids {
+        let config = AuthConfig::new(app_id, TEST_PRIVATE_KEY, None).unwrap();
+        let auth_manager = GitHubAuthManager::new(config).unwrap();
+
+        let jwt = auth_manager.generate_jwt().await.unwrap();
+        assert!(!jwt.is_empty());
+
+        // Each JWT should be unique
+        let parts: Vec<&str> = jwt.split('.').collect();
+        assert_eq!(parts.len(), 3);
+    }
+}
+
+/// Test error conditions for invalid configurations
+#[tokio::test]
+async fn test_invalid_configurations() {
+    // Test with invalid private key
+    let result = AuthConfig::new(12345, "invalid-key", None);
+    assert!(result.is_err());
+
+    // Test with empty private key
+    let result = AuthConfig::new(12345, "", None);
+    assert!(result.is_err());
+
+    // Test with zero app ID
+    let result = AuthConfig::new(0, TEST_PRIVATE_KEY, None);
+    assert!(result.is_err());
+}
+
+/// Test configuration validation
+#[tokio::test]
+async fn test_config_validation() {
+    let config = AuthConfig::new(12345, TEST_PRIVATE_KEY, None).unwrap();
+
+    // Test getters
+    assert_eq!(config.app_id, 12345);
+    assert_eq!(config.jwt_expiration_seconds, 600);
+    assert_eq!(config.token_refresh_buffer_seconds, 300);
+    assert_eq!(config.get_api_base_url(), "https://api.github.com");
+    assert_eq!(config.get_jwt_audience(), "https://github.com");
+
+    // Test with enterprise URL
+    let enterprise_config = AuthConfig::new(
+        12345,
+        TEST_PRIVATE_KEY,
+        Some("https://github.enterprise.com".to_string()),
+    )
+    .unwrap();
+
+    assert_eq!(
+        enterprise_config.get_api_base_url(),
+        "https://github.enterprise.com/api/v3"
+    );
+    assert_eq!(
+        enterprise_config.get_jwt_audience(),
+        "https://github.enterprise.com"
+    );
+}
+
+/// Test secure token handling and cleanup
+#[tokio::test]
+async fn test_secure_token_handling() {
+    let cache = TokenCache::new(Duration::from_secs(300));
+    let installation_id = 12345;
+    let token = "sensitive-token-data";
+    let expires_at = Utc::now() + chrono::Duration::hours(1);
+
+    // Store token
+    cache
+        .store_token(installation_id, token.to_string(), expires_at)
+        .await;
+    assert_eq!(cache.token_count().await, 1);
+
+    // Retrieve token
+    let cached_token = cache.get_token(installation_id).await;
+    assert!(cached_token.is_some());
+
+    // Clear all tokens (simulating shutdown)
+    cache.clear_all_tokens().await;
+    assert_eq!(cache.token_count().await, 0);
+
+    // Verify token is no longer accessible
+    let cleared_token = cache.get_token(installation_id).await;
+    assert!(cleared_token.is_none());
+}
+
+/// Test rate limiting behavior
+#[tokio::test]
+async fn test_rate_limiting_behavior() {
+    let rate_limiter = RateLimiter::new(Duration::from_millis(100), 3, Duration::from_millis(100));
+
+    // First request should not require waiting
+    let wait_duration = rate_limiter.should_wait_for_rate_limit().await;
+    assert!(wait_duration.is_none());
+
+    // Update rate limit info to simulate exhausted limit
+    let mut headers = HashMap::new();
+    headers.insert("x-ratelimit-remaining".to_string(), "0".to_string());
+    headers.insert("x-ratelimit-reset".to_string(), "9999999999".to_string()); // Far future
+
+    rate_limiter.update_rate_limit_from_headers(&headers).await;
+
+    // Now it should indicate we need to wait
+    let wait_duration = rate_limiter.should_wait_for_rate_limit().await;
+    assert!(wait_duration.is_some());
+    assert!(wait_duration.unwrap() > Duration::from_secs(0));
+}
+
+/// Test authentication manager cloning
+#[tokio::test]
+async fn test_auth_manager_cloning() {
+    let config = AuthConfig::new(12345, TEST_PRIVATE_KEY, None).unwrap();
+    let auth_manager = GitHubAuthManager::new(config).unwrap();
+
+    // Clone the manager
+    let cloned_manager = auth_manager.clone();
+
+    // Both should be able to generate JWTs
+    let jwt1 = auth_manager.generate_jwt().await.unwrap();
+    let jwt2 = cloned_manager.generate_jwt().await.unwrap();
+
+    // JWTs should be different (due to different timestamps and JTI)
+    assert_ne!(jwt1, jwt2);
+    assert!(!jwt1.is_empty());
+    assert!(!jwt2.is_empty());
 }

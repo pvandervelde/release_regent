@@ -51,7 +51,6 @@ use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, instrument};
-use uuid::Uuid;
 
 use crate::errors::{Error, GitHubResult};
 
