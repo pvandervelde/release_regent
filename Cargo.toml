@@ -44,7 +44,7 @@ azure_security_keyvault_secrets = "0.4"
 
 # Testing
 tokio-test = "0.4"
-mockall = "0.12"
+mockall = "0.13"
 
 # Web server dependencies
 axum = "0.7"
