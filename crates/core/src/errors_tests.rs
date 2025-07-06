@@ -18,6 +18,78 @@ fn test_config_error_creation() {
 }
 
 #[test]
+fn test_internal_state_error_creation() {
+    let error = CoreError::internal_state("Unexpected state transition");
+
+    match error {
+        CoreError::InternalState { ref message } => {
+            assert_eq!(message, "Unexpected state transition");
+        }
+        _ => panic!("Expected InternalState error"),
+    }
+
+    assert_eq!(
+        error.to_string(),
+        "Internal state error: Unexpected state transition"
+    );
+}
+
+#[test]
+fn test_invalid_input_error_creation() {
+    let error = CoreError::invalid_input("branch_name", "Invalid characters in branch name");
+
+    match error {
+        CoreError::InvalidInput {
+            ref field,
+            ref message,
+        } => {
+            assert_eq!(field, "branch_name");
+            assert_eq!(message, "Invalid characters in branch name");
+        }
+        _ => panic!("Expected InvalidInput error"),
+    }
+
+    assert_eq!(
+        error.to_string(),
+        "Invalid input: branch_name - Invalid characters in branch name"
+    );
+}
+
+#[test]
+fn test_io_error_conversion() {
+    let io_error = std::io::Error::new(std::io::ErrorKind::NotFound, "File not found");
+    let core_error = CoreError::from(io_error);
+
+    match core_error {
+        CoreError::Io { .. } => {
+            // Expected
+        }
+        _ => panic!("Expected Io error from std::io::Error"),
+    }
+}
+
+#[test]
+fn test_not_supported_error_creation() {
+    let error = CoreError::not_supported("external_versioning", "No external script configured");
+
+    match error {
+        CoreError::NotSupported {
+            ref operation,
+            ref context,
+        } => {
+            assert_eq!(operation, "external_versioning");
+            assert_eq!(context, "No external script configured");
+        }
+        _ => panic!("Expected NotSupported error"),
+    }
+
+    assert_eq!(
+        error.to_string(),
+        "Operation not supported: external_versioning - No external script configured"
+    );
+}
+
+#[test]
 fn test_versioning_error_creation() {
     let error = CoreError::versioning("No conventional commits found");
 
@@ -53,78 +125,6 @@ fn test_webhook_error_creation() {
         error.to_string(),
         "Webhook processing failed: signature_validation - Invalid signature"
     );
-}
-
-#[test]
-fn test_invalid_input_error_creation() {
-    let error = CoreError::invalid_input("branch_name", "Invalid characters in branch name");
-
-    match error {
-        CoreError::InvalidInput {
-            ref field,
-            ref message,
-        } => {
-            assert_eq!(field, "branch_name");
-            assert_eq!(message, "Invalid characters in branch name");
-        }
-        _ => panic!("Expected InvalidInput error"),
-    }
-
-    assert_eq!(
-        error.to_string(),
-        "Invalid input: branch_name - Invalid characters in branch name"
-    );
-}
-
-#[test]
-fn test_not_supported_error_creation() {
-    let error = CoreError::not_supported("external_versioning", "No external script configured");
-
-    match error {
-        CoreError::NotSupported {
-            ref operation,
-            ref context,
-        } => {
-            assert_eq!(operation, "external_versioning");
-            assert_eq!(context, "No external script configured");
-        }
-        _ => panic!("Expected NotSupported error"),
-    }
-
-    assert_eq!(
-        error.to_string(),
-        "Operation not supported: external_versioning - No external script configured"
-    );
-}
-
-#[test]
-fn test_internal_state_error_creation() {
-    let error = CoreError::internal_state("Unexpected state transition");
-
-    match error {
-        CoreError::InternalState { ref message } => {
-            assert_eq!(message, "Unexpected state transition");
-        }
-        _ => panic!("Expected InternalState error"),
-    }
-
-    assert_eq!(
-        error.to_string(),
-        "Internal state error: Unexpected state transition"
-    );
-}
-
-#[test]
-fn test_io_error_conversion() {
-    let io_error = std::io::Error::new(std::io::ErrorKind::NotFound, "File not found");
-    let core_error = CoreError::from(io_error);
-
-    match core_error {
-        CoreError::Io { .. } => {
-            // Expected
-        }
-        _ => panic!("Expected Io error from std::io::Error"),
-    }
 }
 
 #[test]

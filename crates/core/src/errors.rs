@@ -1,9 +1,5 @@
 use thiserror::Error;
 
-#[cfg(test)]
-#[path = "errors_tests.rs"]
-mod tests;
-
 /// Errors that can occur in core Release Regent operations
 #[derive(Error, Debug)]
 pub enum CoreError {
@@ -109,3 +105,7 @@ impl From<release_regent_github_client::Error> for CoreError {
 
 /// Result type for core operations
 pub type CoreResult<T> = Result<T, CoreError>;
+
+#[cfg(test)]
+#[path = "errors_tests.rs"]
+mod tests;

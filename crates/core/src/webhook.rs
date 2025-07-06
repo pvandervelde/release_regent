@@ -50,6 +50,16 @@ pub struct RepositoryInfo {
     pub default_branch: String,
 }
 
+/// Result of processing a webhook event
+#[derive(Debug, Clone)]
+pub enum ProcessingResult {
+    /// A pull request was merged and should trigger release processing
+    MergedPullRequest {
+        repository: RepositoryInfo,
+        pull_request: PullRequestInfo,
+    },
+}
+
 /// Webhook processor
 pub struct WebhookProcessor {
     webhook_secret: Option<String>,
@@ -210,16 +220,6 @@ impl WebhookEvent {
             headers,
         }
     }
-}
-
-/// Result of processing a webhook event
-#[derive(Debug, Clone)]
-pub enum ProcessingResult {
-    /// A pull request was merged and should trigger release processing
-    MergedPullRequest {
-        repository: RepositoryInfo,
-        pull_request: PullRequestInfo,
-    },
 }
 
 #[cfg(test)]

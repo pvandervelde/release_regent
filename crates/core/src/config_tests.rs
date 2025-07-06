@@ -1,34 +1,6 @@
 use super::*;
 
 #[test]
-fn test_default_configuration() {
-    let config = ReleaseRegentConfig::default();
-
-    assert_eq!(config.core.version_prefix, "v");
-    assert_eq!(config.core.branches.main, "main");
-    assert!(!config.release_pr.draft);
-    assert!(!config.releases.draft);
-    assert!(config.releases.generate_notes);
-    assert_eq!(config.error_handling.max_retries, 5);
-    assert!(config.notifications.enabled);
-    assert!(matches!(
-        config.notifications.strategy,
-        NotificationStrategy::GitHubIssue
-    ));
-    assert!(matches!(
-        config.versioning.strategy,
-        VersioningStrategy::Conventional
-    ));
-    assert!(config.versioning.allow_override);
-}
-
-#[test]
-fn test_configuration_validation_success() {
-    let config = ReleaseRegentConfig::default();
-    assert!(config.validate().is_ok());
-}
-
-#[test]
 fn test_configuration_validation_empty_main_branch() {
     let mut config = ReleaseRegentConfig::default();
     config.core.branches.main = "".to_string();
@@ -39,6 +11,40 @@ fn test_configuration_validation_empty_main_branch() {
         .unwrap_err()
         .to_string()
         .contains("Main branch name cannot be empty"));
+}
+
+#[test]
+fn test_configuration_validation_external_versioning_missing() {
+    let mut config = ReleaseRegentConfig::default();
+    config.versioning.strategy = VersioningStrategy::External;
+    config.versioning.external = None;
+
+    let result = config.validate();
+    assert!(result.is_err());
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("External versioning configuration required"));
+}
+
+#[test]
+fn test_configuration_validation_slack_missing() {
+    let mut config = ReleaseRegentConfig::default();
+    config.notifications.strategy = NotificationStrategy::Slack;
+    config.notifications.slack = None;
+
+    let result = config.validate();
+    assert!(result.is_err());
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("Slack configuration required"));
+}
+
+#[test]
+fn test_configuration_validation_success() {
+    let config = ReleaseRegentConfig::default();
+    assert!(config.validate().is_ok());
 }
 
 #[test]
@@ -69,31 +75,25 @@ fn test_configuration_validation_webhook_missing() {
 }
 
 #[test]
-fn test_configuration_validation_slack_missing() {
-    let mut config = ReleaseRegentConfig::default();
-    config.notifications.strategy = NotificationStrategy::Slack;
-    config.notifications.slack = None;
+fn test_default_configuration() {
+    let config = ReleaseRegentConfig::default();
 
-    let result = config.validate();
-    assert!(result.is_err());
-    assert!(result
-        .unwrap_err()
-        .to_string()
-        .contains("Slack configuration required"));
-}
-
-#[test]
-fn test_configuration_validation_external_versioning_missing() {
-    let mut config = ReleaseRegentConfig::default();
-    config.versioning.strategy = VersioningStrategy::External;
-    config.versioning.external = None;
-
-    let result = config.validate();
-    assert!(result.is_err());
-    assert!(result
-        .unwrap_err()
-        .to_string()
-        .contains("External versioning configuration required"));
+    assert_eq!(config.core.version_prefix, "v");
+    assert_eq!(config.core.branches.main, "main");
+    assert!(!config.release_pr.draft);
+    assert!(!config.releases.draft);
+    assert!(config.releases.generate_notes);
+    assert_eq!(config.error_handling.max_retries, 5);
+    assert!(config.notifications.enabled);
+    assert!(matches!(
+        config.notifications.strategy,
+        NotificationStrategy::GitHubIssue
+    ));
+    assert!(matches!(
+        config.versioning.strategy,
+        VersioningStrategy::Conventional
+    ));
+    assert!(config.versioning.allow_override);
 }
 
 #[test]

@@ -9,21 +9,11 @@ use std::collections::HashMap;
 use std::path::Path;
 use tracing::{debug, info};
 
-/// Main Release Regent configuration
+/// Branch configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ReleaseRegentConfig {
-    /// Core settings
-    pub core: CoreConfig,
-    /// Release PR settings
-    pub release_pr: ReleasePrConfig,
-    /// GitHub release settings
-    pub releases: ReleasesConfig,
-    /// Error handling configuration
-    pub error_handling: ErrorHandlingConfig,
-    /// Notification settings
-    pub notifications: NotificationConfig,
-    /// Versioning strategy
-    pub versioning: VersioningConfig,
+pub struct BranchConfig {
+    /// Main branch name
+    pub main: String,
 }
 
 /// Core Release Regent settings
@@ -35,35 +25,6 @@ pub struct CoreConfig {
     pub branches: BranchConfig,
 }
 
-/// Branch configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BranchConfig {
-    /// Main branch name
-    pub main: String,
-}
-
-/// Release PR configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ReleasePrConfig {
-    /// PR title template
-    pub title_template: String,
-    /// PR body template
-    pub body_template: String,
-    /// Whether to create PRs as drafts
-    pub draft: bool,
-}
-
-/// GitHub releases configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ReleasesConfig {
-    /// Whether to create releases as drafts
-    pub draft: bool,
-    /// Whether to mark as prerelease
-    pub prerelease: bool,
-    /// Whether to generate release notes automatically
-    pub generate_notes: bool,
-}
-
 /// Error handling configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErrorHandlingConfig {
@@ -73,6 +34,24 @@ pub struct ErrorHandlingConfig {
     pub backoff_multiplier: f64,
     /// Initial delay in milliseconds
     pub initial_delay_ms: u64,
+}
+
+/// External versioning configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExternalVersioningConfig {
+    /// Command to execute for version calculation
+    pub command: String,
+    /// Timeout in milliseconds
+    pub timeout_ms: u64,
+}
+
+/// GitHub issue notification configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitHubIssueConfig {
+    /// Labels to apply to issues
+    pub labels: Vec<String>,
+    /// Users to assign to issues
+    pub assignees: Vec<String>,
 }
 
 /// Notification configuration
@@ -93,37 +72,43 @@ pub struct NotificationConfig {
     pub slack: Option<SlackConfig>,
 }
 
-/// Notification strategies
+/// Release PR configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum NotificationStrategy {
-    /// Create GitHub issues for errors
-    GitHubIssue,
-    /// Send webhook notifications
-    Webhook,
-    /// Send Slack notifications
-    Slack,
-    /// No notifications
-    None,
+pub struct ReleasePrConfig {
+    /// PR title template
+    pub title_template: String,
+    /// PR body template
+    pub body_template: String,
+    /// Whether to create PRs as drafts
+    pub draft: bool,
 }
 
-/// GitHub issue notification configuration
+/// Main Release Regent configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GitHubIssueConfig {
-    /// Labels to apply to issues
-    pub labels: Vec<String>,
-    /// Users to assign to issues
-    pub assignees: Vec<String>,
+pub struct ReleaseRegentConfig {
+    /// Core settings
+    pub core: CoreConfig,
+    /// Release PR settings
+    pub release_pr: ReleasePrConfig,
+    /// GitHub release settings
+    pub releases: ReleasesConfig,
+    /// Error handling configuration
+    pub error_handling: ErrorHandlingConfig,
+    /// Notification settings
+    pub notifications: NotificationConfig,
+    /// Versioning strategy
+    pub versioning: VersioningConfig,
 }
 
-/// Webhook notification configuration
+/// GitHub releases configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WebhookConfig {
-    /// Webhook URL
-    pub url: String,
-    /// Additional headers
-    #[serde(skip_serializing_if = "HashMap::is_empty")]
-    pub headers: HashMap<String, String>,
+pub struct ReleasesConfig {
+    /// Whether to create releases as drafts
+    pub draft: bool,
+    /// Whether to mark as prerelease
+    pub prerelease: bool,
+    /// Whether to generate release notes automatically
+    pub generate_notes: bool,
 }
 
 /// Slack notification configuration
@@ -148,6 +133,30 @@ pub struct VersioningConfig {
     pub allow_override: bool,
 }
 
+/// Webhook notification configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebhookConfig {
+    /// Webhook URL
+    pub url: String,
+    /// Additional headers
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub headers: HashMap<String, String>,
+}
+
+/// Notification strategies
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NotificationStrategy {
+    /// Create GitHub issues for errors
+    GitHubIssue,
+    /// Send webhook notifications
+    Webhook,
+    /// Send Slack notifications
+    Slack,
+    /// No notifications
+    None,
+}
+
 /// Versioning strategies
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -156,15 +165,6 @@ pub enum VersioningStrategy {
     Conventional,
     /// Use external script/command
     External,
-}
-
-/// External versioning configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ExternalVersioningConfig {
-    /// Command to execute for version calculation
-    pub command: String,
-    /// Timeout in milliseconds
-    pub timeout_ms: u64,
 }
 
 impl Default for ReleaseRegentConfig {

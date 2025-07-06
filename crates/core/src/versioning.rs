@@ -7,6 +7,23 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use tracing::{debug, info};
 
+/// Conventional commit information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConventionalCommit {
+    /// Commit type (feat, fix, chore, etc.)
+    pub commit_type: String,
+    /// Scope (optional)
+    pub scope: Option<String>,
+    /// Commit description
+    pub description: String,
+    /// Whether this is a breaking change
+    pub breaking_change: bool,
+    /// Full commit message
+    pub message: String,
+    /// Commit SHA
+    pub sha: String,
+}
+
 /// Semantic version representation
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct SemanticVersion {
@@ -49,23 +66,6 @@ pub enum VersionBump {
     Patch,
     /// No version bump needed
     None,
-}
-
-/// Conventional commit information
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConventionalCommit {
-    /// Commit type (feat, fix, chore, etc.)
-    pub commit_type: String,
-    /// Scope (optional)
-    pub scope: Option<String>,
-    /// Commit description
-    pub description: String,
-    /// Whether this is a breaking change
-    pub breaking_change: bool,
-    /// Full commit message
-    pub message: String,
-    /// Commit SHA
-    pub sha: String,
 }
 
 /// Version calculation engine
