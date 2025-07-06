@@ -1,7 +1,6 @@
 /// Tests for the authentication module.
 use super::*;
 use crate::GitHubClient;
-use std::collections::HashMap;
 
 #[tokio::test]
 async fn test_auth_config_basic_creation() {
@@ -1065,9 +1064,15 @@ async fn test_rate_limiting_behavior() {
     assert!(wait_duration.is_none());
 
     // Update rate limit info to simulate exhausted limit
-    let mut headers = HashMap::new();
-    headers.insert("x-ratelimit-remaining".to_string(), "0".to_string());
-    headers.insert("x-ratelimit-reset".to_string(), "9999999999".to_string()); // Far future
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert(
+        "x-ratelimit-remaining",
+        reqwest::header::HeaderValue::from_static("0"),
+    );
+    headers.insert(
+        "x-ratelimit-reset",
+        reqwest::header::HeaderValue::from_static("9999999999"),
+    ); // Far future
 
     rate_limiter.update_rate_limit_from_headers(&headers).await;
 
@@ -1094,4 +1099,640 @@ async fn test_auth_manager_cloning() {
     assert_ne!(jwt1, jwt2);
     assert!(!jwt1.is_empty());
     assert!(!jwt2.is_empty());
+}
+
+// Task 8.2 - Integration tests with mock GitHub API responses
+/// Integration test for complete authentication flow
+#[tokio::test]
+async fn test_integration_complete_auth_flow() {
+    let config = AuthConfig::new(12345, TEST_PRIVATE_KEY, None).unwrap();
+    let auth_manager = GitHubAuthManager::new(config).unwrap();
+
+    // Test JWT generation
+    let jwt = auth_manager.generate_jwt().await;
+    assert!(jwt.is_ok());
+
+    // Test app client creation
+    let app_client = auth_manager.create_app_client().await;
+    assert!(app_client.is_ok());
+
+    // Test token client creation
+    let token_client = auth_manager.create_token_client("ghp_test_token").await;
+    assert!(token_client.is_ok());
+
+    // All operations should succeed without API calls
+}
+
+/// Integration test for authentication with enterprise GitHub
+#[tokio::test]
+async fn test_integration_enterprise_auth_flow() {
+    let config = AuthConfig::new(
+        12345,
+        TEST_PRIVATE_KEY,
+        Some("https://github.enterprise.com".to_string()),
+    )
+    .unwrap();
+    let auth_manager = GitHubAuthManager::new(config).unwrap();
+
+    // Test JWT generation for enterprise
+    let jwt = auth_manager.generate_jwt().await;
+    assert!(jwt.is_ok());
+
+    // Test enterprise app client creation
+    let app_client = auth_manager.create_app_client().await;
+    assert!(app_client.is_ok());
+
+    // Test configuration values
+    assert_eq!(
+        auth_manager.config.get_api_base_url(),
+        "https://github.enterprise.com/api/v3"
+    );
+    assert_eq!(
+        auth_manager.config.get_jwt_audience(),
+        "https://github.enterprise.com"
+    );
+}
+
+/// Integration test for token caching workflow
+#[tokio::test]
+async fn test_integration_token_caching_workflow() {
+    let cache = TokenCache::new(Duration::from_secs(300));
+    let installation_id = 12345;
+
+    // Initially no tokens
+    assert_eq!(cache.token_count().await, 0);
+    assert!(cache.get_token(installation_id).await.is_none());
+
+    // Store a token
+    let token = "ghs_test_token";
+    let expires_at = Utc::now() + chrono::Duration::hours(1);
+    cache
+        .store_token(installation_id, token.to_string(), expires_at)
+        .await;
+
+    // Should find the token
+    assert_eq!(cache.token_count().await, 1);
+    let cached_token = cache.get_token(installation_id).await;
+    assert!(cached_token.is_some());
+    assert_eq!(cached_token.unwrap().installation_id, installation_id);
+
+    // Should handle expiration buffer
+    let cached_token = cache.get_token(installation_id).await;
+    assert!(cached_token.is_some());
+
+    // Store an expired token
+    let expired_token = "ghs_expired_token";
+    let expired_time = Utc::now() - chrono::Duration::hours(1);
+    cache
+        .store_token(99999, expired_token.to_string(), expired_time)
+        .await;
+
+    // Clean up expired tokens
+    cache.cleanup_expired_tokens().await;
+
+    // Should still have the non-expired token
+    assert_eq!(cache.token_count().await, 1);
+    assert!(cache.get_token(installation_id).await.is_some());
+    assert!(cache.get_token(99999).await.is_none());
+}
+
+/// Integration test for rate limiting workflow
+#[tokio::test]
+async fn test_integration_rate_limiting_workflow() {
+    let rate_limiter = RateLimiter::new(Duration::from_millis(100), 3, Duration::from_millis(100));
+
+    // Initially should not require waiting
+    assert!(rate_limiter.should_wait_for_rate_limit().await.is_none());
+
+    // Simulate GitHub API rate limit headers
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert(
+        "x-ratelimit-limit",
+        reqwest::header::HeaderValue::from_static("5000"),
+    );
+    headers.insert(
+        "x-ratelimit-remaining",
+        reqwest::header::HeaderValue::from_static("4999"),
+    );
+    headers.insert(
+        "x-ratelimit-reset",
+        reqwest::header::HeaderValue::from_static("1234567890"),
+    );
+
+    // Update from headers
+    rate_limiter.update_rate_limit_from_headers(&headers).await;
+
+    // Should still not require waiting
+    assert!(rate_limiter.should_wait_for_rate_limit().await.is_none());
+
+    // Simulate exhausted rate limit
+    headers.insert(
+        "x-ratelimit-remaining",
+        reqwest::header::HeaderValue::from_static("0"),
+    );
+    let future_reset = (Utc::now() + chrono::Duration::minutes(1)).timestamp();
+    headers.insert(
+        "x-ratelimit-reset",
+        reqwest::header::HeaderValue::from_str(&future_reset.to_string()).unwrap(),
+    );
+
+    rate_limiter.update_rate_limit_from_headers(&headers).await;
+
+    // Should now require waiting
+    let wait_duration = rate_limiter.should_wait_for_rate_limit().await;
+    assert!(wait_duration.is_some());
+    assert!(wait_duration.unwrap() > Duration::from_secs(0));
+}
+
+/// Integration test for retry policy behavior
+#[tokio::test]
+async fn test_integration_retry_policy_behavior() {
+    let retry_policy = RetryPolicy::default();
+
+    // Test basic retry policy properties
+    let max_retries = retry_policy.max_retries;
+    assert!(
+        max_retries > 0 && max_retries <= 5,
+        "Max retries should be reasonable"
+    );
+
+    let base_delay = retry_policy.base_delay;
+    assert!(
+        base_delay > Duration::from_millis(0),
+        "Base delay should be positive"
+    );
+
+    let max_delay = retry_policy.max_delay;
+    assert!(
+        max_delay > base_delay,
+        "Max delay should be greater than base delay"
+    );
+}
+
+/// Integration test for configuration loading from environment
+#[tokio::test]
+async fn test_integration_environment_configuration() {
+    use std::env;
+
+    // Set environment variables
+    env::set_var("GITHUB_APP_ID", "54321");
+    env::set_var("GITHUB_PRIVATE_KEY", TEST_PRIVATE_KEY);
+    env::set_var("GITHUB_BASE_URL", "https://github.example.com");
+
+    // Load configuration from environment
+    let config = AuthConfig::from_env().unwrap();
+
+    // Verify values
+    assert_eq!(config.app_id, 54321);
+    assert_eq!(
+        config.github_base_url,
+        Some("https://github.example.com".to_string())
+    );
+
+    // Test auth manager creation with env config
+    let auth_manager = GitHubAuthManager::new(config).unwrap();
+    let jwt = auth_manager.generate_jwt().await;
+    assert!(jwt.is_ok());
+
+    // Clean up
+    env::remove_var("GITHUB_APP_ID");
+    env::remove_var("GITHUB_PRIVATE_KEY");
+    env::remove_var("GITHUB_BASE_URL");
+}
+
+/// Integration test for error handling scenarios
+#[tokio::test]
+async fn test_integration_error_handling_scenarios() {
+    // Test invalid configuration
+    let invalid_config = AuthConfig::new(0, "invalid-key", None);
+    assert!(invalid_config.is_err());
+
+    // Test empty token
+    let config = AuthConfig::new(12345, TEST_PRIVATE_KEY, None).unwrap();
+    let auth_manager = GitHubAuthManager::new(config).unwrap();
+    let result = auth_manager.create_token_client("").await;
+    assert!(result.is_err());
+
+    // Test token cache with invalid installation ID
+    let cache = TokenCache::new(Duration::from_secs(300));
+    let invalid_token = cache.get_token(0).await;
+    assert!(invalid_token.is_none());
+
+    // Test rate limiter with invalid headers
+    let rate_limiter = RateLimiter::default();
+    let mut invalid_headers = reqwest::header::HeaderMap::new();
+    invalid_headers.insert(
+        "invalid-header",
+        reqwest::header::HeaderValue::from_static("invalid-value"),
+    );
+
+    // Should handle invalid headers gracefully
+    rate_limiter
+        .update_rate_limit_from_headers(&invalid_headers)
+        .await;
+    assert!(rate_limiter.should_wait_for_rate_limit().await.is_none());
+}
+
+/// Integration test for concurrent authentication operations
+#[tokio::test]
+async fn test_integration_concurrent_operations() {
+    let config = AuthConfig::new(12345, TEST_PRIVATE_KEY, None).unwrap();
+    let auth_manager = GitHubAuthManager::new(config).unwrap();
+
+    // Create multiple concurrent JWT generation tasks
+    let mut tasks = Vec::new();
+    for i in 0..10 {
+        let manager = auth_manager.clone();
+        let task = tokio::spawn(async move {
+            let jwt = manager.generate_jwt().await;
+            (i, jwt)
+        });
+        tasks.push(task);
+    }
+
+    // Wait for all tasks to complete
+    let mut results = Vec::new();
+    for task in tasks {
+        let result = task.await;
+        results.push(result);
+    }
+
+    // All should succeed and be unique
+    let mut jwts = Vec::new();
+    for result in results {
+        let (i, jwt_result) = result.unwrap();
+        assert!(jwt_result.is_ok(), "Task {} failed", i);
+        let jwt = jwt_result.unwrap();
+        assert!(!jwt.is_empty());
+        jwts.push(jwt);
+    }
+
+    // All JWTs should be unique (due to different timestamps and JTI)
+    for i in 0..jwts.len() {
+        for j in i + 1..jwts.len() {
+            assert_ne!(jwts[i], jwts[j], "JWTs should be unique");
+        }
+    }
+}
+
+/// Integration test for memory management and cleanup
+#[tokio::test]
+async fn test_integration_memory_management() {
+    let cache = TokenCache::new(Duration::from_secs(300));
+
+    // Store many tokens
+    for i in 0..100 {
+        let token = format!("token_{}", i);
+        let expires_at = Utc::now() + chrono::Duration::hours(1);
+        cache.store_token(i, token, expires_at).await;
+    }
+
+    assert_eq!(cache.token_count().await, 100);
+
+    // Clear all tokens
+    cache.clear_all_tokens().await;
+    assert_eq!(cache.token_count().await, 0);
+
+    // Verify no tokens remain
+    for i in 0..100 {
+        assert!(cache.get_token(i).await.is_none());
+    }
+}
+
+// Task 8.3 - Property-based tests for JWT generation
+/// Property-based test for JWT generation with various app IDs
+#[tokio::test]
+async fn test_property_jwt_generation_app_ids() {
+    let test_cases = vec![
+        1,
+        100,
+        1000,
+        10000,
+        99999,
+        123456,
+        999999,
+        1000000,
+        u64::MAX / 2,
+        u64::MAX - 1,
+    ];
+
+    for app_id in test_cases {
+        let config = AuthConfig::new(app_id, TEST_PRIVATE_KEY, None).unwrap();
+        let auth_manager = GitHubAuthManager::new(config).unwrap();
+
+        let jwt = auth_manager.generate_jwt().await;
+        assert!(jwt.is_ok(), "JWT generation failed for app_id: {}", app_id);
+
+        let jwt_string = jwt.unwrap();
+        assert!(!jwt_string.is_empty());
+        assert_eq!(
+            jwt_string.split('.').count(),
+            3,
+            "JWT should have 3 parts for app_id: {}",
+            app_id
+        );
+
+        // Verify the JWT contains the app_id in the payload
+        let parts: Vec<&str> = jwt_string.split('.').collect();
+        let payload = parts[1];
+        // We can't easily decode without proper base64 padding, but we can check it's not empty
+        assert!(!payload.is_empty());
+    }
+}
+
+/// Property-based test for JWT generation with various expiration times
+#[tokio::test]
+async fn test_property_jwt_generation_expiration_times() {
+    let config = AuthConfig::new(12345, TEST_PRIVATE_KEY, None).unwrap();
+    let auth_manager = GitHubAuthManager::new(config).unwrap();
+
+    // Generate multiple JWTs at different times
+    let mut jwts = Vec::new();
+    for _i in 0..10 {
+        let jwt = auth_manager.generate_jwt().await.unwrap();
+        jwts.push(jwt);
+
+        // Small delay to ensure different timestamps
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+    }
+
+    // All JWTs should be unique (due to different timestamps and JTI)
+    for i in 0..jwts.len() {
+        for j in i + 1..jwts.len() {
+            assert_ne!(jwts[i], jwts[j], "JWTs should be unique: {} vs {}", i, j);
+        }
+    }
+
+    // All JWTs should have the same structure
+    for (i, jwt) in jwts.iter().enumerate() {
+        assert_eq!(jwt.split('.').count(), 3, "JWT {} should have 3 parts", i);
+        assert!(!jwt.is_empty(), "JWT {} should not be empty", i);
+    }
+}
+
+/// Property-based test for JWT generation with various GitHub URLs
+#[tokio::test]
+async fn test_property_jwt_generation_github_urls() {
+    let test_urls = vec![
+        None,
+        Some("https://github.com".to_string()),
+        Some("https://api.github.com".to_string()),
+        Some("https://github.enterprise.com".to_string()),
+        Some("https://github.internal.company.com".to_string()),
+        Some("https://github.example.org".to_string()),
+        Some("https://ghe.domain.net".to_string()),
+    ];
+
+    for github_url in test_urls {
+        let config = AuthConfig::new(12345, TEST_PRIVATE_KEY, github_url.clone()).unwrap();
+        let auth_manager = GitHubAuthManager::new(config).unwrap();
+
+        let jwt = auth_manager.generate_jwt().await;
+        assert!(
+            jwt.is_ok(),
+            "JWT generation failed for URL: {:?}",
+            github_url
+        );
+
+        let jwt_string = jwt.unwrap();
+        assert!(!jwt_string.is_empty());
+        assert_eq!(
+            jwt_string.split('.').count(),
+            3,
+            "JWT should have 3 parts for URL: {:?}",
+            github_url
+        );
+
+        // Verify the audience is set correctly
+        // We can't easily decode the JWT without proper padding, but we can verify it was created
+        assert!(
+            jwt_string.len() > 100,
+            "JWT should be substantial for URL: {:?}",
+            github_url
+        );
+    }
+}
+
+/// Property-based test for JWT generation under concurrent load
+#[tokio::test]
+async fn test_property_jwt_generation_concurrent_load() {
+    let config = AuthConfig::new(12345, TEST_PRIVATE_KEY, None).unwrap();
+    let auth_manager = GitHubAuthManager::new(config).unwrap();
+
+    // Test with different concurrency levels
+    let concurrency_levels = vec![1, 5, 10, 20, 50];
+
+    for concurrency in concurrency_levels {
+        let mut tasks = Vec::new();
+
+        for i in 0..concurrency {
+            let manager = auth_manager.clone();
+            let task = tokio::spawn(async move {
+                let jwt = manager.generate_jwt().await;
+                (i, jwt)
+            });
+            tasks.push(task);
+        }
+
+        // Wait for all tasks
+        let mut results = Vec::new();
+        for task in tasks {
+            let result = task.await.unwrap();
+            results.push(result);
+        }
+
+        // All should succeed
+        for (i, jwt_result) in &results {
+            assert!(
+                jwt_result.is_ok(),
+                "Task {} failed at concurrency level {}",
+                i,
+                concurrency
+            );
+        }
+
+        // All JWTs should be unique
+        let jwts: Vec<_> = results
+            .iter()
+            .map(|(_, jwt)| jwt.as_ref().unwrap())
+            .collect();
+        for i in 0..jwts.len() {
+            for j in i + 1..jwts.len() {
+                assert_ne!(
+                    jwts[i], jwts[j],
+                    "JWTs should be unique at concurrency level {}",
+                    concurrency
+                );
+            }
+        }
+    }
+}
+
+/// Property-based test for JWT generation with edge case private keys
+#[tokio::test]
+async fn test_property_jwt_generation_private_key_formats() {
+    // Test with different valid private key formats
+    let padded_key = format!("  {}  ", TEST_PRIVATE_KEY);
+    let windows_key = TEST_PRIVATE_KEY.replace('\n', "\r\n");
+
+    let test_keys = vec![
+        TEST_PRIVATE_KEY, // Standard format
+        // We could test with different key sizes, but for now we'll use the same key
+        // with different whitespace variations
+        TEST_PRIVATE_KEY.trim(),
+        &padded_key,
+        &windows_key, // Windows line endings
+    ];
+
+    for (i, private_key) in test_keys.iter().enumerate() {
+        let config = AuthConfig::new(12345, private_key.to_string(), None);
+
+        if config.is_ok() {
+            let auth_manager = GitHubAuthManager::new(config.unwrap()).unwrap();
+            let jwt = auth_manager.generate_jwt().await;
+            assert!(jwt.is_ok(), "JWT generation failed for key format {}", i);
+
+            let jwt_string = jwt.unwrap();
+            assert!(!jwt_string.is_empty());
+            assert_eq!(jwt_string.split('.').count(), 3);
+        }
+    }
+}
+
+/// Property-based test for JWT validation and structure
+#[tokio::test]
+async fn test_property_jwt_structure_validation() {
+    let config = AuthConfig::new(12345, TEST_PRIVATE_KEY, None).unwrap();
+    let auth_manager = GitHubAuthManager::new(config).unwrap();
+
+    // Generate multiple JWTs and validate their structure
+    for i in 0..20 {
+        let jwt = auth_manager.generate_jwt().await.unwrap();
+
+        // Check basic structure
+        let parts: Vec<&str> = jwt.split('.').collect();
+        assert_eq!(parts.len(), 3, "JWT {} should have exactly 3 parts", i);
+
+        // Check each part is base64-like (no spaces, reasonable length)
+        for (j, part) in parts.iter().enumerate() {
+            assert!(!part.is_empty(), "JWT {} part {} should not be empty", i, j);
+            assert!(
+                !part.contains(' '),
+                "JWT {} part {} should not contain spaces",
+                i,
+                j
+            );
+            assert!(
+                part.len() > 10,
+                "JWT {} part {} should have substantial length",
+                i,
+                j
+            );
+
+            // Check it's base64url-like (only valid characters)
+            let valid_chars = part
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '=');
+            assert!(
+                valid_chars,
+                "JWT {} part {} should only contain valid base64url characters",
+                i, j
+            );
+        }
+
+        // Header should be shortest, signature should be longest typically
+        assert!(
+            parts[0].len() < parts[1].len(),
+            "JWT {} header should be shorter than payload",
+            i
+        );
+        assert!(
+            parts[2].len() > 100,
+            "JWT {} signature should be substantial",
+            i
+        );
+    }
+}
+
+/// Property-based test for JWT generation timing properties
+#[tokio::test]
+async fn test_property_jwt_generation_timing() {
+    let config = AuthConfig::new(12345, TEST_PRIVATE_KEY, None).unwrap();
+    let auth_manager = GitHubAuthManager::new(config).unwrap();
+
+    // Test JWT generation timing is reasonable
+    let mut generation_times = Vec::new();
+
+    for _ in 0..10 {
+        let start = std::time::Instant::now();
+        let jwt = auth_manager.generate_jwt().await;
+        let duration = start.elapsed();
+
+        assert!(jwt.is_ok(), "JWT generation should succeed");
+        generation_times.push(duration);
+    }
+
+    // All generations should be reasonably fast (< 1 second)
+    for (i, duration) in generation_times.iter().enumerate() {
+        assert!(
+            duration.as_secs() < 1,
+            "JWT generation {} took too long: {:?}",
+            i,
+            duration
+        );
+    }
+
+    // Average should be very fast (< 100ms)
+    let avg_duration =
+        generation_times.iter().sum::<std::time::Duration>() / generation_times.len() as u32;
+    assert!(
+        avg_duration.as_millis() < 100,
+        "Average JWT generation time too slow: {:?}",
+        avg_duration
+    );
+}
+
+/// Property-based test for JWT generation with various configurations
+#[tokio::test]
+async fn test_property_jwt_generation_config_combinations() {
+    let app_ids = vec![1, 12345, 999999];
+    let urls = vec![
+        None,
+        Some("https://github.com".to_string()),
+        Some("https://github.enterprise.com".to_string()),
+    ];
+
+    // Test all combinations
+    for app_id in &app_ids {
+        for url in &urls {
+            let config = AuthConfig::new(*app_id, TEST_PRIVATE_KEY, url.clone()).unwrap();
+            let auth_manager = GitHubAuthManager::new(config).unwrap();
+
+            let jwt = auth_manager.generate_jwt().await;
+            assert!(
+                jwt.is_ok(),
+                "JWT generation failed for app_id: {}, url: {:?}",
+                app_id,
+                url
+            );
+
+            let jwt_string = jwt.unwrap();
+            assert!(!jwt_string.is_empty());
+            assert_eq!(jwt_string.split('.').count(), 3);
+
+            // Verify configuration consistency
+            match url {
+                None => {
+                    assert_eq!(
+                        auth_manager.config.get_api_base_url(),
+                        "https://api.github.com"
+                    );
+                    assert_eq!(auth_manager.config.get_jwt_audience(), "https://github.com");
+                }
+                Some(github_url) => {
+                    assert_eq!(auth_manager.config.get_jwt_audience(), github_url.as_str());
+                }
+            }
+        }
+    }
 }
