@@ -20,6 +20,22 @@ fn test_create_release_options() {
 }
 
 #[test]
+fn test_prerelease_options() {
+    let options = CreateReleaseOptions {
+        tag_name: "v2.0.0-beta.1".to_string(),
+        name: "v2.0.0 Beta 1".to_string(),
+        body: "Beta release".to_string(),
+        target_commitish: None,
+        draft: false,
+        prerelease: true,
+    };
+
+    assert!(options.prerelease);
+    assert!(!options.draft);
+    assert!(options.target_commitish.is_none());
+}
+
+#[test]
 fn test_release_struct() {
     let release = Release {
         id: 123,
@@ -36,20 +52,4 @@ fn test_release_struct() {
     assert_eq!(release.body, "Release notes");
     assert!(release.draft);
     assert!(!release.prerelease);
-}
-
-#[test]
-fn test_prerelease_options() {
-    let options = CreateReleaseOptions {
-        tag_name: "v2.0.0-beta.1".to_string(),
-        name: "v2.0.0 Beta 1".to_string(),
-        body: "Beta release".to_string(),
-        target_commitish: None,
-        draft: false,
-        prerelease: true,
-    };
-
-    assert!(options.prerelease);
-    assert!(!options.draft);
-    assert!(options.target_commitish.is_none());
 }

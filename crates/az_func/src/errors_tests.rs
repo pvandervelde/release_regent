@@ -1,24 +1,6 @@
 use super::*;
 
 #[test]
-fn test_http_request_error_creation() {
-    let error = Error::http_request(400, "Bad Request");
-
-    match error {
-        Error::HttpRequest {
-            status,
-            ref message,
-        } => {
-            assert_eq!(status, 400);
-            assert_eq!(message, "Bad Request");
-        }
-        _ => panic!("Expected HttpRequest error"),
-    }
-
-    assert_eq!(error.to_string(), "HTTP request error: 400 - Bad Request");
-}
-
-#[test]
 fn test_authentication_error_creation() {
     let error = Error::authentication("Invalid GitHub App token");
 
@@ -54,6 +36,24 @@ fn test_environment_error_creation() {
         error.to_string(),
         "Environment configuration error: GITHUB_APP_ID - Environment variable not set"
     );
+}
+
+#[test]
+fn test_http_request_error_creation() {
+    let error = Error::http_request(400, "Bad Request");
+
+    match error {
+        Error::HttpRequest {
+            status,
+            ref message,
+        } => {
+            assert_eq!(status, 400);
+            assert_eq!(message, "Bad Request");
+        }
+        _ => panic!("Expected HttpRequest error"),
+    }
+
+    assert_eq!(error.to_string(), "HTTP request error: 400 - Bad Request");
 }
 
 #[test]

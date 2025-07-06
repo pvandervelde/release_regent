@@ -1,143 +1,318 @@
-//! GitHub API client for Release Regent
+//! Crate for interacting with the GitHub REST API.
 //!
-//! This crate provides a high-level GitHub API client specifically designed for Release Regent's
-//! needs, including PR management, release creation, and authentication handling.
+//! This crate provides a client for making authenticated requests to GitHub,
+//! authenticating as a GitHub App using its ID and private key.
 
-use octocrab::Octocrab;
-use serde::{Deserialize, Serialize};
-use std::sync::Arc;
-use tracing::{debug, info, warn};
+use octocrab::{Octocrab, Result as OctocrabResult};
+use tracing::{error, info, instrument};
 
 pub mod errors;
+pub use errors::{Error, GitHubResult};
+// For backward compatibility
+pub use errors::Error as GitHubError;
+
+pub mod auth;
+pub use auth::{
+    authenticate_with_access_token, create_app_client, create_token_client, AuthConfig,
+    GitHubAuthManager,
+};
+
+pub mod models;
+
 pub mod pr_management;
 pub mod release;
 
-pub use errors::{GitHubError, GitHubResult};
-
-/// Configuration for GitHub client
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GitHubConfig {
-    /// GitHub App ID
-    pub app_id: u64,
-    /// GitHub App private key (PEM format)
-    pub private_key: String,
-    /// GitHub installation ID
-    pub installation_id: u64,
-    /// GitHub API base URL (for GitHub Enterprise)
-    pub base_url: Option<String>,
-}
-
-/// GitHub client for Release Regent operations
-#[derive(Debug, Clone)]
+/// A client for interacting with the GitHub API, authenticated as a GitHub App.
+///
+/// This struct provides a high-level interface for GitHub API operations using
+/// GitHub App authentication. It wraps an Octocrab client and provides methods
+/// for repository management, installation token retrieval, and organization queries.
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use release_regent_github_client::{GitHubClient, create_app_client};
+///
+/// #[tokio::main]
+/// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+///     let app_id = 123456;
+///     let private_key = "-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----";
+///
+///     let octocrab_client = create_app_client(app_id, private_key).await?;
+///     let github_client = GitHubClient::new(octocrab_client);
+///
+///     let installations = github_client.list_installations().await?;
+///     println!("Found {} installations", installations.len());
+///
+///     Ok(())
+/// }
+/// ```
+#[derive(Debug)]
 pub struct GitHubClient {
-    octocrab: Arc<Octocrab>,
-    config: GitHubConfig,
+    /// The underlying Octocrab client used for API requests
+    client: Octocrab,
+    /// Optional authentication manager for advanced token management
+    auth_manager: Option<GitHubAuthManager>,
 }
 
 impl GitHubClient {
-    /// Create a new GitHub client with the provided configuration
+    /// Fetches details for a specific repository.
     ///
     /// # Arguments
-    /// * `config` - GitHub configuration including app credentials
+    ///
+    /// * `owner` - The owner of the repository (user or organization name).
+    /// * `repo` - The name of the repository.
+    ///
+    /// # Errors
+    /// Returns an `Error::Octocrab` if the API call fails.
+    #[instrument(skip(self), fields(owner = %owner, repo = %repo))]
+    pub async fn get_repository(
+        &self,
+        owner: &str,
+        repo: &str,
+    ) -> Result<models::Repository, Error> {
+        let result = self.client.repos(owner, repo).get().await;
+        match result {
+            Ok(r) => Ok(models::Repository::from(r)),
+            Err(e) => {
+                log_octocrab_error("Failed to get repository", e);
+                return Err(Error::InvalidResponse);
+            }
+        }
+    }
+
+    /// Lists all installations for the authenticated GitHub App.
+    ///
+    /// This method retrieves all installations where the GitHub App is installed,
+    /// which can be used to find the installation ID for a specific organization.
     ///
     /// # Returns
-    /// * `GitHubResult<Self>` - The configured client or an error
     ///
-    /// # Examples
-    /// ```no_run
-    /// use release_regent_github_client::{GitHubClient, GitHubConfig};
+    /// A `Result` containing a vector of installation objects, or an error if the
+    /// operation fails.
     ///
-    /// # #[tokio::main]
-    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// let config = GitHubConfig {
-    ///     app_id: 123456,
-    ///     private_key: "-----BEGIN RSA PRIVATE KEY-----\n...".to_string(),
-    ///     installation_id: 789012,
-    ///     base_url: None,
-    /// };
+    /// # Errors
     ///
-    /// let client = GitHubClient::new(config).await?;
-    /// # Ok(())
+    /// Returns an `Error::InvalidResponse` if the API call fails or the response
+    /// cannot be parsed.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use release_regent_github_client::{GitHubClient, create_app_client};
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// #     let app_id = 123456;
+    /// #     let private_key = "-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----";
+    /// #     let client_octocrab = create_app_client(app_id, private_key).await?;
+    /// #     let client = GitHubClient::new(client_octocrab);
+    ///
+    ///     let installations = client.list_installations().await?;
+    ///     for installation in installations {
+    ///         println!("Installation ID: {}, Account: {}", installation.id, installation.account.login);
+    ///     }
+    ///
+    /// #     Ok(())
     /// # }
     /// ```
-    pub async fn new(config: GitHubConfig) -> GitHubResult<Self> {
-        debug!("Creating GitHub client for app_id: {}", config.app_id);
+    #[instrument(skip(self))]
+    pub async fn list_installations(&self) -> Result<Vec<models::Installation>, Error> {
+        info!("Listing installations for GitHub App using JWT authentication");
 
-        // Create Octocrab instance
-        let octocrab = match &config.base_url {
-            Some(url) => {
-                info!("Using custom GitHub base URL: {}", url);
-                Octocrab::builder().base_uri(url)?.build()?
-            }
-            None => {
-                debug!("Using default GitHub.com API");
-                Octocrab::builder().build()?
-            }
-        };
+        // Use direct REST API call instead of octocrab's high-level method
+        let result: OctocrabResult<Vec<octocrab::models::Installation>> =
+            self.client.get("/app/installations", None::<&()>).await;
 
-        Ok(Self {
-            octocrab: Arc::new(octocrab),
-            config,
-        })
+        match result {
+            Ok(installations) => {
+                let converted_installations: Vec<models::Installation> = installations
+                    .into_iter()
+                    .map(models::Installation::from)
+                    .collect();
+
+                info!(
+                    count = converted_installations.len(),
+                    "Successfully retrieved installations for GitHub App"
+                );
+
+                Ok(converted_installations)
+            }
+            Err(e) => {
+                error!(
+                    "Failed to list installations - this likely means JWT authentication failed"
+                );
+                log_octocrab_error("Failed to list installations", e);
+                Err(Error::InvalidResponse)
+            }
+        }
     }
 
-    /// Authenticate with GitHub using the app credentials
+    /// Creates a new `GitHubClient` instance with the provided Octocrab client.
     ///
-    /// This method generates a JWT token and exchanges it for an installation token.
-    pub async fn authenticate(&self) -> GitHubResult<()> {
-        info!(
-            "Authenticating with GitHub for installation: {}",
-            self.config.installation_id
-        );
-
-        // TODO: Implement JWT generation and token exchange
-        // This will be implemented in subsequent issues
-        warn!("Authentication not yet implemented - placeholder");
-
-        Ok(())
-    }
-
-    /// Get the repository information
+    /// This constructor wraps an existing Octocrab client that should already be
+    /// configured with appropriate authentication (typically GitHub App JWT).
     ///
     /// # Arguments
-    /// * `owner` - Repository owner
-    /// * `repo` - Repository name
-    pub async fn get_repository(&self, owner: &str, repo: &str) -> GitHubResult<Repository> {
-        debug!("Getting repository information for {}/{}", owner, repo);
+    ///
+    /// * `client` - An authenticated Octocrab client instance
+    ///
+    /// # Returns
+    ///
+    /// Returns a new `GitHubClient` instance ready for API operations.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use release_regent_github_client::{GitHubClient, create_app_client};
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let app_id = 123456;
+    ///     let private_key = "-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----";
+    ///
+    ///     let octocrab_client = create_app_client(app_id, private_key).await?;
+    ///     let github_client = GitHubClient::new(octocrab_client);
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
+    pub fn new(client: Octocrab) -> Self {
+        Self {
+            client,
+            auth_manager: None,
+        }
+    }
 
-        // TODO: Implement repository fetching
-        // This will be implemented in subsequent issues
-        warn!("Repository fetching not yet implemented - placeholder");
-
-        Ok(Repository {
-            owner: owner.to_string(),
-            name: repo.to_string(),
-            default_branch: "main".to_string(),
+    /// Creates a new `GitHubClient` instance with the provided authentication manager.
+    ///
+    /// This constructor creates a GitHubClient with an integrated authentication manager
+    /// that provides advanced token management features including caching, rate limiting,
+    /// and automatic token refresh.
+    ///
+    /// # Arguments
+    ///
+    /// * `auth_manager` - A GitHubAuthManager instance configured with GitHub App credentials
+    ///
+    /// # Returns
+    ///
+    /// Returns a new `GitHubClient` instance with integrated authentication management.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use release_regent_github_client::{GitHubClient, AuthConfig, GitHubAuthManager};
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let config = AuthConfig::new(123456, "private_key", None)?;
+    ///     let auth_manager = GitHubAuthManager::new(config)?;
+    ///     let github_client = GitHubClient::with_auth_manager(auth_manager).await?;
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
+    pub async fn with_auth_manager(auth_manager: GitHubAuthManager) -> GitHubResult<Self> {
+        let client = auth_manager.create_app_client().await?;
+        Ok(Self {
+            client,
+            auth_manager: Some(auth_manager),
         })
     }
 
-    /// Get the underlying Octocrab client for advanced operations
-    pub fn octocrab(&self) -> &Octocrab {
-        &self.octocrab
-    }
+    /// Creates an installation client for the specified installation ID.
+    ///
+    /// This method creates a new GitHubClient instance that is authenticated with
+    /// an installation token for the specified installation ID. If an authentication
+    /// manager is available, it will use token caching for better performance.
+    ///
+    /// # Arguments
+    ///
+    /// * `installation_id` - The GitHub App installation ID
+    ///
+    /// # Returns
+    ///
+    /// Returns a new `GitHubClient` instance authenticated for the installation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no authentication manager is available or if the
+    /// installation token cannot be acquired.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use release_regent_github_client::{GitHubClient, AuthConfig, GitHubAuthManager};
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let config = AuthConfig::new(123456, "private_key", None)?;
+    ///     let auth_manager = GitHubAuthManager::new(config)?;
+    ///     let github_client = GitHubClient::with_auth_manager(auth_manager).await?;
+    ///     let installation_client = github_client.create_installation_client(987654).await?;
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
+    pub async fn create_installation_client(&self, installation_id: u64) -> GitHubResult<Self> {
+        let auth_manager = self.auth_manager.as_ref().ok_or_else(|| {
+            Error::configuration("auth_manager", "Authentication manager not available")
+        })?;
 
-    /// Get the client configuration
-    pub fn config(&self) -> &GitHubConfig {
-        &self.config
+        let client = auth_manager
+            .create_installation_client(installation_id)
+            .await?;
+        Ok(Self {
+            client,
+            auth_manager: Some(auth_manager.clone()),
+        })
     }
 }
 
-/// Repository information
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Repository {
-    /// Repository owner
-    pub owner: String,
-    /// Repository name
-    pub name: String,
-    /// Default branch name
-    pub default_branch: String,
+/// Helper function to log Octocrab errors with appropriate detail.
+///
+/// This function examines the type of Octocrab error and logs relevant
+/// information for debugging purposes. It handles different error types
+/// with appropriate context and formatting.
+fn log_octocrab_error(message: &str, e: octocrab::Error) {
+    match e {
+        octocrab::Error::GitHub { source, backtrace } => {
+            let err = source;
+            error!(
+                error_message = err.message,
+                backtrace = backtrace.to_string(),
+                "{}. Received an error from GitHub",
+                message
+            )
+        }
+        octocrab::Error::UriParse { source, backtrace } => error!(
+            error_message = source.to_string(),
+            backtrace = backtrace.to_string(),
+            "{}. Failed to parse URI.",
+            message
+        ),
+
+        octocrab::Error::Uri { source, backtrace } => error!(
+            error_message = source.to_string(),
+            backtrace = backtrace.to_string(),
+            "{}, Failed to parse URI.",
+            message
+        ),
+        octocrab::Error::InvalidHeaderValue { source, backtrace } => error!(
+            error_message = source.to_string(),
+            backtrace = backtrace.to_string(),
+            "{}. One of the header values was invalid.",
+            message
+        ),
+        octocrab::Error::InvalidUtf8 { source, backtrace } => error!(
+            error_message = source.to_string(),
+            backtrace = backtrace.to_string(),
+            "{}. The message wasn't valid UTF-8.",
+            message,
+        ),
+        _ => error!(error_message = e.to_string(), message),
+    };
 }
 
+// Reference the tests module in the separate file
 #[cfg(test)]
 #[path = "lib_tests.rs"]
 mod tests;

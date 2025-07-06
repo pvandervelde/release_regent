@@ -1,5 +1,9 @@
 use thiserror::Error;
 
+#[cfg(test)]
+#[path = "errors_tests.rs"]
+mod tests;
+
 /// Errors that can occur in CLI operations
 #[derive(Error, Debug)]
 #[allow(dead_code)] // Allow during foundation phase
@@ -50,17 +54,17 @@ pub enum CliError {
 
 #[allow(dead_code)] // Allow during foundation phase
 impl CliError {
-    /// Create a new configuration file error
-    pub fn config_file(message: impl Into<String>) -> Self {
-        Self::ConfigFile {
-            message: message.into(),
-        }
-    }
-
     /// Create a new command execution error
     pub fn command_execution(command: impl Into<String>, message: impl Into<String>) -> Self {
         Self::CommandExecution {
             command: command.into(),
+            message: message.into(),
+        }
+    }
+
+    /// Create a new configuration file error
+    pub fn config_file(message: impl Into<String>) -> Self {
+        Self::ConfigFile {
             message: message.into(),
         }
     }
@@ -92,7 +96,3 @@ impl From<release_regent_github_client::GitHubError> for CliError {
 
 /// Result type for CLI operations
 pub type CliResult<T> = Result<T, CliError>;
-
-#[cfg(test)]
-#[path = "errors_tests.rs"]
-mod tests;

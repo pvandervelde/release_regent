@@ -11,6 +11,10 @@ mod errors;
 
 use errors::{CliError, CliResult};
 
+#[cfg(test)]
+#[path = "main_tests.rs"]
+mod tests;
+
 /// Release Regent CLI
 #[derive(Parser, Debug)]
 #[command(name = "rr")]
@@ -72,40 +76,6 @@ struct RunArgs {
     /// Configuration file path
     #[arg(short, long)]
     config_path: Option<PathBuf>,
-}
-
-#[tokio::main]
-async fn main() -> CliResult<()> {
-    let cli = Cli::parse();
-
-    // Initialize logging
-    setup_logging(cli.verbose)?;
-
-    info!("Starting Release Regent CLI");
-    debug!("Parsed CLI arguments: {:?}", cli);
-
-    // Execute the command
-    match cli.command {
-        Commands::Init(args) => execute_init(args).await,
-        Commands::Run(args) => execute_run(args).await,
-    }
-}
-
-/// Set up logging based on verbosity level
-fn setup_logging(verbose: bool) -> CliResult<()> {
-    let filter = if verbose { "debug" } else { "info" };
-
-    tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::fmt::layer()
-                .with_target(false)
-                .with_file(false)
-                .with_line_number(false),
-        )
-        .with(tracing_subscriber::EnvFilter::new(filter))
-        .init();
-
-    Ok(())
 }
 
 /// Execute the init command
@@ -243,25 +213,37 @@ fn generate_sample_webhook() -> String {
     })).unwrap_or_else(|_| "{}".to_string())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// Set up logging based on verbosity level
+fn setup_logging(verbose: bool) -> CliResult<()> {
+    let filter = if verbose { "debug" } else { "info" };
 
-    #[test]
-    fn test_cli_parsing() {
-        // This will be expanded with actual CLI parsing tests
-        // when the command structure is finalized
-    }
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_target(false)
+                .with_file(false)
+                .with_line_number(false),
+        )
+        .with(tracing_subscriber::EnvFilter::new(filter))
+        .init();
 
-    #[test]
-    fn test_sample_webhook_generation() {
-        let webhook = generate_sample_webhook();
-        assert!(!webhook.is_empty());
+    Ok(())
+}
 
-        // Verify it's valid JSON
-        let parsed: serde_json::Value = serde_json::from_str(&webhook).unwrap();
-        assert!(parsed.get("action").is_some());
-        assert!(parsed.get("pull_request").is_some());
-        assert!(parsed.get("repository").is_some());
+/// Main entry point for the CLI application
+#[tokio::main]
+async fn main() -> CliResult<()> {
+    let cli = Cli::parse();
+
+    // Initialize logging
+    setup_logging(cli.verbose)?;
+
+    info!("Starting Release Regent CLI");
+    debug!("Parsed CLI arguments: {:?}", cli);
+
+    // Execute the command
+    match cli.command {
+        Commands::Init(args) => execute_init(args).await,
+        Commands::Run(args) => execute_run(args).await,
     }
 }

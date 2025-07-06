@@ -18,7 +18,7 @@ pub enum CoreError {
     /// GitHub API integration errors
     #[error("GitHub operation failed: {source}")]
     GitHub {
-        source: Box<release_regent_github_client::GitHubError>,
+        source: Box<release_regent_github_client::Error>,
     },
 
     /// I/O errors (file operations, network, etc.)
@@ -56,17 +56,9 @@ impl CoreError {
         }
     }
 
-    /// Create a new versioning error
-    pub fn versioning(reason: impl Into<String>) -> Self {
-        Self::Versioning {
-            reason: reason.into(),
-        }
-    }
-
-    /// Create a new webhook processing error
-    pub fn webhook(stage: impl Into<String>, message: impl Into<String>) -> Self {
-        Self::Webhook {
-            stage: stage.into(),
+    /// Create a new internal state error
+    pub fn internal_state(message: impl Into<String>) -> Self {
+        Self::InternalState {
             message: message.into(),
         }
     }
@@ -87,16 +79,24 @@ impl CoreError {
         }
     }
 
-    /// Create a new internal state error
-    pub fn internal_state(message: impl Into<String>) -> Self {
-        Self::InternalState {
+    /// Create a new versioning error
+    pub fn versioning(reason: impl Into<String>) -> Self {
+        Self::Versioning {
+            reason: reason.into(),
+        }
+    }
+
+    /// Create a new webhook processing error
+    pub fn webhook(stage: impl Into<String>, message: impl Into<String>) -> Self {
+        Self::Webhook {
+            stage: stage.into(),
             message: message.into(),
         }
     }
 }
 
-impl From<release_regent_github_client::GitHubError> for CoreError {
-    fn from(error: release_regent_github_client::GitHubError) -> Self {
+impl From<release_regent_github_client::Error> for CoreError {
+    fn from(error: release_regent_github_client::Error) -> Self {
         Self::GitHub {
             source: Box::new(error),
         }

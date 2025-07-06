@@ -23,3 +23,4 @@ target/
 
 # Development memory bank and AI assistant files
 .llm/
+.aider*

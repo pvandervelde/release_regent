@@ -2,27 +2,37 @@ use super::*;
 use std::collections::HashMap;
 
 #[test]
-fn test_webhook_event_creation() {
-    let mut headers = HashMap::new();
-    headers.insert("x-github-event".to_string(), "pull_request".to_string());
+fn test_processing_result_match() {
+    let repo_info = RepositoryInfo {
+        owner: "owner".to_string(),
+        name: "repo".to_string(),
+        default_branch: "main".to_string(),
+    };
 
-    let payload = serde_json::json!({
-        "action": "closed",
-        "pull_request": {
-            "number": 42,
-            "merged": true
+    let pr_info = PullRequestInfo {
+        number: 1,
+        title: "Test".to_string(),
+        body: "Body".to_string(),
+        base: "main".to_string(),
+        head: "feature".to_string(),
+        merged: true,
+        merge_commit_sha: Some("abc123".to_string()),
+    };
+
+    let result = ProcessingResult::MergedPullRequest {
+        repository: repo_info,
+        pull_request: pr_info,
+    };
+
+    match result {
+        ProcessingResult::MergedPullRequest {
+            repository,
+            pull_request,
+        } => {
+            assert_eq!(repository.owner, "owner");
+            assert_eq!(pull_request.number, 1);
         }
-    });
-
-    let event = WebhookEvent::new(
-        "pull_request".to_string(),
-        "closed".to_string(),
-        payload,
-        headers,
-    );
-
-    assert_eq!(event.event_type(), "pull_request");
-    assert_eq!(event.action(), "closed");
+    }
 }
 
 #[test]
@@ -57,15 +67,6 @@ fn test_repository_info() {
 }
 
 #[tokio::test]
-async fn test_webhook_processor_creation() {
-    let processor = WebhookProcessor::new(Some("secret123".to_string()));
-    assert!(processor.webhook_secret.is_some());
-
-    let processor_no_secret = WebhookProcessor::new(None);
-    assert!(processor_no_secret.webhook_secret.is_none());
-}
-
-#[tokio::test]
 async fn test_unsupported_event_type() {
     let processor = WebhookProcessor::new(None);
 
@@ -81,35 +82,34 @@ async fn test_unsupported_event_type() {
 }
 
 #[test]
-fn test_processing_result_match() {
-    let repo_info = RepositoryInfo {
-        owner: "owner".to_string(),
-        name: "repo".to_string(),
-        default_branch: "main".to_string(),
-    };
+fn test_webhook_event_creation() {
+    let mut headers = HashMap::new();
+    headers.insert("x-github-event".to_string(), "pull_request".to_string());
 
-    let pr_info = PullRequestInfo {
-        number: 1,
-        title: "Test".to_string(),
-        body: "Body".to_string(),
-        base: "main".to_string(),
-        head: "feature".to_string(),
-        merged: true,
-        merge_commit_sha: Some("abc123".to_string()),
-    };
-
-    let result = ProcessingResult::MergedPullRequest {
-        repository: repo_info,
-        pull_request: pr_info,
-    };
-
-    match result {
-        ProcessingResult::MergedPullRequest {
-            repository,
-            pull_request,
-        } => {
-            assert_eq!(repository.owner, "owner");
-            assert_eq!(pull_request.number, 1);
+    let payload = serde_json::json!({
+        "action": "closed",
+        "pull_request": {
+            "number": 42,
+            "merged": true
         }
-    }
+    });
+
+    let event = WebhookEvent::new(
+        "pull_request".to_string(),
+        "closed".to_string(),
+        payload,
+        headers,
+    );
+
+    assert_eq!(event.event_type(), "pull_request");
+    assert_eq!(event.action(), "closed");
+}
+
+#[tokio::test]
+async fn test_webhook_processor_creation() {
+    let processor = WebhookProcessor::new(Some("secret123".to_string()));
+    assert!(processor.webhook_secret.is_some());
+
+    let processor_no_secret = WebhookProcessor::new(None);
+    assert!(processor_no_secret.webhook_secret.is_none());
 }

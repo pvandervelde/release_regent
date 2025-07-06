@@ -11,15 +11,29 @@ description = "GitHub API client for Release Regent"
 
 [dependencies]
 # Core dependencies
-tokio = { workspace = true }
+async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+tokio = { workspace = true }
 tracing = { workspace = true }
 
 # GitHub integration
 octocrab = { workspace = true }
 reqwest = { workspace = true }
+url = "2.5"
+
+# JWT and authentication
+jsonwebtoken = { workspace = true }
+secrecy = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+fastrand = "2.0"
+
+# Cryptography for webhook signature verification
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
 
 [dev-dependencies]
 tokio-test = { workspace = true }

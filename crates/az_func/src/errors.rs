@@ -1,5 +1,9 @@
 use thiserror::Error;
 
+#[cfg(test)]
+#[path = "errors_tests.rs"]
+mod tests;
+
 /// Errors that can occur in Azure Function operations
 #[derive(Error, Debug)]
 #[allow(dead_code)] // Allow during foundation phase
@@ -55,39 +59,9 @@ pub enum Error {
 
 #[allow(dead_code)] // Allow during foundation phase
 impl Error {
-    /// Create a new HTTP request error
-    pub fn http_request(status: u16, message: impl Into<String>) -> Self {
-        Self::HttpRequest {
-            status,
-            message: message.into(),
-        }
-    }
-
     /// Create a new authentication error
     pub fn authentication(message: impl Into<String>) -> Self {
         Self::Authentication {
-            message: message.into(),
-        }
-    }
-
-    /// Create a new environment error
-    pub fn environment(variable: impl Into<String>, message: impl Into<String>) -> Self {
-        Self::Environment {
-            variable: variable.into(),
-            message: message.into(),
-        }
-    }
-
-    /// Create a new internal error
-    pub fn internal(message: impl Into<String>) -> Self {
-        Self::Internal {
-            message: message.into(),
-        }
-    }
-
-    /// Create a new parse error
-    pub fn parse(message: impl Into<String>) -> Self {
-        Self::Parse {
             message: message.into(),
         }
     }
@@ -105,11 +79,37 @@ impl Error {
             message: message.into(),
         }
     }
+
+    /// Create a new environment error
+    pub fn environment(variable: impl Into<String>, message: impl Into<String>) -> Self {
+        Self::Environment {
+            variable: variable.into(),
+            message: message.into(),
+        }
+    }
+
+    /// Create a new HTTP request error
+    pub fn http_request(status: u16, message: impl Into<String>) -> Self {
+        Self::HttpRequest {
+            status,
+            message: message.into(),
+        }
+    }
+
+    /// Create a new internal error
+    pub fn internal(message: impl Into<String>) -> Self {
+        Self::Internal {
+            message: message.into(),
+        }
+    }
+
+    /// Create a new parse error
+    pub fn parse(message: impl Into<String>) -> Self {
+        Self::Parse {
+            message: message.into(),
+        }
+    }
 }
 
 /// Result type for function operations
 pub type FunctionResult<T> = Result<T, Error>;
-
-#[cfg(test)]
-#[path = "errors_tests.rs"]
-mod tests;

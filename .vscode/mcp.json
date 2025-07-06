@@ -1,0 +1,17 @@
+{
+    "servers": {
+        // "git": {
+        //     "command": "git-mcp-go.exe",
+        //     "args": [
+        //         "serve",
+        //         "-r=${workspaceFolder}",
+        //         "--mode",
+        //         "shell",
+        //         "--verbose"
+        //     ],
+        //     "env": {
+        //         "LOG_LEVEL": "debug",
+        //     }
+        // }
+    }
+}
