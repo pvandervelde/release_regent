@@ -1,23 +1,6 @@
 use super::*;
 
 #[test]
-fn test_config_file_error_creation() {
-    let error = CliError::config_file("Configuration file not found");
-
-    match error {
-        CliError::ConfigFile { ref message } => {
-            assert_eq!(message, "Configuration file not found");
-        }
-        _ => panic!("Expected ConfigFile error"),
-    }
-
-    assert_eq!(
-        error.to_string(),
-        "Configuration file error: Configuration file not found"
-    );
-}
-
-#[test]
 fn test_command_execution_error_creation() {
     let error = CliError::command_execution("init", "Failed to create directory");
 
@@ -35,6 +18,23 @@ fn test_command_execution_error_creation() {
     assert_eq!(
         error.to_string(),
         "Command execution failed: init - Failed to create directory"
+    );
+}
+
+#[test]
+fn test_config_file_error_creation() {
+    let error = CliError::config_file("Configuration file not found");
+
+    match error {
+        CliError::ConfigFile { ref message } => {
+            assert_eq!(message, "Configuration file not found");
+        }
+        _ => panic!("Expected ConfigFile error"),
+    }
+
+    assert_eq!(
+        error.to_string(),
+        "Configuration file error: Configuration file not found"
     );
 }
 
@@ -60,6 +60,19 @@ fn test_invalid_argument_error_creation() {
 }
 
 #[test]
+fn test_io_error_conversion() {
+    let io_error = std::io::Error::new(std::io::ErrorKind::NotFound, "File not found");
+    let cli_error = CliError::from(io_error);
+
+    match cli_error {
+        CliError::Io { .. } => {
+            // Expected
+        }
+        _ => panic!("Expected Io error from std::io::Error"),
+    }
+}
+
+#[test]
 fn test_missing_dependency_error_creation() {
     let error = CliError::missing_dependency("git", "Git command not found in PATH");
 
@@ -78,17 +91,4 @@ fn test_missing_dependency_error_creation() {
         error.to_string(),
         "Missing dependency: git - Git command not found in PATH"
     );
-}
-
-#[test]
-fn test_io_error_conversion() {
-    let io_error = std::io::Error::new(std::io::ErrorKind::NotFound, "File not found");
-    let cli_error = CliError::from(io_error);
-
-    match cli_error {
-        CliError::Io { .. } => {
-            // Expected
-        }
-        _ => panic!("Expected Io error from std::io::Error"),
-    }
 }
