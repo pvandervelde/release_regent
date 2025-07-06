@@ -47,7 +47,7 @@ tokio-test = "0.4"
 mockall = "0.12"
 
 # Web server dependencies
-axum = "0.7"
+axum = "0.8"
 hyper = "1.6"
 
 # Local crate dependencies
