@@ -213,3 +213,131 @@ fn test_version_comparison() {
     assert!(v1_0_1 < v1_1_0);
     assert_eq!(v1_0_0, v1_0_0);
 }
+
+#[test]
+fn test_parse_conventional_commit_basic() {
+    let commits = vec![
+        (
+            "abc123".to_string(),
+            "feat: add user authentication".to_string(),
+        ),
+        ("def456".to_string(), "fix: resolve login bug".to_string()),
+        ("ghi789".to_string(), "docs: update README".to_string()),
+    ];
+
+    let parsed = VersionCalculator::parse_conventional_commits(&commits);
+
+    assert_eq!(parsed.len(), 3);
+    assert_eq!(parsed[0].commit_type, "feat");
+    assert_eq!(parsed[0].description, "add user authentication");
+    assert_eq!(parsed[0].breaking_change, false);
+
+    assert_eq!(parsed[1].commit_type, "fix");
+    assert_eq!(parsed[1].description, "resolve login bug");
+    assert_eq!(parsed[1].breaking_change, false);
+
+    assert_eq!(parsed[2].commit_type, "docs");
+    assert_eq!(parsed[2].description, "update README");
+    assert_eq!(parsed[2].breaking_change, false);
+}
+
+#[test]
+fn test_parse_conventional_commit_with_scope() {
+    let commits = vec![
+        (
+            "abc123".to_string(),
+            "feat(auth): add OAuth support".to_string(),
+        ),
+        (
+            "def456".to_string(),
+            "fix(ui): button alignment issue".to_string(),
+        ),
+    ];
+
+    let parsed = VersionCalculator::parse_conventional_commits(&commits);
+
+    assert_eq!(parsed.len(), 2);
+    assert_eq!(parsed[0].commit_type, "feat");
+    assert_eq!(parsed[0].scope, Some("auth".to_string()));
+    assert_eq!(parsed[0].description, "add OAuth support");
+
+    assert_eq!(parsed[1].commit_type, "fix");
+    assert_eq!(parsed[1].scope, Some("ui".to_string()));
+    assert_eq!(parsed[1].description, "button alignment issue");
+}
+
+#[test]
+fn test_parse_conventional_commit_breaking_change_exclamation() {
+    let commits = vec![
+        (
+            "abc123".to_string(),
+            "feat!: remove deprecated API".to_string(),
+        ),
+        (
+            "def456".to_string(),
+            "fix(auth)!: change authentication flow".to_string(),
+        ),
+    ];
+
+    let parsed = VersionCalculator::parse_conventional_commits(&commits);
+
+    assert_eq!(parsed.len(), 2);
+    assert_eq!(parsed[0].commit_type, "feat");
+    assert_eq!(parsed[0].breaking_change, true);
+    assert_eq!(parsed[0].description, "remove deprecated API");
+
+    assert_eq!(parsed[1].commit_type, "fix");
+    assert_eq!(parsed[1].scope, Some("auth".to_string()));
+    assert_eq!(parsed[1].breaking_change, true);
+    assert_eq!(parsed[1].description, "change authentication flow");
+}
+
+#[test]
+fn test_parse_conventional_commit_breaking_change_footer() {
+    let commits = vec![
+        (
+            "abc123".to_string(),
+            "feat: add new feature\n\nBREAKING CHANGE: This removes the old API".to_string(),
+        ),
+        (
+            "def456".to_string(),
+            "fix: bug fix\n\nBREAKING-CHANGE: Changes behavior".to_string(),
+        ),
+    ];
+
+    let parsed = VersionCalculator::parse_conventional_commits(&commits);
+
+    assert_eq!(parsed.len(), 2);
+    assert_eq!(parsed[0].commit_type, "feat");
+    assert_eq!(parsed[0].breaking_change, true);
+    assert_eq!(parsed[0].description, "add new feature");
+
+    assert_eq!(parsed[1].commit_type, "fix");
+    assert_eq!(parsed[1].breaking_change, true);
+    assert_eq!(parsed[1].description, "bug fix");
+}
+
+#[test]
+fn test_parse_non_conventional_commit() {
+    let commits = vec![
+        ("abc123".to_string(), "Update README file".to_string()),
+        ("def456".to_string(), "random commit message".to_string()),
+        ("ghi789".to_string(), "".to_string()),
+    ];
+
+    let parsed = VersionCalculator::parse_conventional_commits(&commits);
+
+    assert_eq!(parsed.len(), 3);
+    // Non-conventional commits should be treated as "chore"
+    assert_eq!(parsed[0].commit_type, "chore");
+    assert_eq!(parsed[0].description, "Update README file");
+    assert_eq!(parsed[0].breaking_change, false);
+
+    assert_eq!(parsed[1].commit_type, "chore");
+    assert_eq!(parsed[1].description, "random commit message");
+    assert_eq!(parsed[1].breaking_change, false);
+
+    assert_eq!(parsed[2].commit_type, "chore");
+    assert_eq!(parsed[2].description, "");
+    assert_eq!(parsed[2].breaking_change, false);
+}

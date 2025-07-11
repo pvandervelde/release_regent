@@ -1768,6 +1768,7 @@ dependencies = [
 name = "release-regent-core"
 version = "0.1.0"
 dependencies = [
+ "regex",
  "release-regent-github-client",
  "serde",
  "serde_json",
