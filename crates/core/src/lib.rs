@@ -3,6 +3,7 @@
 //! This crate contains the main business logic for Release Regent, including configuration
 //! management, versioning strategies, and webhook processing.
 
+pub mod changelog;
 pub mod config;
 pub mod errors;
 pub mod versioning;

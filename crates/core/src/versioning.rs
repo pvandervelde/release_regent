@@ -55,6 +55,47 @@ impl fmt::Display for SemanticVersion {
     }
 }
 
+impl SemanticVersion {
+    /// Format the version as a string with optional prefix
+    pub fn to_string_with_prefix(&self, include_prefix: bool) -> String {
+        let base = self.to_string();
+        if include_prefix {
+            format!("v{}", base)
+        } else {
+            base
+        }
+    }
+
+    /// Check if this version is a pre-release
+    pub fn is_prerelease(&self) -> bool {
+        self.prerelease.is_some()
+    }
+
+    /// Check if this version has build metadata
+    pub fn has_build_metadata(&self) -> bool {
+        self.build.is_some()
+    }
+
+    /// Compare versions ignoring build metadata (as per semver spec)
+    pub fn compare_precedence(&self, other: &Self) -> std::cmp::Ordering {
+        use std::cmp::Ordering;
+
+        // Compare major.minor.patch first
+        match (self.major, self.minor, self.patch).cmp(&(other.major, other.minor, other.patch)) {
+            Ordering::Equal => {
+                // If core versions are equal, compare pre-release
+                match (&self.prerelease, &other.prerelease) {
+                    (None, None) => Ordering::Equal,
+                    (Some(_), None) => Ordering::Less, // pre-release < normal
+                    (None, Some(_)) => Ordering::Greater, // normal > pre-release
+                    (Some(a), Some(b)) => a.cmp(b),    // compare pre-release strings
+                }
+            }
+            other => other,
+        }
+    }
+}
+
 /// Version bump types based on conventional commits
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VersionBump {
@@ -165,62 +206,215 @@ impl VersionCalculator {
     }
 
     /// Parse a semantic version string
+    ///
+    /// Supports full semantic versioning specification including:
+    /// - Core format: MAJOR.MINOR.PATCH
+    /// - Pre-release: 1.0.0-alpha.1, 1.0.0-beta.2
+    /// - Build metadata: 1.0.0+20210101.abcd123
+    /// - Version prefix: configurable 'v' prefix support
     pub fn parse_version(version_str: &str) -> CoreResult<SemanticVersion> {
         debug!("Parsing version string: {}", version_str);
 
-        // TODO: Implement full semantic version parsing
-        // This will be implemented in subsequent issues
+        if version_str.trim().is_empty() {
+            return Err(CoreError::versioning(
+                "Version string cannot be empty".to_string(),
+            ));
+        }
 
-        // Simple placeholder implementation
-        let parts: Vec<&str> = version_str.trim_start_matches('v').split('.').collect();
+        // Remove optional 'v' prefix
+        let clean_version = version_str.trim_start_matches('v');
+
+        // Split on '+' to separate build metadata
+        let (version_part, build) = match clean_version.split_once('+') {
+            Some((version, build)) => (version, Some(build.to_string())),
+            None => (clean_version, None),
+        };
+
+        // Split on '-' to separate pre-release
+        let (core_version, prerelease) = match version_part.split_once('-') {
+            Some((core, prerelease)) => (core, Some(prerelease.to_string())),
+            None => (version_part, None),
+        };
+
+        // Parse core version components
+        let parts: Vec<&str> = core_version.split('.').collect();
         if parts.len() != 3 {
             return Err(CoreError::versioning(format!(
-                "Invalid version format: {}",
+                "Invalid version format: expected MAJOR.MINOR.PATCH, got {}",
                 version_str
             )));
         }
 
-        let major = parts[0]
-            .parse()
-            .map_err(|_| CoreError::versioning(format!("Invalid major version: {}", parts[0])))?;
+        // Validate and parse each component
+        let major = Self::parse_version_component(parts[0], "major")?;
+        let minor = Self::parse_version_component(parts[1], "minor")?;
+        let patch = Self::parse_version_component(parts[2], "patch")?;
 
-        let minor = parts[1]
-            .parse()
-            .map_err(|_| CoreError::versioning(format!("Invalid minor version: {}", parts[1])))?;
+        // Validate pre-release format if present
+        if let Some(ref pre) = prerelease {
+            Self::validate_prerelease(pre)?;
+        }
 
-        let patch = parts[2]
-            .parse()
-            .map_err(|_| CoreError::versioning(format!("Invalid patch version: {}", parts[2])))?;
+        // Validate build metadata format if present
+        if let Some(ref build_meta) = build {
+            Self::validate_build_metadata(build_meta)?;
+        }
 
         Ok(SemanticVersion {
             major,
             minor,
             patch,
-            prerelease: None,
-            build: None,
+            prerelease,
+            build,
         })
     }
 
+    /// Parse and validate a single version component
+    fn parse_version_component(component: &str, component_name: &str) -> CoreResult<u64> {
+        if component.is_empty() {
+            return Err(CoreError::versioning(format!(
+                "{} version component cannot be empty",
+                component_name
+            )));
+        }
+
+        // Check for leading zeros (not allowed except for "0")
+        if component.len() > 1 && component.starts_with('0') {
+            return Err(CoreError::versioning(format!(
+                "{} version component cannot have leading zeros: {}",
+                component_name, component
+            )));
+        }
+
+        component.parse().map_err(|_| {
+            CoreError::versioning(format!(
+                "Invalid {} version component: {} (must be a non-negative integer)",
+                component_name, component
+            ))
+        })
+    }
+
+    /// Validate pre-release version format
+    fn validate_prerelease(prerelease: &str) -> CoreResult<()> {
+        if prerelease.is_empty() {
+            return Err(CoreError::versioning(
+                "Pre-release identifier cannot be empty".to_string(),
+            ));
+        }
+
+        // Pre-release can contain ASCII alphanumeric characters and hyphens
+        // Each dot-separated identifier must not be empty
+        for identifier in prerelease.split('.') {
+            if identifier.is_empty() {
+                return Err(CoreError::versioning(
+                    "Pre-release identifiers cannot be empty".to_string(),
+                ));
+            }
+
+            // Check for invalid characters (must be ASCII alphanumeric or hyphen)
+            if !identifier
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-')
+            {
+                return Err(CoreError::versioning(format!(
+                    "Invalid pre-release identifier: {} (only ASCII alphanumeric characters and hyphens allowed)",
+                    identifier
+                )));
+            }
+
+            // Numeric identifiers must not have leading zeros
+            if identifier.chars().all(|c| c.is_ascii_digit())
+                && identifier.len() > 1
+                && identifier.starts_with('0')
+            {
+                return Err(CoreError::versioning(format!(
+                    "Numeric pre-release identifier cannot have leading zeros: {}",
+                    identifier
+                )));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Validate build metadata format
+    fn validate_build_metadata(build: &str) -> CoreResult<()> {
+        if build.is_empty() {
+            return Err(CoreError::versioning(
+                "Build metadata cannot be empty".to_string(),
+            ));
+        }
+
+        // Build metadata can contain ASCII alphanumeric characters and hyphens
+        // Each dot-separated identifier must not be empty
+        for identifier in build.split('.') {
+            if identifier.is_empty() {
+                return Err(CoreError::versioning(
+                    "Build metadata identifiers cannot be empty".to_string(),
+                ));
+            }
+
+            // Check for invalid characters (must be ASCII alphanumeric or hyphen)
+            if !identifier
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-')
+            {
+                return Err(CoreError::versioning(format!(
+                    "Invalid build metadata identifier: {} (only ASCII alphanumeric characters and hyphens allowed)",
+                    identifier
+                )));
+            }
+        }
+
+        Ok(())
+    }
+
     /// Parse conventional commits from commit messages
+    ///
+    /// Parses commit messages according to the conventional commits specification
+    /// using the git-conventional library for robust parsing.
     pub fn parse_conventional_commits(
         commit_messages: &[(String, String)],
     ) -> Vec<ConventionalCommit> {
         debug!("Parsing {} commit messages", commit_messages.len());
 
-        // TODO: Implement full conventional commit parsing
-        // This will be implemented in subsequent issues
-
         commit_messages
             .iter()
-            .map(|(sha, message)| ConventionalCommit {
-                commit_type: "feat".to_string(), // Placeholder
-                scope: None,
-                description: message.clone(),
-                breaking_change: message.contains("BREAKING CHANGE"),
-                message: message.clone(),
-                sha: sha.clone(),
-            })
+            .map(|(sha, message)| Self::parse_single_conventional_commit(sha, message))
             .collect()
+    }
+
+    /// Parse a single conventional commit message
+    fn parse_single_conventional_commit(sha: &str, message: &str) -> ConventionalCommit {
+        match git_conventional::Commit::parse(message) {
+            Ok(parsed_commit) => {
+                let commit_type = parsed_commit.type_().as_str().to_string();
+                let scope = parsed_commit.scope().map(|s| s.as_str().to_string());
+                let description = parsed_commit.description().to_string();
+                let breaking_change = parsed_commit.breaking();
+
+                ConventionalCommit {
+                    commit_type,
+                    scope,
+                    description,
+                    breaking_change,
+                    message: message.to_string(),
+                    sha: sha.to_string(),
+                }
+            }
+            Err(err) => {
+                debug!("Failed to parse commit as conventional: {}", err);
+                // Fallback for non-conventional commits - treat as chore
+                ConventionalCommit {
+                    commit_type: "chore".to_string(),
+                    scope: None,
+                    description: message.lines().next().unwrap_or(message).to_string(),
+                    breaking_change: false,
+                    message: message.to_string(),
+                    sha: sha.to_string(),
+                }
+            }
+        }
     }
 }
 

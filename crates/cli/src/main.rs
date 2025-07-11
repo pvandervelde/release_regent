@@ -46,6 +46,8 @@ enum Commands {
     Init(InitArgs),
     /// Process webhook events locally
     Run(RunArgs),
+    /// Test parsing and changelog generation from Git history
+    Test(TestArgs),
 }
 
 #[derive(Args, Debug)]
@@ -76,6 +78,25 @@ struct RunArgs {
     /// Configuration file path
     #[arg(short, long)]
     config_path: Option<PathBuf>,
+}
+
+#[derive(Args, Debug)]
+struct TestArgs {
+    /// Number of commits to analyze from current HEAD
+    #[arg(short = 'n', long, default_value = "10")]
+    commits: usize,
+
+    /// Starting commit SHA (defaults to HEAD)
+    #[arg(short, long)]
+    from: Option<String>,
+
+    /// Show detailed commit parsing
+    #[arg(short, long)]
+    verbose: bool,
+
+    /// Current version to calculate next version from
+    #[arg(long)]
+    current_version: Option<String>,
 }
 
 /// Execute the init command
@@ -178,6 +199,80 @@ async fn execute_run(args: RunArgs) -> CliResult<()> {
     Ok(())
 }
 
+/// Execute the test command
+async fn execute_test(args: TestArgs) -> CliResult<()> {
+    use release_regent_core::{changelog::ChangelogGenerator, versioning::VersionCalculator};
+
+    info!("Testing conventional commit parsing and changelog generation");
+    debug!("Test args: {:?}", args);
+
+    // Get commit messages from git log
+    let commits = get_recent_commits(args.commits, args.from.as_deref()).await?;
+
+    if commits.is_empty() {
+        println!("No commits found to analyze.");
+        return Ok(());
+    }
+
+    println!("Analyzing {} commits...\n", commits.len());
+
+    // Parse conventional commits
+    let parsed_commits = VersionCalculator::parse_conventional_commits(&commits);
+
+    if args.verbose {
+        println!("=== Parsed Commits ===");
+        for commit in &parsed_commits {
+            println!(
+                "• {} ({}): {}",
+                commit.commit_type,
+                commit.scope.as_deref().unwrap_or("no scope"),
+                commit.description
+            );
+            if commit.breaking_change {
+                println!("  ⚠️  BREAKING CHANGE");
+            }
+            println!("  SHA: {}", commit.sha);
+            println!();
+        }
+    }
+
+    // Calculate version bump
+    let current_version = args.current_version.clone();
+    let calculator = if let Some(current) = args.current_version {
+        let version = VersionCalculator::parse_version(&current).map_err(|e| {
+            CliError::invalid_argument("current_version", format!("Invalid current version: {}", e))
+        })?;
+        VersionCalculator::new(Some(version))
+    } else {
+        VersionCalculator::new(None)
+    };
+
+    match calculator.calculate_next_version(&parsed_commits) {
+        Ok(next_version) => {
+            println!("=== Version Calculation ===");
+            if let Some(current) = current_version {
+                println!("Current version: {}", current);
+            } else {
+                println!("Current version: (none - initial release)");
+            }
+            println!("Next version: {}", next_version);
+            println!();
+        }
+        Err(e) => {
+            println!("Version calculation failed: {}", e);
+        }
+    }
+
+    // Generate changelog
+    let generator = ChangelogGenerator::new();
+    let changelog = generator.generate_changelog(&parsed_commits);
+
+    println!("=== Generated Changelog ===");
+    println!("{}", changelog);
+
+    Ok(())
+}
+
 /// Generate a sample webhook payload for testing
 fn generate_sample_webhook() -> String {
     serde_json::to_string_pretty(&serde_json::json!({
@@ -245,5 +340,47 @@ async fn main() -> CliResult<()> {
     match cli.command {
         Commands::Init(args) => execute_init(args).await,
         Commands::Run(args) => execute_run(args).await,
+        Commands::Test(args) => execute_test(args).await,
     }
+}
+
+/// Get recent commits from git log
+async fn get_recent_commits(count: usize, from: Option<&str>) -> CliResult<Vec<(String, String)>> {
+    use std::process::Command;
+
+    let mut cmd = Command::new("git");
+    cmd.arg("log").arg("--oneline").arg(format!("-{}", count));
+
+    if let Some(from_sha) = from {
+        cmd.arg(format!("{}..HEAD", from_sha));
+    }
+
+    let output = cmd.output()
+        .map_err(|e| CliError::command_execution(
+            "git",
+            format!("Failed to execute git command. Make sure git is installed and you're in a git repository. Error: {}", e),
+        ))?;
+
+    if !output.status.success() {
+        let error_msg = String::from_utf8_lossy(&output.stderr);
+        return Err(CliError::command_execution(
+            "git",
+            format!("Git command failed: {}", error_msg),
+        ));
+    }
+
+    let output_str = String::from_utf8_lossy(&output.stdout);
+    let commits: Vec<(String, String)> = output_str
+        .lines()
+        .filter_map(|line| {
+            let parts: Vec<&str> = line.splitn(2, ' ').collect();
+            if parts.len() == 2 {
+                Some((parts[0].to_string(), parts[1].to_string()))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    Ok(commits)
 }
