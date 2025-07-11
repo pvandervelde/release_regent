@@ -341,3 +341,172 @@ fn test_parse_non_conventional_commit() {
     assert_eq!(parsed[2].description, "");
     assert_eq!(parsed[2].breaking_change, false);
 }
+
+// Enhanced semantic version parsing tests
+
+#[test]
+fn test_parse_version_with_prerelease() {
+    let version = VersionCalculator::parse_version("1.2.3-alpha.1").unwrap();
+    assert_eq!(version.major, 1);
+    assert_eq!(version.minor, 2);
+    assert_eq!(version.patch, 3);
+    assert_eq!(version.prerelease, Some("alpha.1".to_string()));
+    assert_eq!(version.build, None);
+}
+
+#[test]
+fn test_parse_version_with_build_metadata() {
+    let version = VersionCalculator::parse_version("1.2.3+20210101.abcd123").unwrap();
+    assert_eq!(version.major, 1);
+    assert_eq!(version.minor, 2);
+    assert_eq!(version.patch, 3);
+    assert_eq!(version.prerelease, None);
+    assert_eq!(version.build, Some("20210101.abcd123".to_string()));
+}
+
+#[test]
+fn test_parse_version_with_prerelease_and_build() {
+    let version = VersionCalculator::parse_version("1.2.3-beta.2+exp.sha.5114f85").unwrap();
+    assert_eq!(version.major, 1);
+    assert_eq!(version.minor, 2);
+    assert_eq!(version.patch, 3);
+    assert_eq!(version.prerelease, Some("beta.2".to_string()));
+    assert_eq!(version.build, Some("exp.sha.5114f85".to_string()));
+}
+
+#[test]
+fn test_parse_version_with_prefix_and_metadata() {
+    let version = VersionCalculator::parse_version("v2.0.0-rc.1+build.1").unwrap();
+    assert_eq!(version.major, 2);
+    assert_eq!(version.minor, 0);
+    assert_eq!(version.patch, 0);
+    assert_eq!(version.prerelease, Some("rc.1".to_string()));
+    assert_eq!(version.build, Some("build.1".to_string()));
+}
+
+#[test]
+fn test_parse_version_invalid_leading_zeros() {
+    assert!(VersionCalculator::parse_version("01.2.3").is_err());
+    assert!(VersionCalculator::parse_version("1.02.3").is_err());
+    assert!(VersionCalculator::parse_version("1.2.03").is_err());
+}
+
+#[test]
+fn test_parse_version_invalid_prerelease_leading_zeros() {
+    assert!(VersionCalculator::parse_version("1.2.3-01").is_err());
+    assert!(VersionCalculator::parse_version("1.2.3-alpha.01").is_err());
+}
+
+#[test]
+fn test_parse_version_empty_components() {
+    assert!(VersionCalculator::parse_version("").is_err());
+    assert!(VersionCalculator::parse_version("1..3").is_err());
+    assert!(VersionCalculator::parse_version("1.2.").is_err());
+    assert!(VersionCalculator::parse_version("1.2.3-").is_err());
+    assert!(VersionCalculator::parse_version("1.2.3+").is_err());
+}
+
+#[test]
+fn test_parse_version_invalid_characters() {
+    assert!(VersionCalculator::parse_version("1.2.3-alpha@beta").is_err());
+    assert!(VersionCalculator::parse_version("1.2.3+build$123").is_err());
+    assert!(VersionCalculator::parse_version("1.2.3-α").is_err()); // Non-ASCII
+}
+
+#[test]
+fn test_version_formatting_with_prefix() {
+    let version = SemanticVersion {
+        major: 1,
+        minor: 2,
+        patch: 3,
+        prerelease: Some("alpha.1".to_string()),
+        build: Some("build.123".to_string()),
+    };
+    
+    assert_eq!(version.to_string_with_prefix(false), "1.2.3-alpha.1+build.123");
+    assert_eq!(version.to_string_with_prefix(true), "v1.2.3-alpha.1+build.123");
+}
+
+#[test]
+fn test_version_prerelease_detection() {
+    let normal = SemanticVersion {
+        major: 1, minor: 0, patch: 0,
+        prerelease: None, build: None,
+    };
+    let prerelease = SemanticVersion {
+        major: 1, minor: 0, patch: 0,
+        prerelease: Some("alpha.1".to_string()), build: None,
+    };
+    
+    assert!(!normal.is_prerelease());
+    assert!(prerelease.is_prerelease());
+}
+
+#[test]
+fn test_version_build_metadata_detection() {
+    let without_build = SemanticVersion {
+        major: 1, minor: 0, patch: 0,
+        prerelease: None, build: None,
+    };
+    let with_build = SemanticVersion {
+        major: 1, minor: 0, patch: 0,
+        prerelease: None, build: Some("build.123".to_string()),
+    };
+    
+    assert!(!without_build.has_build_metadata());
+    assert!(with_build.has_build_metadata());
+}
+
+#[test]
+fn test_version_precedence_comparison() {
+    let v1_0_0 = SemanticVersion {
+        major: 1, minor: 0, patch: 0,
+        prerelease: None, build: None,
+    };
+    let v1_0_0_alpha = SemanticVersion {
+        major: 1, minor: 0, patch: 0,
+        prerelease: Some("alpha".to_string()), build: None,
+    };
+    let v1_0_0_beta = SemanticVersion {
+        major: 1, minor: 0, patch: 0,
+        prerelease: Some("beta".to_string()), build: None,
+    };
+    let v1_0_0_with_build = SemanticVersion {
+        major: 1, minor: 0, patch: 0,
+        prerelease: None, build: Some("build.123".to_string()),
+    };
+    
+    use std::cmp::Ordering;
+    
+    // Pre-release versions have lower precedence than normal versions
+    assert_eq!(v1_0_0_alpha.compare_precedence(&v1_0_0), Ordering::Less);
+    assert_eq!(v1_0_0.compare_precedence(&v1_0_0_alpha), Ordering::Greater);
+    
+    // Compare pre-release versions alphabetically
+    assert_eq!(v1_0_0_alpha.compare_precedence(&v1_0_0_beta), Ordering::Less);
+    
+    // Build metadata is ignored in precedence comparison
+    assert_eq!(v1_0_0.compare_precedence(&v1_0_0_with_build), Ordering::Equal);
+}
+
+#[test]
+fn test_complex_prerelease_versions() {
+    let version1 = VersionCalculator::parse_version("1.0.0-alpha").unwrap();
+    let version2 = VersionCalculator::parse_version("1.0.0-alpha.1").unwrap();
+    let version3 = VersionCalculator::parse_version("1.0.0-alpha.beta").unwrap();
+    let version4 = VersionCalculator::parse_version("1.0.0-beta").unwrap();
+    let version5 = VersionCalculator::parse_version("1.0.0-beta.2").unwrap();
+    let version6 = VersionCalculator::parse_version("1.0.0-beta.11").unwrap();
+    let version7 = VersionCalculator::parse_version("1.0.0-rc.1").unwrap();
+    let version8 = VersionCalculator::parse_version("1.0.0").unwrap();
+    
+    // Verify all parsed correctly
+    assert!(version1.is_prerelease());
+    assert!(version2.is_prerelease());
+    assert!(version3.is_prerelease());
+    assert!(version4.is_prerelease());
+    assert!(version5.is_prerelease());
+    assert!(version6.is_prerelease());
+    assert!(version7.is_prerelease());
+    assert!(!version8.is_prerelease());
+}
