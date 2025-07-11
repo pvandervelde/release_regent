@@ -422,22 +422,34 @@ fn test_version_formatting_with_prefix() {
         prerelease: Some("alpha.1".to_string()),
         build: Some("build.123".to_string()),
     };
-    
-    assert_eq!(version.to_string_with_prefix(false), "1.2.3-alpha.1+build.123");
-    assert_eq!(version.to_string_with_prefix(true), "v1.2.3-alpha.1+build.123");
+
+    assert_eq!(
+        version.to_string_with_prefix(false),
+        "1.2.3-alpha.1+build.123"
+    );
+    assert_eq!(
+        version.to_string_with_prefix(true),
+        "v1.2.3-alpha.1+build.123"
+    );
 }
 
 #[test]
 fn test_version_prerelease_detection() {
     let normal = SemanticVersion {
-        major: 1, minor: 0, patch: 0,
-        prerelease: None, build: None,
+        major: 1,
+        minor: 0,
+        patch: 0,
+        prerelease: None,
+        build: None,
     };
     let prerelease = SemanticVersion {
-        major: 1, minor: 0, patch: 0,
-        prerelease: Some("alpha.1".to_string()), build: None,
+        major: 1,
+        minor: 0,
+        patch: 0,
+        prerelease: Some("alpha.1".to_string()),
+        build: None,
     };
-    
+
     assert!(!normal.is_prerelease());
     assert!(prerelease.is_prerelease());
 }
@@ -445,14 +457,20 @@ fn test_version_prerelease_detection() {
 #[test]
 fn test_version_build_metadata_detection() {
     let without_build = SemanticVersion {
-        major: 1, minor: 0, patch: 0,
-        prerelease: None, build: None,
+        major: 1,
+        minor: 0,
+        patch: 0,
+        prerelease: None,
+        build: None,
     };
     let with_build = SemanticVersion {
-        major: 1, minor: 0, patch: 0,
-        prerelease: None, build: Some("build.123".to_string()),
+        major: 1,
+        minor: 0,
+        patch: 0,
+        prerelease: None,
+        build: Some("build.123".to_string()),
     };
-    
+
     assert!(!without_build.has_build_metadata());
     assert!(with_build.has_build_metadata());
 }
@@ -460,33 +478,51 @@ fn test_version_build_metadata_detection() {
 #[test]
 fn test_version_precedence_comparison() {
     let v1_0_0 = SemanticVersion {
-        major: 1, minor: 0, patch: 0,
-        prerelease: None, build: None,
+        major: 1,
+        minor: 0,
+        patch: 0,
+        prerelease: None,
+        build: None,
     };
     let v1_0_0_alpha = SemanticVersion {
-        major: 1, minor: 0, patch: 0,
-        prerelease: Some("alpha".to_string()), build: None,
+        major: 1,
+        minor: 0,
+        patch: 0,
+        prerelease: Some("alpha".to_string()),
+        build: None,
     };
     let v1_0_0_beta = SemanticVersion {
-        major: 1, minor: 0, patch: 0,
-        prerelease: Some("beta".to_string()), build: None,
+        major: 1,
+        minor: 0,
+        patch: 0,
+        prerelease: Some("beta".to_string()),
+        build: None,
     };
     let v1_0_0_with_build = SemanticVersion {
-        major: 1, minor: 0, patch: 0,
-        prerelease: None, build: Some("build.123".to_string()),
+        major: 1,
+        minor: 0,
+        patch: 0,
+        prerelease: None,
+        build: Some("build.123".to_string()),
     };
-    
+
     use std::cmp::Ordering;
-    
+
     // Pre-release versions have lower precedence than normal versions
     assert_eq!(v1_0_0_alpha.compare_precedence(&v1_0_0), Ordering::Less);
     assert_eq!(v1_0_0.compare_precedence(&v1_0_0_alpha), Ordering::Greater);
-    
+
     // Compare pre-release versions alphabetically
-    assert_eq!(v1_0_0_alpha.compare_precedence(&v1_0_0_beta), Ordering::Less);
-    
+    assert_eq!(
+        v1_0_0_alpha.compare_precedence(&v1_0_0_beta),
+        Ordering::Less
+    );
+
     // Build metadata is ignored in precedence comparison
-    assert_eq!(v1_0_0.compare_precedence(&v1_0_0_with_build), Ordering::Equal);
+    assert_eq!(
+        v1_0_0.compare_precedence(&v1_0_0_with_build),
+        Ordering::Equal
+    );
 }
 
 #[test]
@@ -499,7 +535,7 @@ fn test_complex_prerelease_versions() {
     let version6 = VersionCalculator::parse_version("1.0.0-beta.11").unwrap();
     let version7 = VersionCalculator::parse_version("1.0.0-rc.1").unwrap();
     let version8 = VersionCalculator::parse_version("1.0.0").unwrap();
-    
+
     // Verify all parsed correctly
     assert!(version1.is_prerelease());
     assert!(version2.is_prerelease());

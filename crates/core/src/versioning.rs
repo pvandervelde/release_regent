@@ -86,9 +86,9 @@ impl SemanticVersion {
                 // If core versions are equal, compare pre-release
                 match (&self.prerelease, &other.prerelease) {
                     (None, None) => Ordering::Equal,
-                    (Some(_), None) => Ordering::Less,    // pre-release < normal
+                    (Some(_), None) => Ordering::Less, // pre-release < normal
                     (None, Some(_)) => Ordering::Greater, // normal > pre-release
-                    (Some(a), Some(b)) => a.cmp(b),      // compare pre-release strings
+                    (Some(a), Some(b)) => a.cmp(b),    // compare pre-release strings
                 }
             }
             other => other,
@@ -206,7 +206,7 @@ impl VersionCalculator {
     }
 
     /// Parse a semantic version string
-    /// 
+    ///
     /// Supports full semantic versioning specification including:
     /// - Core format: MAJOR.MINOR.PATCH
     /// - Pre-release: 1.0.0-alpha.1, 1.0.0-beta.2
@@ -216,7 +216,9 @@ impl VersionCalculator {
         debug!("Parsing version string: {}", version_str);
 
         if version_str.trim().is_empty() {
-            return Err(CoreError::versioning("Version string cannot be empty".to_string()));
+            return Err(CoreError::versioning(
+                "Version string cannot be empty".to_string(),
+            ));
         }
 
         // Remove optional 'v' prefix
@@ -310,7 +312,10 @@ impl VersionCalculator {
             }
 
             // Check for invalid characters (must be ASCII alphanumeric or hyphen)
-            if !identifier.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+            if !identifier
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-')
+            {
                 return Err(CoreError::versioning(format!(
                     "Invalid pre-release identifier: {} (only ASCII alphanumeric characters and hyphens allowed)",
                     identifier
@@ -318,9 +323,10 @@ impl VersionCalculator {
             }
 
             // Numeric identifiers must not have leading zeros
-            if identifier.chars().all(|c| c.is_ascii_digit()) 
-                && identifier.len() > 1 
-                && identifier.starts_with('0') {
+            if identifier.chars().all(|c| c.is_ascii_digit())
+                && identifier.len() > 1
+                && identifier.starts_with('0')
+            {
                 return Err(CoreError::versioning(format!(
                     "Numeric pre-release identifier cannot have leading zeros: {}",
                     identifier
@@ -349,7 +355,10 @@ impl VersionCalculator {
             }
 
             // Check for invalid characters (must be ASCII alphanumeric or hyphen)
-            if !identifier.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+            if !identifier
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-')
+            {
                 return Err(CoreError::versioning(format!(
                     "Invalid build metadata identifier: {} (only ASCII alphanumeric characters and hyphens allowed)",
                     identifier
