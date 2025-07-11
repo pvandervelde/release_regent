@@ -17,7 +17,7 @@ serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-regex = "1.10"
+git-conventional = "0.12"
 
 # GitHub client
 release-regent-github-client = { workspace = true }

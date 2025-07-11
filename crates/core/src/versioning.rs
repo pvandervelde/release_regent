@@ -203,12 +203,8 @@ impl VersionCalculator {
 
     /// Parse conventional commits from commit messages
     ///
-    /// Parses commit messages according to the conventional commits specification:
-    /// <type>[optional scope]: <description>
-    ///
-    /// [optional body]
-    ///
-    /// [optional footer(s)]
+    /// Parses commit messages according to the conventional commits specification
+    /// using the git-conventional library for robust parsing.
     pub fn parse_conventional_commits(
         commit_messages: &[(String, String)],
     ) -> Vec<ConventionalCommit> {
@@ -222,64 +218,35 @@ impl VersionCalculator {
 
     /// Parse a single conventional commit message
     fn parse_single_conventional_commit(sha: &str, message: &str) -> ConventionalCommit {
-        let lines: Vec<&str> = message.lines().collect();
-        if lines.is_empty() {
-            return ConventionalCommit {
-                commit_type: "chore".to_string(),
-                scope: None,
-                description: message.to_string(),
-                breaking_change: false,
-                message: message.to_string(),
-                sha: sha.to_string(),
-            };
+        match git_conventional::Commit::parse(message) {
+            Ok(parsed_commit) => {
+                let commit_type = parsed_commit.type_().as_str().to_string();
+                let scope = parsed_commit.scope().map(|s| s.as_str().to_string());
+                let description = parsed_commit.description().to_string();
+                let breaking_change = parsed_commit.breaking();
+
+                ConventionalCommit {
+                    commit_type,
+                    scope,
+                    description,
+                    breaking_change,
+                    message: message.to_string(),
+                    sha: sha.to_string(),
+                }
+            }
+            Err(err) => {
+                debug!("Failed to parse commit as conventional: {}", err);
+                // Fallback for non-conventional commits - treat as chore
+                ConventionalCommit {
+                    commit_type: "chore".to_string(),
+                    scope: None,
+                    description: message.lines().next().unwrap_or(message).to_string(),
+                    breaking_change: false,
+                    message: message.to_string(),
+                    sha: sha.to_string(),
+                }
+            }
         }
-
-        let header = lines[0];
-        let (commit_type, scope, description, breaking_from_header) = Self::parse_header(header);
-
-        // Check for breaking changes in body/footer
-        let breaking_from_body = Self::has_breaking_change_in_body(message);
-        let breaking_change = breaking_from_header || breaking_from_body;
-
-        ConventionalCommit {
-            commit_type,
-            scope,
-            description,
-            breaking_change,
-            message: message.to_string(),
-            sha: sha.to_string(),
-        }
-    }
-
-    /// Parse the header line of a conventional commit
-    /// Returns (type, scope, description, breaking_change)
-    fn parse_header(header: &str) -> (String, Option<String>, String, bool) {
-        // Regex pattern for conventional commit header
-        // <type>[(scope)][!]: <description>
-        let re = regex::Regex::new(r"^([a-z]+)(?:\(([^)]+)\))?(!)?: (.+)$").unwrap();
-
-        if let Some(captures) = re.captures(header) {
-            let commit_type = captures
-                .get(1)
-                .map(|m| m.as_str().to_string())
-                .unwrap_or_else(|| "chore".to_string());
-            let scope = captures.get(2).map(|m| m.as_str().to_string());
-            let breaking_exclamation = captures.get(3).is_some();
-            let description = captures
-                .get(4)
-                .map(|m| m.as_str().to_string())
-                .unwrap_or_else(|| header.to_string());
-
-            (commit_type, scope, description, breaking_exclamation)
-        } else {
-            // Non-conventional commit - treat as chore
-            ("chore".to_string(), None, header.to_string(), false)
-        }
-    }
-
-    /// Check if the commit body contains breaking change indicators
-    fn has_breaking_change_in_body(message: &str) -> bool {
-        message.contains("BREAKING CHANGE:") || message.contains("BREAKING-CHANGE:")
     }
 }
 
