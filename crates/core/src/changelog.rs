@@ -8,6 +8,12 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tracing::debug;
 
+// git-cliff-core integration
+use git_cliff_core::{
+    changelog::Changelog as GitCliffChangelog, commit::Commit as GitCliffCommit,
+    config::Config as GitCliffConfig, release::Release as GitCliffRelease,
+};
+
 /// Configuration for changelog generation
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChangelogConfig {
@@ -202,6 +208,202 @@ impl ChangelogGenerator {
 }
 
 impl Default for ChangelogGenerator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Enhanced configuration for changelog generation with git-cliff-core support
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnhancedChangelogConfig {
+    /// Whether to use git-cliff-core for advanced features
+    pub use_git_cliff: bool,
+    /// Whether to include commit authors
+    pub include_authors: bool,
+    /// Whether to include commit SHAs
+    pub include_shas: bool,
+    /// Whether to include links to commits/PRs
+    pub include_links: bool,
+    /// Template for changelog sections
+    pub section_template: String,
+    /// Template for individual commit entries
+    pub commit_template: String,
+    /// Git repository path for git-cliff-core (optional)
+    pub repository_path: Option<String>,
+    /// Remote repository URL for link generation
+    pub remote_url: Option<String>,
+}
+
+impl Default for EnhancedChangelogConfig {
+    fn default() -> Self {
+        Self {
+            use_git_cliff: true,
+            include_authors: true,
+            include_shas: true,
+            include_links: true,
+            section_template: "### {title}\n\n{entries}\n".to_string(),
+            commit_template: "- {description} [{sha}]".to_string(),
+            repository_path: None,
+            remote_url: None,
+        }
+    }
+}
+
+/// Enhanced changelog generator with git-cliff-core integration
+pub struct EnhancedChangelogGenerator {
+    config: EnhancedChangelogConfig,
+}
+
+impl EnhancedChangelogGenerator {
+    /// Create a new enhanced changelog generator with default configuration
+    pub fn new() -> Self {
+        Self {
+            config: EnhancedChangelogConfig::default(),
+        }
+    }
+
+    /// Create a new enhanced changelog generator with custom configuration
+    pub fn with_config(config: EnhancedChangelogConfig) -> Self {
+        Self { config }
+    }
+
+    /// Generate a changelog using git-cliff-core if enabled, fallback to basic implementation
+    pub fn generate_changelog(
+        &self,
+        commits: &[ConventionalCommit],
+    ) -> crate::errors::CoreResult<String> {
+        debug!(
+            "Generating enhanced changelog from {} commits",
+            commits.len()
+        );
+
+        if commits.is_empty() {
+            return Ok("No changes in this release.".to_string());
+        }
+
+        if self.config.use_git_cliff {
+            self.generate_with_git_cliff(commits)
+        } else {
+            // Fallback to basic implementation
+            let basic_generator = ChangelogGenerator::with_config(ChangelogConfig {
+                include_authors: self.config.include_authors,
+                include_shas: self.config.include_shas,
+                section_template: self.config.section_template.clone(),
+                commit_template: self.config.commit_template.clone(),
+            });
+            Ok(basic_generator.generate_changelog(commits))
+        }
+    }
+
+    /// Generate changelog using git-cliff-core
+    fn generate_with_git_cliff(
+        &self,
+        commits: &[ConventionalCommit],
+    ) -> crate::errors::CoreResult<String> {
+        // Convert our commits to git-cliff format
+        let git_cliff_commits: Vec<GitCliffCommit> = commits
+            .iter()
+            .map(|commit| self.convert_to_git_cliff_commit(commit))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        // Create git-cliff configuration
+        let git_cliff_config = self.create_git_cliff_config()?;
+
+        // Create a release with our commits
+        let mut release = GitCliffRelease::default();
+        release.version = Some("Unreleased".to_string());
+        release.commits = git_cliff_commits;
+        release.timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+
+        // Create changelog
+        let mut changelog = GitCliffChangelog::new(vec![release], &git_cliff_config, None)
+            .map_err(|e| crate::errors::CoreError::changelog_generation(e.to_string()))?;
+
+        // Add remote context for link generation if configured
+        if self.config.include_links {
+            if let Err(e) = changelog.add_remote_context() {
+                debug!("Failed to add remote context: {}", e);
+                // Continue without remote context
+            }
+        }
+
+        // Generate the changelog
+        let mut output = Vec::new();
+        changelog
+            .generate(&mut output)
+            .map_err(|e| crate::errors::CoreError::changelog_generation(e.to_string()))?;
+
+        let changelog_string = String::from_utf8(output).map_err(|e| {
+            crate::errors::CoreError::changelog_generation(format!("UTF-8 conversion error: {}", e))
+        })?;
+
+        Ok(changelog_string)
+    }
+
+    /// Convert our ConventionalCommit to git-cliff-core Commit
+    fn convert_to_git_cliff_commit(
+        &self,
+        commit: &ConventionalCommit,
+    ) -> crate::errors::CoreResult<GitCliffCommit> {
+        let git_cliff_commit = GitCliffCommit::new(commit.sha.clone(), commit.message.clone());
+
+        // Set additional fields if available
+        // Note: git-cliff-core Commit might have additional fields we can populate
+        // This is a basic conversion - we might need to adjust based on available fields
+
+        Ok(git_cliff_commit)
+    }
+
+    /// Create git-cliff-core configuration
+    fn create_git_cliff_config(&self) -> crate::errors::CoreResult<GitCliffConfig> {
+        // Create a basic git-cliff configuration
+        // This uses a simplified template that works with our conventional commits
+        let config_toml = r#"
+[changelog]
+header = """
+"""
+body = """
+{%- for group, commits in commits | group_by(attribute="group") %}
+### {{ group | title }}
+{%- for commit in commits %}
+- {{ commit.message | split(pat=":") | last | trim }} [{{ commit.id | truncate(length=7, end="") }}]
+{%- endfor %}
+
+{%- endfor %}
+"""
+trim = true
+
+[git]
+conventional_commits = true
+filter_unconventional = false
+split_commits = false
+commit_parsers = [
+    { message = "^feat", group = "Features" },
+    { message = "^fix", group = "Bug Fixes" },
+    { message = "^perf", group = "Performance Improvements" },
+    { message = "^revert", group = "Reverts" },
+    { message = "^docs", group = "Documentation" },
+    { message = "^style", group = "Styles" },
+    { message = "^refactor", group = "Code Refactoring" },
+    { message = "^test", group = "Tests" },
+    { message = "^build", group = "Build System" },
+    { message = "^ci", group = "Continuous Integration" },
+    { message = "^chore", group = "Chores" },
+]
+"#;
+
+        let config: GitCliffConfig = toml::from_str(&config_toml).map_err(|e| {
+            crate::errors::CoreError::changelog_generation(format!("Config parsing error: {}", e))
+        })?;
+
+        Ok(config)
+    }
+}
+
+impl Default for EnhancedChangelogGenerator {
     fn default() -> Self {
         Self::new()
     }

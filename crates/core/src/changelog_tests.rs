@@ -207,3 +207,75 @@ fn test_changelog_generation_scope_sorting() {
     assert!(auth_pos < ui_pos);
     assert!(ui_pos < core_pos);
 }
+
+#[test]
+fn test_enhanced_changelog_generation_basic() {
+    let config = EnhancedChangelogConfig {
+        use_git_cliff: false, // Use fallback for this test
+        ..Default::default()
+    };
+    let generator = EnhancedChangelogGenerator::with_config(config);
+    let commits = vec![
+        ConventionalCommit {
+            commit_type: "feat".to_string(),
+            scope: None,
+            description: "add user authentication".to_string(),
+            breaking_change: false,
+            message: "feat: add user authentication".to_string(),
+            sha: "abc123456789".to_string(),
+        },
+        ConventionalCommit {
+            commit_type: "fix".to_string(),
+            scope: None,
+            description: "resolve login bug".to_string(),
+            breaking_change: false,
+            message: "fix: resolve login bug".to_string(),
+            sha: "def456789012".to_string(),
+        },
+    ];
+
+    let result = generator.generate_changelog(&commits);
+    assert!(result.is_ok());
+
+    let changelog = result.unwrap();
+    assert!(changelog.contains("### Features"));
+    assert!(changelog.contains("add user authentication"));
+    assert!(changelog.contains("abc1234"));
+    assert!(changelog.contains("### Bug Fixes"));
+    assert!(changelog.contains("resolve login bug"));
+    assert!(changelog.contains("def4567"));
+}
+
+#[test]
+fn test_enhanced_changelog_config_defaults() {
+    let config = EnhancedChangelogConfig::default();
+    assert!(config.use_git_cliff);
+    assert!(config.include_authors);
+    assert!(config.include_shas);
+    assert!(config.include_links);
+    assert_eq!(config.section_template, "### {title}\n\n{entries}\n");
+    assert_eq!(config.commit_template, "- {description} [{sha}]");
+}
+
+#[test]
+fn test_enhanced_changelog_generator_creation() {
+    let generator = EnhancedChangelogGenerator::new();
+    assert!(generator.config.use_git_cliff);
+
+    let custom_config = EnhancedChangelogConfig {
+        use_git_cliff: false,
+        include_authors: false,
+        ..Default::default()
+    };
+    let custom_generator = EnhancedChangelogGenerator::with_config(custom_config);
+    assert!(!custom_generator.config.use_git_cliff);
+    assert!(!custom_generator.config.include_authors);
+}
+
+#[test]
+fn test_enhanced_changelog_empty_commits() {
+    let generator = EnhancedChangelogGenerator::new();
+    let result = generator.generate_changelog(&[]);
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap(), "No changes in this release.");
+}

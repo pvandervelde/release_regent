@@ -11,6 +11,10 @@ pub enum CoreError {
     #[error("Version calculation failed: {reason}")]
     Versioning { reason: String },
 
+    /// Changelog generation errors
+    #[error("Changelog generation failed: {message}")]
+    ChangelogGeneration { message: String },
+
     /// Webhook processing errors
     #[error("Webhook processing failed: {stage} - {message}")]
     Webhook { stage: String, message: String },
@@ -83,6 +87,13 @@ impl CoreError {
     pub fn versioning(reason: impl Into<String>) -> Self {
         Self::Versioning {
             reason: reason.into(),
+        }
+    }
+
+    /// Create a new changelog generation error
+    pub fn changelog_generation(message: impl Into<String>) -> Self {
+        Self::ChangelogGeneration {
+            message: message.into(),
         }
     }
 

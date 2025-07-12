@@ -18,6 +18,10 @@ serde_yaml = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 git-conventional = "0.12"
+git-cliff-core = { version = "2.9", default-features = false, features = [
+    "repo",
+] }
+toml = "0.8"
 
 # GitHub client
 release-regent-github-client = { workspace = true }
