@@ -224,6 +224,7 @@ pub struct GitHubAuthManager {
     /// Rate limiter for authentication requests
     rate_limiter: RateLimiter,
     /// Base Octocrab client for API requests
+    #[allow(dead_code)]
     octocrab_client: Octocrab,
 }
 

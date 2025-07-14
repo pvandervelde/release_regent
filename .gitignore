@@ -24,3 +24,6 @@ target/
 # Development memory bank and AI assistant files
 .llm/
 .aider*
+
+# Coverage reports
+codecov.json

@@ -1,168 +1,450 @@
-# Release_Regent
+# Release Regent
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)](https://github.com/pvandervelde/release_regent)
+[![Rust](https://img.shields.io/badge/rust-1.70%2B-orange.svg)](https://www.rust-lang.org/)
 
-## 👑 Overview
+## Overview
 
-Release_Regent is a GitHub app that automates your release management process. It handles versioning, release pull requests, and GitHub releases - ruling over your software delivery process with precision and reliability.
+Release Regent automates semantic versioning and changelog generation using conventional commits.
+It provides a CLI interface and Azure Functions integration for CI/CD pipelines.
 
-## ✨ Features
+### Core Capabilities
 
-- **Automated Release PR Creation**: When any PR is merged into the main branch, Release_Regent automatically creates or updates a release PR with the next version number
-- **Versioning Management**: Intelligently determines the next semantic version based on commit messages and PR content
-- **GitHub Release Automation**: When a release PR is merged into main, automatically creates a git tag and GitHub release
-- **Customizable Configuration**: Adapt Release_Regent to your project's specific needs through simple configuration
+- **Semantic Version Calculation**: Version bumping based on conventional commit analysis
+- **Changelog Generation**: Template-based changelog generation with git-cliff-core
+- **Conventional Commit Parsing**: Commit parsing with git-conventional library integration
+- **Multi-Architecture Support**: CLI tool and Azure Functions integration
+- **Configuration**: Configuration system for release management
 
-## 🔄 How It Works
+### Changelog Generation
 
-1. **PR Merge Detection**: Responds to GitHub webhook events when PRs are merged to your main branch
-2. **Release PR Management**:
-   - If no release PR exists, creates one with the next version
-   - If a release PR already exists, updates it with new changes
-3. **Release Creation**: When the release PR is merged, automatically:
-   - Creates a git tag with the version
-   - Generates a GitHub release with changelog notes
-   - Publishes the release
+- **Template Engine**: Tera template support for formatting
+- **Commit Categorization**: Grouping by conventional commit types (feat, fix, docs, etc.)
+- **Author Attribution**: Commit author information in changelogs
+- **Link Generation**: GitHub/GitLab commit and PR link generation
+- **Backward Compatibility**: Maintains existing API while adding features
+- **Fallback Support**: Fallback from advanced to basic changelog generation
 
-Release_Regent runs as a serverless function (Azure Function or AWS Lambda) that responds to GitHub webhook events, requiring no dedicated server.
+### Version Management
 
-## 🛠️ Installation
+- **Semantic Versioning**: Semantic versioning specification support (MAJOR.MINOR.PATCH)
+- **Pre-release Support**: Alpha, beta, and custom pre-release identifiers
+- **Build Metadata**: Build metadata in version strings
+- **Version Prefix Support**: Optional 'v' prefix handling
+- **Breaking Change Detection**: Major version bumps for breaking changes
 
-Release_Regent is designed to run as a serverless function that responds to GitHub webhooks. You can deploy it using either Azure Functions or AWS Lambda.
+## Architecture
 
-### Azure Functions Deployment
+Release Regent uses a multi-crate workspace architecture:
 
-```bash
-# Clone the repository
-git clone https://github.com/yourusername/release_regent.git
-cd release_regent
-
-# Install Azure Functions Core Tools
-npm install -g azure-functions-core-tools@4
-
-# Install dependencies
-npm install
-
-# Configure local settings
-cp local.settings.example.json local.settings.json
-# Edit local.settings.json with your GitHub App credentials and settings
-
-# Deploy to Azure
-func azure functionapp publish YourFunctionAppName
+```text
+release_regent/
+├── crates/
+│   ├── core/           # Internal core components
+│   ├── cli/            # Command-line interface
+│   ├── az_func/        # Azure Functions integration
+│   └── github_client/  # GitHub API integration
+└── docs/               # Documentation
 ```
 
-### AWS Lambda Deployment
+### Crate Descriptions
+
+- **`release-regent-core`**: Internal core components containing version calculation, changelog generation, and configuration management
+- **`release-regent-cli`**: **Published** - Command-line tool for local development and CI/CD integration
+- **`release-regent-az-func`**: **Published** - Azure Functions runtime for webhook-based automation
+- **`release-regent-github-client`**: Internal GitHub API client with authentication and rate limiting
+
+> **Note**: Only the CLI tool and Azure Function are published for end users. The core and GitHub client components are internal implementation details.
+
+## Installation & Usage
+
+### CLI Installation
+
+#### From Source
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/release_regent.git
+git clone https://github.com/pvandervelde/release_regent.git
 cd release_regent
 
-# Install dependencies
-npm install
+# Build the CLI tool
+cargo build --release -p release-regent-cli
 
-# Configure AWS credentials
-aws configure
+# Install to cargo bin directory
+cargo install --path crates/cli
+```
 
-# Deploy using Serverless Framework
-npm install -g serverless
-serverless deploy
+#### Using Cargo
+
+```bash
+# Install directly from the repository
+cargo install --git https://github.com/pvandervelde/release_regent.git release-regent-cli
+```
+
+### CLI Usage
+
+```bash
+# Calculate next version based on commits
+rr version --current 1.2.0 --commits-since-last-tag
+
+# Generate changelog for current version
+rr changelog --version 1.3.0 --output-format markdown
+
+# Analyze commits for version impact
+rr analyze --from v1.2.0 --to HEAD
+
+# Interactive mode for version calculation
+rr interactive
+```
+
+### Programmatic Integration
+
+Since the core components are internal, programmatic access to Release Regent functionality is provided through:
+
+1. **CLI Integration**: Execute the CLI tool from your applications
+2. **Azure Function Webhooks**: Automated workflows via HTTP endpoints
+
+#### CLI Integration Example
+
+```rust
+use std::process::Command;
+
+// Calculate next version using CLI
+let output = Command::new("rr")
+    .args(&["version", "--current", "1.2.0"])
+    .output()
+    .expect("Failed to execute rr command");
+
+let next_version = String::from_utf8(output.stdout)
+    .expect("Invalid UTF-8")
+    .trim();
+
+// Generate changelog using CLI
+let changelog_output = Command::new("rr")
+    .args(&["changelog", "--version", next_version])
+    .output()
+    .expect("Failed to generate changelog");
+
+let changelog = String::from_utf8(changelog_output.stdout)
+    .expect("Invalid UTF-8");
+```
+
+#### Azure Function Integration
+
+For automated workflows, deploy the Azure Function and configure webhooks:
+
+```bash
+# Deploy the Azure Function
+cd crates/az_func
+func azure functionapp publish YourReleaseRegentApp
+
+# Configure webhook in your repository
+# POST https://your-function-app.azurewebsites.net/api/webhook
 ```
 
 ## ⚙️ Configuration
 
-### Application Configuration
+### CLI Configuration
 
-For both Azure Functions and AWS Lambda, you'll need to configure environment variables:
+Create a `release-regent.toml` configuration file:
 
-**Azure Functions (`local.settings.json` for local development):**
+```toml
+[versioning]
+# Version prefix for tags (e.g., "v1.0.0")
+prefix = "v"
+# Pre-release suffix handling
+allow_prerelease = true
 
-```json
-{
-  "IsEncrypted": false,
-  "Values": {
-    "GITHUB_APP_ID": "your-github-app-id",
-    "GITHUB_APP_PRIVATE_KEY": "your-private-key",
-    "GITHUB_WEBHOOK_SECRET": "your-webhook-secret",
-    "DEFAULT_CONFIG_PATH": ".github/release-regent.yml"
-  }
-}
+[changelog]
+# Use git-cliff-core for advanced features
+use_git_cliff = true
+# Include commit authors in changelog
+include_authors = true
+# Include commit SHAs
+include_shas = true
+# Include links to commits and PRs
+include_links = true
+
+# Custom template for changelog sections
+section_template = """
+### {title}
+
+{entries}
+
+"""
+
+# Custom template for commit entries
+commit_template = "- {description} [{sha}]"
+
+[repository]
+# Repository URL for link generation
+remote_url = "https://github.com/owner/repo"
+# Main branch name
+main_branch = "main"
 ```
 
-**AWS Lambda (in `serverless.yml`):**
+### Advanced Changelog Templates
+
+Release Regent supports Tera templates for changelog customization:
+
+```toml
+[changelog.templates]
+# Custom header template
+header = """
+# Changelog
+
+All notable changes to this project will be documented in this file.
+"""
+
+# Advanced body template with conditional formatting
+body = """
+{%- for group, commits in commits | group_by(attribute="group") %}
+### {{ group | title }}
+
+{%- for commit in commits %}
+{%- if commit.scope %}
+- **{{ commit.scope }}**: {{ commit.description }}
+{%- else %}
+- {{ commit.description }}
+{%- endif %}
+{%- if include_links %} ([{{ commit.id | truncate(length=7, end="") }}]({{ remote_url }}/commit/{{ commit.id }})){% endif %}
+{%- if commit.breaking_change %} ⚠️ **BREAKING**{% endif %}
+{%- endfor %}
+
+{%- endfor %}
+"""
+```
+
+## 🔗 CI/CD Integration
+
+### GitHub Actions
+
+Create `.github/workflows/release.yml`:
 
 ```yaml
-provider:
-  name: aws
-  runtime: nodejs16.x
-  environment:
-    GITHUB_APP_ID: ${param:GITHUB_APP_ID}
-    GITHUB_APP_PRIVATE_KEY: ${param:GITHUB_APP_PRIVATE_KEY}
-    GITHUB_WEBHOOK_SECRET: ${param:GITHUB_WEBHOOK_SECRET}
-    DEFAULT_CONFIG_PATH: ".github/release-regent.yml"
+name: Release Management
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  version-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Release Regent
+        run: cargo install --git https://github.com/pvandervelde/release_regent.git release-regent-cli
+
+      - name: Calculate Next Version
+        run: |
+          CURRENT_VERSION=$(git describe --tags --abbrev=0 2>/dev/null || echo "0.0.0")
+          NEXT_VERSION=$(rr version --current $CURRENT_VERSION)
+          echo "next_version=$NEXT_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Generate Changelog
+        run: |
+          rr changelog --version ${{ steps.version-check.outputs.next_version }} > CHANGELOG.md
+
+      - name: Create Release PR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/create-pull-request@v5
+        with:
+          title: "chore(release): prepare version ${{ steps.version-check.outputs.next_version }}"
+          body: |
+            ## Release ${{ steps.version-check.outputs.next_version }}
+
+            $(cat CHANGELOG.md)
+          branch: release/${{ steps.version-check.outputs.next_version }}
 ```
 
-### Repository Configuration
-
-Create a `.github/release-regent.yml` file in each repository where you want to use Release_Regent:
+### Azure DevOps
 
 ```yaml
-# Basic configuration
-version_prefix: "v"  # Optional prefix for version tags (e.g., v1.0.0)
-branches:
-  main: main  # Your main branch name
+# azure-pipelines.yml
+trigger:
+  branches:
+    include: [main]
 
-# Release PR settings
-release_pr:
-  title_template: "chore(release): prepare for version ${version}"
-  body_template: |
-    # Release ${version}
+pool:
+  vmImage: 'ubuntu-latest'
 
-    ## What's Changed
-    ${changelog}
+steps:
+- task: Bash@3
+  displayName: 'Install Release Regent'
+  inputs:
+    targetType: 'inline'
+    script: |
+      curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+      source ~/.cargo/env
+      cargo install --git https://github.com/pvandervelde/release_regent.git release-regent-cli
 
-    ## Installation
-    ```
-    npm install your-package@${version}
-    ```
-
-# Release settings
-releases:
-  draft: false
-  prerelease: false
-  generate_notes: true
+- task: Bash@3
+  displayName: 'Calculate Version and Generate Changelog'
+  inputs:
+    targetType: 'inline'
+    script: |
+      source ~/.cargo/env
+      CURRENT_VERSION=$(git describe --tags --abbrev=0 2>/dev/null || echo "0.0.0")
+      NEXT_VERSION=$(rr version --current $CURRENT_VERSION)
+      rr changelog --version $NEXT_VERSION > CHANGELOG.md
+      echo "##vso[task.setvariable variable=NextVersion]$NEXT_VERSION"
 ```
 
-## 🔗 Related Projects
+## 🔧 Development
 
-Release_Regent is part of a suite of GitHub automation tools:
+### Building from Source
 
-- [Merge_Warden](https://github.com/yourusername/merge_warden) - Checks PRs to ensure they match certain standards
-- [Template_Teleporter](https://github.com/yourusername/template_teleporter) - Copies GitHub issue and PR templates from a master repository
-- [Repo_Roller](https://github.com/yourusername/repo_roller) - Creates new repositories from template repositories
+```bash
+# Clone the repository
+git clone https://github.com/pvandervelde/release_regent.git
+cd release_regent
 
-## 🤝 Contributing
+# Build all crates
+cargo build --workspace
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+# Run tests
+cargo test --workspace
+
+# Build release version
+cargo build --release --workspace
+```
+
+### Running Tests
+
+```bash
+# Run all tests
+cargo test --workspace
+
+# Run tests for specific crate
+cargo test -p release-regent-core
+
+# Run tests with coverage
+cargo tarpaulin --workspace
+```
+
+### Development Dependencies
+
+- Rust 1.70 or later
+- Git 2.0 or later
+- Optional: Docker for containerized testing
+
+## Current Status
+
+Release Regent is in active development with the following completion status:
+
+- ✅ **Core Version Calculation** - Implemented with semantic versioning support
+- ✅ **Conventional Commit Parsing** - Parsing with git-conventional library integration
+- ✅ **Enhanced Changelog Generation** - git-cliff-core integration with Tera templates
+- ✅ **CLI Interface** - Basic structure implemented, features in progress
+- ✅ **GitHub Client Components** - Authentication and API integration (internal)
+- 🔄 **CI/CD Templates** - GitHub Actions and Azure DevOps examples
+- 🔄 **Azure Functions Integration** - Webhook handling for automated workflows
+- ⏳ **Publication & Distribution** - CLI and Azure Function packaging in progress
+
+### Test Coverage
+
+- **161+ tests passing** across all crates
+- Core functionality tested
+- Integration tests for CLI workflows
+- Error handling and edge case coverage
+
+### Publication Status
+
+- 🚀 **CLI Tool (`release-regent-cli`)** - Ready for publication to crates.io
+- 🚀 **Azure Function (`release-regent-az-func`)** - Ready for deployment
+- 🔒 **Core Components** - Internal only, not published separately
+
+## Roadmap
+
+### Version 1.0 Goals
+
+- [ ] Complete CLI interface with all commands
+- [ ] Publish CLI tool to crates.io
+- [ ] Azure Function deployment templates and documentation
+- [ ] Full GitHub integration for automated releases
+- [ ] Comprehensive configuration management
+- [ ] Complete documentation and examples
+- [ ] CI/CD pipeline templates for major platforms
+
+### Future Enhancements
+
+- [ ] GitLab and Bitbucket support
+- [ ] Advanced template gallery
+- [ ] Multi-repository support
+- [ ] Plugin system for custom integrations
+- [ ] Web UI for configuration management
+- [ ] Docker containers for easy deployment
+
+## Related Projects
+
+Release Regent is part of a suite of GitHub automation tools for software development workflows.
+
+## Contributing
+
+Contributions are welcome. Release Regent uses standard Rust practices and testing.
+
+### Getting Started
 
 1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add some amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Make your changes with tests
+4. Ensure all tests pass (`cargo test --workspace`)
+5. Run formatting and linting (`cargo fmt && cargo clippy`)
+6. Commit your changes (`git commit -m 'feat: add amazing feature'`)
+7. Push to your branch (`git push origin feature/amazing-feature`)
+8. Open a Pull Request
+
+### Development Guidelines
+
+- Follow conventional commit format for all commits
+- Maintain test coverage above 90%
+- Update documentation for new features
+- Use `cargo fmt` for consistent formatting
+- Address all `cargo clippy` warnings
+
+### Testing
+
+```bash
+# Run all tests
+cargo test --workspace
+
+# Run tests with output
+cargo test --workspace -- --nocapture
+
+# Run specific test
+cargo test test_name -p crate_name
+```
 
 ## 📜 License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-## 📊 Project Status
+## Project Status
 
-Release_Regent is currently in active development.
+Release Regent is in **active development** with a focus on stability and feature coverage for version 1.0.
 
-## 🔮 Future Plans
+**Current Version**: 0.1.0 (Pre-release)
+**Target 1.0 Release**: Q3 2025
+**Stability**: Core features stable, API may evolve
 
-- Integration with CI/CD pipelines
-- Support for monorepo architectures
-- Custom release notes formatting
-- Advanced changelog generation
-- Support for conventional commits
+## Future Vision
+
+Release Regent aims to provide automated semantic versioning and changelog generation with:
+
+- **Git Platform Support**: GitHub, GitLab, Bitbucket, and self-hosted solutions
+- **Template System**: Changelog templates and formatting options
+- **Enterprise Features**: Configuration, audit logging, and compliance reporting
+- **Multi-repository Management**: Support for repository structures and dependencies
+- **Plugin Architecture**: System for custom integrations and workflows
+- **Web Interface**: Optional UI for configuration and monitoring
+
+---
+
+**Made with Rust** | **Semantic Versioning** | **Conventional Commits**
