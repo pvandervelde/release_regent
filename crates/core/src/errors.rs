@@ -148,8 +148,8 @@ mod tests {
     fn test_changelog_generation_error_creation() {
         let error = CoreError::changelog_generation("Test error message".to_string());
         match error {
-            CoreError::ChangelogGeneration(msg) => {
-                assert_eq!(msg, "Test error message");
+            CoreError::ChangelogGeneration { message } => {
+                assert_eq!(message, "Test error message");
             }
             _ => panic!("Expected ChangelogGeneration error"),
         }
