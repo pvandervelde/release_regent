@@ -119,4 +119,87 @@ pub type CoreResult<T> = Result<T, CoreError>;
 
 #[cfg(test)]
 #[path = "errors_tests.rs"]
-mod tests;
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_config_error_creation() {
+        let error = CoreError::config("Test config error".to_string());
+        match error {
+            CoreError::Config { message } => {
+                assert_eq!(message, "Test config error");
+            }
+            _ => panic!("Expected Config error"),
+        }
+    }
+
+    #[test]
+    fn test_versioning_error_creation() {
+        let error = CoreError::versioning("Test versioning error".to_string());
+        match error {
+            CoreError::Versioning { reason } => {
+                assert_eq!(reason, "Test versioning error");
+            }
+            _ => panic!("Expected Versioning error"),
+        }
+    }
+
+    #[test]
+    fn test_changelog_generation_error_creation() {
+        let error = CoreError::changelog_generation("Test error message".to_string());
+        match error {
+            CoreError::ChangelogGeneration(msg) => {
+                assert_eq!(msg, "Test error message");
+            }
+            _ => panic!("Expected ChangelogGeneration error"),
+        }
+    }
+
+    #[test]
+    fn test_webhook_error_creation() {
+        let error = CoreError::webhook("Test stage".to_string(), "Test webhook error".to_string());
+        match error {
+            CoreError::Webhook { stage, message } => {
+                assert_eq!(stage, "Test stage");
+                assert_eq!(message, "Test webhook error");
+            }
+            _ => panic!("Expected Webhook error"),
+        }
+    }
+
+    #[test]
+    fn test_invalid_input_error_creation() {
+        let error = CoreError::invalid_input("field1".to_string(), "Invalid value".to_string());
+        match error {
+            CoreError::InvalidInput { field, message } => {
+                assert_eq!(field, "field1");
+                assert_eq!(message, "Invalid value");
+            }
+            _ => panic!("Expected InvalidInput error"),
+        }
+    }
+
+    #[test]
+    fn test_not_supported_error_creation() {
+        let error =
+            CoreError::not_supported("some_operation".to_string(), "some_context".to_string());
+        match error {
+            CoreError::NotSupported { operation, context } => {
+                assert_eq!(operation, "some_operation");
+                assert_eq!(context, "some_context");
+            }
+            _ => panic!("Expected NotSupported error"),
+        }
+    }
+
+    #[test]
+    fn test_internal_state_error_creation() {
+        let error = CoreError::internal_state("Inconsistent state".to_string());
+        match error {
+            CoreError::InternalState { message } => {
+                assert_eq!(message, "Inconsistent state");
+            }
+            _ => panic!("Expected InternalState error"),
+        }
+    }
+}

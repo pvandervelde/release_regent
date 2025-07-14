@@ -157,8 +157,8 @@ prefix = "v"
 allow_prerelease = true
 
 [changelog]
-# Use advanced git-cliff-core features
-use_advanced_generation = true
+# Use git-cliff-core for advanced features
+use_git_cliff = true
 # Include commit authors in changelog
 include_authors = true
 # Include commit SHAs

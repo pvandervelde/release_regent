@@ -279,3 +279,69 @@ fn test_enhanced_changelog_empty_commits() {
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), "No changes in this release.");
 }
+
+#[test]
+fn test_enhanced_changelog_with_git_cliff_enabled() {
+    let config = EnhancedChangelogConfig {
+        use_git_cliff: true,
+        include_authors: true,
+        include_shas: true,
+        include_links: false, // Disable links to avoid remote dependency issues in tests
+        ..Default::default()
+    };
+    let generator = EnhancedChangelogGenerator::with_config(config);
+    let commits = vec![
+        ConventionalCommit {
+            commit_type: "feat".to_string(),
+            scope: Some("auth".to_string()),
+            description: "add OAuth support".to_string(),
+            breaking_change: false,
+            message: "feat(auth): add OAuth support".to_string(),
+            sha: "abc123456789".to_string(),
+        },
+        ConventionalCommit {
+            commit_type: "fix".to_string(),
+            scope: Some("ui".to_string()),
+            description: "button alignment".to_string(),
+            breaking_change: false,
+            message: "fix(ui): button alignment".to_string(),
+            sha: "def456789012".to_string(),
+        },
+    ];
+
+    let result = generator.generate_changelog(&commits);
+    assert!(result.is_ok());
+
+    let changelog = result.unwrap();
+    // git-cliff should generate structured output
+    assert!(changelog.len() > 0);
+    assert!(!changelog.contains("No changes in this release."));
+}
+
+#[test]
+fn test_enhanced_changelog_error_handling() {
+    let generator = EnhancedChangelogGenerator::new();
+    let commits = vec![ConventionalCommit {
+        commit_type: "feat".to_string(),
+        scope: None,
+        description: "test feature".to_string(),
+        breaking_change: false,
+        message: "feat: test feature".to_string(),
+        sha: "".to_string(), // Empty SHA to potentially trigger errors
+    }];
+
+    let result = generator.generate_changelog(&commits);
+    // Should handle gracefully - either succeed or return meaningful error
+    match result {
+        Ok(_) => {
+            // git-cliff handled it gracefully
+        }
+        Err(e) => {
+            // Should be a ChangelogGeneration error
+            assert!(
+                e.to_string().contains("changelog generation")
+                    || e.to_string().contains("Changelog generation")
+            );
+        }
+    }
+}
