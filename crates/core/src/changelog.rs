@@ -375,11 +375,15 @@ body = """
 {%- endfor %}
 """
 trim = true
+render_always = true
+postprocessors = []
 
 [git]
 conventional_commits = true
 filter_unconventional = false
 split_commits = false
+require_conventional = true
+commit_preprocessors = []
 commit_parsers = [
     { message = "^feat", group = "Features" },
     { message = "^fix", group = "Bug Fixes" },
