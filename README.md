@@ -57,7 +57,7 @@ release_regent/
 
 > **Note**: Only the CLI tool and Azure Function are published for end users. The core and GitHub client components are internal implementation details.
 
-## � Installation & Usage
+## Installation & Usage
 
 ### CLI Installation
 
