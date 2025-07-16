@@ -3,9 +3,10 @@
 //! This module handles GitHub webhook events and processes them for release management.
 
 use crate::{CoreError, CoreResult};
+use release_regent_github_client::GitHubAuthManager;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 /// GitHub webhook event
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -139,11 +140,11 @@ impl WebhookProcessor {
     }
 
     /// Validate webhook signature
-    fn validate_signature(&self, event: &WebhookEvent, _secret: &str) -> CoreResult<()> {
+    fn validate_signature(&self, event: &WebhookEvent, secret: &str) -> CoreResult<()> {
         debug!("Validating webhook signature");
 
         // Get signature from headers
-        let _signature = event
+        let signature = event
             .headers
             .get("x-hub-signature-256")
             .or_else(|| event.headers.get("X-Hub-Signature-256"))
@@ -151,9 +152,30 @@ impl WebhookProcessor {
                 CoreError::webhook("signature_validation", "Missing signature header")
             })?;
 
-        // TODO: Implement actual HMAC signature validation
-        // This will be implemented in subsequent issues
-        warn!("Signature validation not yet implemented - placeholder");
+        // Get the raw payload for signature verification
+        // We need to reconstruct the raw payload from the event
+        let payload = serde_json::to_vec(&event.payload).map_err(|e| {
+            CoreError::webhook(
+                "signature_validation",
+                &format!("Failed to serialize payload for validation: {}", e),
+            )
+        })?;
+
+        // Use GitHub client's signature verification
+        let is_valid = GitHubAuthManager::verify_webhook_signature(&payload, signature, secret)
+            .map_err(|e| {
+                CoreError::webhook(
+                    "signature_validation",
+                    &format!("Signature verification failed: {}", e),
+                )
+            })?;
+
+        if !is_valid {
+            return Err(CoreError::webhook(
+                "signature_validation",
+                "Invalid webhook signature",
+            ));
+        }
 
         debug!("Webhook signature validation passed");
         Ok(())
