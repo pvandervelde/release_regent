@@ -24,7 +24,15 @@ This guide will walk you through setting up Release Regent for your project from
 
 ### Option A: Using Cargo (Recommended)
 
+**Linux/macOS (bash)**:
+
 ```bash
+cargo install release-regent
+```
+
+**Windows (PowerShell)**:
+
+```powershell
 cargo install release-regent
 ```
 
@@ -36,7 +44,15 @@ cargo install release-regent
 
 ### Verify Installation
 
+**Linux/macOS (bash)**:
+
 ```bash
+rr --version
+```
+
+**Windows (PowerShell)**:
+
+```powershell
 rr --version
 ```
 
@@ -50,7 +66,16 @@ release-regent 0.1.0
 
 Navigate to your Git repository and initialize Release Regent:
 
+**Linux/macOS (bash)**:
+
 ```bash
+cd your-project
+rr init
+```
+
+**Windows (PowerShell)**:
+
+```powershell
 cd your-project
 rr init
 ```
@@ -77,12 +102,12 @@ Open the generated `release-regent.yml` file:
 versioning:
   prefix: "v"              # Detected from existing tags
   initial_version: "0.1.0" # Starting version if no tags exist
-  
+
 # Changelog generation
 changelog:
   include_authors: true
   group_by_type: true
-  
+
 # Commit parsing
 parsing:
   conventional_commits: true
@@ -99,23 +124,33 @@ parsing:
 
 Before going live, test your configuration with your existing Git history:
 
+**Linux/macOS (bash)**:
+
 ```bash
 rr test --commits 10
 ```
 
+**Windows (PowerShell)**:
+
+```powershell
+rr test --commits 10
+```
+
 This analyzes your last 10 commits and shows you:
+
 - How commits are parsed
 - What version bump would occur
 - Generated changelog content
 
 **Example output**:
+
 ```
 Analyzing 10 commits...
 
 === Parsed Commits ===
 • feat: add user authentication
   Type: feat, Scope: none, Breaking: false
-  
+
 • fix(auth): handle invalid tokens
   Type: fix, Scope: auth, Breaking: false
 
@@ -140,6 +175,7 @@ Based on the test output, you might want to adjust your configuration:
 ### Common Adjustments
 
 **If you want more detailed changelogs**:
+
 ```yaml
 changelog:
   include_authors: true
@@ -152,6 +188,7 @@ changelog:
 ```
 
 **If you use different commit types**:
+
 ```yaml
 parsing:
   conventional_commits: true
@@ -162,6 +199,7 @@ parsing:
 ```
 
 **If you want to ignore certain commits**:
+
 ```yaml
 parsing:
   ignore_patterns:
@@ -173,13 +211,22 @@ parsing:
 
 Test the webhook processing functionality:
 
+**Linux/macOS (bash)**:
+
 ```bash
+rr run --event-file sample-webhook.json --dry-run
+```
+
+**Windows (PowerShell)**:
+
+```powershell
 rr run --event-file sample-webhook.json --dry-run
 ```
 
 This simulates receiving a GitHub webhook and shows you what would happen without making any actual changes.
 
 **Expected output**:
+
 ```
 Processing webhook event...
 Event: pull_request.closed (merged)
@@ -204,18 +251,48 @@ Next version: 1.3.0
 If you want to test creating an actual release:
 
 1. **Commit your configuration**:
+
+   **Linux/macOS (bash)**:
+
    ```bash
    git add release-regent.yml
    git commit -m "feat: add release automation configuration"
    ```
 
+   **Windows (PowerShell)**:
+
+   ```powershell
+   git add release-regent.yml
+   git commit -m "feat: add release automation configuration"
+   ```
+
 2. **Test the release process**:
+
+   **Linux/macOS (bash)**:
+
    ```bash
    rr test --commits 1
    ```
 
+   **Windows (PowerShell)**:
+
+   ```powershell
+   rr test --commits 1
+   ```
+
 3. **Create a manual release** (if confident):
+
+   **Linux/macOS (bash)**:
+
    ```bash
+   # This would create an actual tag and release
+   # Only run this if you're ready!
+   rr run --event-file sample-webhook.json
+   ```
+
+   **Windows (PowerShell)**:
+
+   ```powershell
    # This would create an actual tag and release
    # Only run this if you're ready!
    rr run --event-file sample-webhook.json
@@ -232,20 +309,24 @@ For production use, you'll want to integrate with GitHub:
 ## Common Issues and Solutions
 
 ### "Configuration file not found"
+
 - Make sure you ran `rr init` in your project directory
 - Check that `release-regent.yml` exists in your current directory
 
 ### "No commits found matching criteria"
+
 - Verify you're in a Git repository with commit history
 - Check your `parsing.ignore_patterns` - they might be too restrictive
 - Try increasing the `--commits` count in `rr test`
 
 ### "Invalid version format"
+
 - Ensure your existing tags follow semantic versioning (e.g., "v1.2.3")
 - Check the `versioning.prefix` setting matches your tag format
 - Use `git tag -l` to see your current tags
 
 ### Unexpected version bumps
+
 - Review your commit messages for conventional commit format
 - Check the `parsing.conventional_commits` setting
 - Use `rr test --verbose` to see detailed commit parsing
