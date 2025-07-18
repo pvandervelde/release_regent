@@ -425,7 +425,7 @@ Now that you understand the basics, you can:
 
 ### If You Have Issues
 
-- **Troubleshoot problems**: Check the [Troubleshooting Guide](troubleshooting-guide.md)
+- **Troubleshoot problems**: Check the troubleshooting sections in [CLI Reference](cli-reference.md#troubleshooting)
 - **Get help**: Review the documentation or open an issue
 
 ## Clean Up

@@ -351,7 +351,7 @@ Now that you have Release Regent working locally:
 
 - **Configuration questions**: See [Configuration Reference](configuration-reference.md)
 - **Command usage**: See [CLI Reference](cli-reference.md)
-- **Troubleshooting**: See [Troubleshooting Guide](troubleshooting-guide.md)
+- **Troubleshooting**: See the troubleshooting sections in [CLI Reference](cli-reference.md#troubleshooting)
 - **Issues**: Check the [GitHub Issues](https://github.com/pvandervelde/release_regent/issues)
 
 ---

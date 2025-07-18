@@ -47,7 +47,8 @@ When a release PR is merged:
 
 ### For New Users
 
-- 📚 **[Getting Started Guide](docs/getting-started.md)** - Step-by-step setup tutorial
+- 📚 **[Tutorial](docs/tutorial.md)** - 15-minute hands-on introduction
+- 📚 **[Getting Started Guide](docs/getting-started-guide.md)** - Step-by-step setup tutorial
 - 🔧 **[GitHub App Setup](docs/github-app-setup.md)** - Tutorial for configuring GitHub integration
 - 🌐 **[Webhook Integration](docs/webhook-integration.md)** - Tutorial for deploying webhook processing
 
