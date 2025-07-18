@@ -5,6 +5,7 @@
 ## What You'll Build
 
 In this tutorial, you'll:
+
 - Set up Release Regent in a sample repository
 - Create your first configuration
 - Generate a changelog from commits
@@ -14,6 +15,7 @@ In this tutorial, you'll:
 ## Before You Start
 
 You'll need:
+
 - A computer with a terminal
 - Git installed
 - 15 minutes of your time
@@ -32,7 +34,15 @@ Download the latest release from [GitHub Releases](https://github.com/pvandervel
 
 Open a terminal and run:
 
+**Linux/macOS (bash)**:
+
 ```bash
+rr --version
+```
+
+**Windows (PowerShell)**:
+
+```powershell
 rr --version
 ```
 
@@ -41,6 +51,8 @@ You should see version information. If you get a "command not found" error, make
 ## Step 2: Create a Practice Repository
 
 Let's create a sample repository to practice with:
+
+**Linux/macOS (bash)**:
 
 ```bash
 # Create a new directory
@@ -69,6 +81,35 @@ git add README.md
 git commit -m "docs: add installation section"
 ```
 
+**Windows (PowerShell)**:
+
+```powershell
+# Create a new directory
+mkdir release-regent-tutorial
+cd release-regent-tutorial
+
+# Initialize git
+git init
+
+# Create a sample file
+"# My Project" | Out-File -FilePath README.md -Encoding utf8
+git add README.md
+git commit -m "feat: initial project setup"
+
+# Add a few more commits to have some history
+"console.log('Hello, world!');" | Out-File -FilePath index.js -Encoding utf8
+git add index.js
+git commit -m "feat: add hello world function"
+
+"console.log('Goodbye, world!');" | Out-File -FilePath index.js -Append -Encoding utf8
+git add index.js
+git commit -m "fix: add goodbye message"
+
+"# Installation" | Out-File -FilePath README.md -Append -Encoding utf8
+git add README.md
+git commit -m "docs: add installation section"
+```
+
 Perfect! You now have a repository with some conventional commits to work with.
 
 ## Step 3: Initialize Release Regent
@@ -80,13 +121,22 @@ rr init
 ```
 
 This creates two files:
+
 - `release-regent.yml` - Your configuration file
 - `sample-webhook.json` - A sample webhook for testing
 
 Let's see what was created:
 
+**Linux/macOS (bash)**:
+
 ```bash
 ls -la release-regent.yml sample-webhook.json
+```
+
+**Windows (PowerShell)**:
+
+```powershell
+Get-ChildItem release-regent.yml, sample-webhook.json
 ```
 
 ## Step 4: Configure for Your Repository
@@ -106,7 +156,7 @@ release_notes:
   enabled: true
   template: |
     ## What's Changed
-    
+
     {{#each commits}}
     - {{this.message}} ({{this.sha}})
     {{/each}}
@@ -130,7 +180,15 @@ Save the file.
 
 Let's see how Release Regent analyzes your commits:
 
+**Linux/macOS (bash)**:
+
 ```bash
+rr test --commits 4
+```
+
+**Windows (PowerShell)**:
+
+```powershell
 rr test --commits 4
 ```
 
@@ -157,6 +215,7 @@ Generated changelog:
 ```
 
 **What just happened?**
+
 - Release Regent analyzed your 4 commits
 - It found 3 that follow conventional commit format
 - It calculated that you'd get a minor version bump (0.1.0 → 0.2.0)
@@ -166,7 +225,15 @@ Generated changelog:
 
 Now let's simulate how Release Regent processes GitHub webhooks:
 
+**Linux/macOS (bash)**:
+
 ```bash
+rr run --event-file sample-webhook.json --dry-run
+```
+
+**Windows (PowerShell)**:
+
+```powershell
 rr run --event-file sample-webhook.json --dry-run
 ```
 
@@ -181,21 +248,21 @@ release_notes:
   enabled: true
   template: |
     ## 🚀 What's New in v{{version}}
-    
+
     {{#if features}}
     ### ✨ New Features
     {{#each features}}
     - {{this.message}}
     {{/each}}
     {{/if}}
-    
+
     {{#if fixes}}
     ### 🐛 Bug Fixes
     {{#each fixes}}
     - {{this.message}}
     {{/each}}
     {{/if}}
-    
+
     {{#if others}}
     ### 📚 Other Changes
     {{#each others}}
@@ -216,6 +283,8 @@ Notice how the output now categorizes your commits and uses emojis!
 
 Let's add some different types of commits to see how they're handled:
 
+**Linux/macOS (bash)**:
+
 ```bash
 # Add a breaking change
 echo "export function hello() { return 'Hello!'; }" > index.js
@@ -231,6 +300,27 @@ git commit -m "perf: optimize hello function"
 
 # Add a test
 echo "// TODO: Add tests" >> index.js
+git add index.js
+git commit -m "test: add placeholder for tests"
+```
+
+**Windows (PowerShell)**:
+
+```powershell
+# Add a breaking change
+"export function hello() { return 'Hello!'; }" | Out-File -FilePath index.js -Encoding utf8
+git add index.js
+git commit -m "feat!: convert to ES6 module
+
+BREAKING CHANGE: Changed from console.log to exported function"
+
+# Add a performance improvement
+"// Optimized version" | Out-File -FilePath index.js -Append -Encoding utf8
+git add index.js
+git commit -m "perf: optimize hello function"
+
+# Add a test
+"// TODO: Add tests" | Out-File -FilePath index.js -Append -Encoding utf8
 git add index.js
 git commit -m "test: add placeholder for tests"
 ```
@@ -270,7 +360,15 @@ Let's create a custom webhook payload. Create a file called `my-webhook.json`:
 
 Test it:
 
+**Linux/macOS (bash)**:
+
 ```bash
+rr run --event-file my-webhook.json --dry-run
+```
+
+**Windows (PowerShell)**:
+
+```powershell
 rr run --event-file my-webhook.json --dry-run
 ```
 
@@ -283,6 +381,7 @@ rr test --commits 10 --verbose --current-version 0.1.0
 ```
 
 This shows you:
+
 - **Commit parsing**: How each commit is categorized
 - **Version calculation**: Why the version changes
 - **Changelog generation**: What the release notes will look like
@@ -313,16 +412,19 @@ Release Regent follows this workflow:
 Now that you understand the basics, you can:
 
 ### For Local Development
+
 - **Integrate with your real repositories**: Use `rr init` in your actual projects
 - **Customize configurations**: Explore the [Configuration Reference](configuration-reference.md)
 - **Learn advanced features**: Check the [CLI Reference](cli-reference.md)
 
 ### For Production Use
+
 - **Set up GitHub App**: Follow [GitHub App Setup Guide](github-app-setup.md)
 - **Deploy webhook processing**: Use the [Webhook Integration Guide](webhook-integration.md)
 - **Understand the concepts**: Read the [Release Automation Guide](release-automation-guide.md)
 
 ### If You Have Issues
+
 - **Troubleshoot problems**: Check the [Troubleshooting Guide](troubleshooting-guide.md)
 - **Get help**: Review the documentation or open an issue
 
@@ -338,6 +440,7 @@ rm -rf release-regent-tutorial
 ## Summary
 
 You've learned how Release Regent automates releases by:
+
 - Analyzing conventional commits
 - Calculating semantic versions
 - Generating formatted changelogs
