@@ -26,11 +26,21 @@ Use the [Azure Function Integration Example](examples/azure_function_integration
 
 Run the [Webhook Integration Test Script](examples/test-webhook-integration.sh):
 
+**Linux/macOS (bash)**:
+
 ```bash
 # Make the script executable (on Unix systems)
 chmod +x docs/examples/test-webhook-integration.sh
 
 # Run the integration tests
+./docs/examples/test-webhook-integration.sh
+```
+
+**Windows (PowerShell)**:
+
+```powershell
+# Run the integration tests using PowerShell
+# Note: The test script may need to be adapted for Windows
 ./docs/examples/test-webhook-integration.sh
 ```
 
@@ -94,7 +104,21 @@ chmod +x docs/examples/test-webhook-integration.sh
 
 Run the comprehensive test suite:
 
+**Linux/macOS (bash)**:
+
 ```bash
+# Run all tests
+cargo test
+
+# Run specific component tests
+cargo test webhook
+cargo test auth
+cargo test versioning
+```
+
+**Windows (PowerShell)**:
+
+```powershell
 # Run all tests
 cargo test
 

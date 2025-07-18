@@ -931,8 +931,16 @@ Repository and API URLs are validated for:
 
 Enable debug logging to see detailed configuration information:
 
+**Linux/macOS (bash)**:
+
 ```bash
 RUST_LOG=debug rr --config-check
+```
+
+**Windows (PowerShell)**:
+
+```powershell
+$env:RUST_LOG="debug"; rr --config-check
 ```
 
 This will validate your configuration and show exactly what values are being used.
