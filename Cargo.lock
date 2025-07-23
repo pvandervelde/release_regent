@@ -2380,6 +2380,8 @@ dependencies = [
 name = "release-regent-core"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "chrono",
  "git-cliff-core",
  "git-conventional",
  "release-regent-github-client",
