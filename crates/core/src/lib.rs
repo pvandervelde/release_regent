@@ -6,6 +6,7 @@
 pub mod changelog;
 pub mod config;
 pub mod errors;
+pub mod traits;
 pub mod versioning;
 pub mod webhook;
 
