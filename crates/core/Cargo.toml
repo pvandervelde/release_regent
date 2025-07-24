@@ -17,6 +17,8 @@ serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+async-trait = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
 git-conventional = "0.12"
 git-cliff-core = { version = "2.9", default-features = false, features = [
     "repo",
