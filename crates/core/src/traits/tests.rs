@@ -26,7 +26,8 @@ async fn test_github_operations_trait_object_safety() {
 #[tokio::test]
 async fn test_configuration_provider_trait_object_safety() {
     // This test verifies that ConfigurationProvider can be used as a trait object
-    let mock: Box<dyn ConfigurationProvider> = Box::new(configuration_provider::MockConfigurationProvider);
+    let mock: Box<dyn ConfigurationProvider> =
+        Box::new(configuration_provider::MockConfigurationProvider);
 
     // Test that all methods return the expected error for unimplemented mock
     let options = configuration_provider::LoadOptions::default();
@@ -83,8 +84,8 @@ fn test_github_operations_data_structures() {
     };
 
     let json = serde_json::to_string(&repo).expect("Repository should serialize");
-    let deserialized: github_operations::Repository = serde_json::from_str(&json)
-        .expect("Repository should deserialize");
+    let deserialized: github_operations::Repository =
+        serde_json::from_str(&json).expect("Repository should deserialize");
     assert_eq!(repo.id, deserialized.id);
     assert_eq!(repo.name, deserialized.name);
     assert_eq!(repo.owner, deserialized.owner);
@@ -99,8 +100,8 @@ fn test_github_operations_data_structures() {
     };
 
     let json = serde_json::to_string(&tag).expect("Tag should serialize");
-    let deserialized: github_operations::Tag = serde_json::from_str(&json)
-        .expect("Tag should deserialize");
+    let deserialized: github_operations::Tag =
+        serde_json::from_str(&json).expect("Tag should deserialize");
     assert_eq!(tag.name, deserialized.name);
     assert_eq!(tag.commit_sha, deserialized.commit_sha);
 }
@@ -125,16 +126,16 @@ fn test_version_calculator_data_structures() {
     };
 
     let json = serde_json::to_string(&context).expect("VersionContext should serialize");
-    let deserialized: version_calculator::VersionContext = serde_json::from_str(&json)
-        .expect("VersionContext should deserialize");
+    let deserialized: version_calculator::VersionContext =
+        serde_json::from_str(&json).expect("VersionContext should deserialize");
     assert_eq!(context.owner, deserialized.owner);
     assert_eq!(context.repo, deserialized.repo);
 
     // Test VersionBump enum
     let bump = version_calculator::VersionBump::Major;
     let json = serde_json::to_string(&bump).expect("VersionBump should serialize");
-    let deserialized: version_calculator::VersionBump = serde_json::from_str(&json)
-        .expect("VersionBump should deserialize");
+    let deserialized: version_calculator::VersionBump =
+        serde_json::from_str(&json).expect("VersionBump should deserialize");
     assert_eq!(bump, deserialized);
 }
 
@@ -168,8 +169,8 @@ fn test_configuration_provider_data_structures() {
     };
 
     let json = serde_json::to_string(&source).expect("ConfigurationSource should serialize");
-    let deserialized: configuration_provider::ConfigurationSource = serde_json::from_str(&json)
-        .expect("ConfigurationSource should deserialize");
+    let deserialized: configuration_provider::ConfigurationSource =
+        serde_json::from_str(&json).expect("ConfigurationSource should deserialize");
     assert_eq!(source.source_type, deserialized.source_type);
     assert_eq!(source.location, deserialized.location);
 }
@@ -190,7 +191,9 @@ async fn test_mock_error_handling() {
 
     // Test configuration provider error
     let options = configuration_provider::LoadOptions::default();
-    let result = config_mock.load_repository_config("owner", "repo", options).await;
+    let result = config_mock
+        .load_repository_config("owner", "repo", options)
+        .await;
     assert!(result.is_err());
     if let Err(e) = result {
         assert!(matches!(e, crate::CoreError::NotSupported { .. }));
@@ -211,7 +214,9 @@ async fn test_mock_error_handling() {
         include_prerelease: false,
     };
 
-    let result = version_mock.analyze_commits(context, strategy, commits).await;
+    let result = version_mock
+        .analyze_commits(context, strategy, commits)
+        .await;
     assert!(result.is_err());
     if let Err(e) = result {
         assert!(matches!(e, crate::CoreError::NotSupported { .. }));
@@ -248,7 +253,9 @@ async fn test_async_trait_compatibility() {
         };
         let options = version_calculator::CalculationOptions::default();
 
-        let _result = calculator.calculate_version(context, strategy, options).await?;
+        let _result = calculator
+            .calculate_version(context, strategy, options)
+            .await?;
         Ok(())
     }
 
@@ -265,19 +272,16 @@ async fn test_async_trait_compatibility() {
 /// Test that all trait objects can be stored in collections
 #[test]
 fn test_trait_objects_in_collections() {
-    let github_clients: Vec<Box<dyn GitHubOperations>> = vec![
-        Box::new(github_operations::MockGitHubOperations),
-    ];
+    let github_clients: Vec<Box<dyn GitHubOperations>> =
+        vec![Box::new(github_operations::MockGitHubOperations)];
     assert_eq!(github_clients.len(), 1);
 
-    let config_providers: Vec<Box<dyn ConfigurationProvider>> = vec![
-        Box::new(configuration_provider::MockConfigurationProvider),
-    ];
+    let config_providers: Vec<Box<dyn ConfigurationProvider>> =
+        vec![Box::new(configuration_provider::MockConfigurationProvider)];
     assert_eq!(config_providers.len(), 1);
 
-    let version_calculators: Vec<Box<dyn VersionCalculator>> = vec![
-        Box::new(version_calculator::MockVersionCalculator),
-    ];
+    let version_calculators: Vec<Box<dyn VersionCalculator>> =
+        vec![Box::new(version_calculator::MockVersionCalculator)];
     assert_eq!(version_calculators.len(), 1);
 }
 
