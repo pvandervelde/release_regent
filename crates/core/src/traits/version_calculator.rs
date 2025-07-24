@@ -382,7 +382,8 @@ pub trait VersionCalculator: Send + Sync {
     ///
     /// # Errors
     /// - `CoreError::InvalidInput` - Invalid commit message format
-    fn parse_conventional_commit(&self, commit_message: &str) -> CoreResult<Option<CommitAnalysis>>;
+    fn parse_conventional_commit(&self, commit_message: &str)
+        -> CoreResult<Option<CommitAnalysis>>;
 
     /// Apply version bump to existing version
     ///
@@ -422,7 +423,10 @@ impl VersionCalculator for MockVersionCalculator {
         _options: CalculationOptions,
     ) -> CoreResult<VersionCalculationResult> {
         // TODO: implement
-        Err(crate::CoreError::not_supported("MockVersionCalculator", "not yet implemented"))
+        Err(crate::CoreError::not_supported(
+            "MockVersionCalculator",
+            "not yet implemented",
+        ))
     }
 
     async fn analyze_commits(
@@ -432,7 +436,10 @@ impl VersionCalculator for MockVersionCalculator {
         _commit_shas: Vec<String>,
     ) -> CoreResult<Vec<CommitAnalysis>> {
         // TODO: implement
-        Err(crate::CoreError::not_supported("MockVersionCalculator", "not yet implemented"))
+        Err(crate::CoreError::not_supported(
+            "MockVersionCalculator",
+            "not yet implemented",
+        ))
     }
 
     async fn validate_version(
@@ -442,7 +449,10 @@ impl VersionCalculator for MockVersionCalculator {
         _rules: ValidationRules,
     ) -> CoreResult<bool> {
         // TODO: implement
-        Err(crate::CoreError::not_supported("MockVersionCalculator", "not yet implemented"))
+        Err(crate::CoreError::not_supported(
+            "MockVersionCalculator",
+            "not yet implemented",
+        ))
     }
 
     async fn get_version_bump(
@@ -452,7 +462,10 @@ impl VersionCalculator for MockVersionCalculator {
         _commit_analyses: Vec<CommitAnalysis>,
     ) -> CoreResult<VersionBump> {
         // TODO: implement
-        Err(crate::CoreError::not_supported("MockVersionCalculator", "not yet implemented"))
+        Err(crate::CoreError::not_supported(
+            "MockVersionCalculator",
+            "not yet implemented",
+        ))
     }
 
     async fn generate_changelog_entries(
@@ -463,7 +476,10 @@ impl VersionCalculator for MockVersionCalculator {
         _version: SemanticVersion,
     ) -> CoreResult<Vec<ChangelogEntry>> {
         // TODO: implement
-        Err(crate::CoreError::not_supported("MockVersionCalculator", "not yet implemented"))
+        Err(crate::CoreError::not_supported(
+            "MockVersionCalculator",
+            "not yet implemented",
+        ))
     }
 
     async fn preview_calculation(
@@ -473,7 +489,10 @@ impl VersionCalculator for MockVersionCalculator {
         _options: CalculationOptions,
     ) -> CoreResult<VersionCalculationResult> {
         // TODO: implement
-        Err(crate::CoreError::not_supported("MockVersionCalculator", "not yet implemented"))
+        Err(crate::CoreError::not_supported(
+            "MockVersionCalculator",
+            "not yet implemented",
+        ))
     }
 
     fn supported_strategies(&self) -> HashMap<String, String> {
@@ -489,9 +508,15 @@ impl VersionCalculator for MockVersionCalculator {
         }
     }
 
-    fn parse_conventional_commit(&self, _commit_message: &str) -> CoreResult<Option<CommitAnalysis>> {
+    fn parse_conventional_commit(
+        &self,
+        _commit_message: &str,
+    ) -> CoreResult<Option<CommitAnalysis>> {
         // TODO: implement
-        Err(crate::CoreError::not_supported("MockVersionCalculator", "not yet implemented"))
+        Err(crate::CoreError::not_supported(
+            "MockVersionCalculator",
+            "not yet implemented",
+        ))
     }
 
     fn apply_version_bump(
@@ -502,6 +527,9 @@ impl VersionCalculator for MockVersionCalculator {
         _build: Option<String>,
     ) -> CoreResult<SemanticVersion> {
         // TODO: implement
-        Err(crate::CoreError::not_supported("MockVersionCalculator", "not yet implemented"))
+        Err(crate::CoreError::not_supported(
+            "MockVersionCalculator",
+            "not yet implemented",
+        ))
     }
 }
