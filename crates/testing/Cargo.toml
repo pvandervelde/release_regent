@@ -1,0 +1,53 @@
+[package]
+name = "release_regent_testing"
+version = "0.1.0"
+edition = "2021"
+description = "Testing infrastructure and mock implementations for Release Regent"
+license = "MIT"
+repository = "https://github.com/pvandervelde/release_regent"
+readme = "README.md"
+
+[dependencies]
+# Core dependencies for trait implementations
+release-regent-core = { path = "../core" }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+
+# Testing framework dependencies
+tokio = { workspace = true }
+tempfile = "3.0"
+
+# Mock data generation
+fake = { version = "2.9", features = [
+    "derive",
+    "chrono",
+    "uuid",
+], optional = true }
+rand = "0.8"
+
+# HTTP mocking for GitHub API simulation
+wiremock = "0.6"
+reqwest = { workspace = true }
+
+# Webhook payload handling
+http = "1.0"
+bytes = "1.0"
+
+# Logging for test debugging
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+# Additional testing utilities
+pretty_assertions = "1.4"
+serial_test = "3.0"
+
+[features]
+default = []
+# Feature for enabling test-only functionality
+test-utils = []
+# Feature for enabling mock builders
+mock-builders = ["fake"]
