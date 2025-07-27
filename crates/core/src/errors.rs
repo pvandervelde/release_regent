@@ -40,6 +40,22 @@ impl ErrorContext {
 /// Errors that can occur in core Release Regent operations
 #[derive(Error, Debug)]
 pub enum CoreError {
+    /// Authentication/authorization errors
+    #[error("Authentication error: {message}")]
+    Authentication {
+        message: String,
+        context: Option<ErrorContext>,
+    },
+
+    /// Changelog generation errors
+    #[error("Changelog generation failed: {message}")]
+    ChangelogGeneration {
+        message: String,
+        context: Option<ErrorContext>,
+        #[source]
+        source: Option<Box<dyn std::error::Error + Send + Sync>>,
+    },
+
     /// Configuration-related errors
     #[error("Configuration error: {message}")]
     Config {
@@ -49,19 +65,97 @@ pub enum CoreError {
         source: Option<Box<dyn std::error::Error + Send + Sync>>,
     },
 
-    /// Version calculation errors
-    #[error("Version calculation failed: {reason}")]
-    Versioning {
-        reason: String,
+    /// GitHub API integration errors
+    #[error("GitHub operation failed: {source}")]
+    GitHub {
+        #[source]
+        source: Box<release_regent_github_client::Error>,
+        context: Option<ErrorContext>,
+    },
+
+    /// Internal state inconsistency
+    #[error("Internal state error: {message}")]
+    InternalState {
+        message: String,
         context: Option<ErrorContext>,
         #[source]
         source: Option<Box<dyn std::error::Error + Send + Sync>>,
     },
 
-    /// Changelog generation errors
-    #[error("Changelog generation failed: {message}")]
-    ChangelogGeneration {
+    /// Invalid input provided to core operations
+    #[error("Invalid input: {field} - {message}")]
+    InvalidInput {
+        field: String,
         message: String,
+        context: Option<ErrorContext>,
+    },
+
+    /// I/O errors (file operations, network, etc.)
+    #[error("I/O operation failed: {source}")]
+    Io {
+        #[from]
+        source: std::io::Error,
+    },
+
+    /// JSON parsing errors
+    #[error("JSON parsing failed: {source}")]
+    JsonParsing {
+        #[from]
+        source: serde_json::Error,
+    },
+
+    /// Network-related errors
+    #[error("Network error: {message}")]
+    Network {
+        message: String,
+        context: Option<ErrorContext>,
+        #[source]
+        source: Option<Box<dyn std::error::Error + Send + Sync>>,
+    },
+
+    /// Operation not supported in current context
+    #[error("Operation not supported: {operation} - {context}")]
+    NotSupported {
+        operation: String,
+        context: String,
+        error_context: Option<ErrorContext>,
+    },
+
+    /// Rate limiting errors
+    #[error("Rate limit exceeded: {message}")]
+    RateLimit {
+        message: String,
+        retry_after_seconds: Option<u64>,
+        context: Option<ErrorContext>,
+    },
+
+    /// Timeout errors
+    #[error("Operation timed out: {operation} after {duration_ms}ms")]
+    Timeout {
+        operation: String,
+        duration_ms: u64,
+        context: Option<ErrorContext>,
+    },
+
+    /// TOML parsing errors
+    #[error("TOML parsing failed: {source}")]
+    TomlParsing {
+        #[from]
+        source: toml::de::Error,
+    },
+
+    /// Validation errors
+    #[error("Validation failed: {field} - {message}")]
+    Validation {
+        field: String,
+        message: String,
+        context: Option<ErrorContext>,
+    },
+
+    /// Version calculation errors
+    #[error("Version calculation failed: {reason}")]
+    Versioning {
+        reason: String,
         context: Option<ErrorContext>,
         #[source]
         source: Option<Box<dyn std::error::Error + Send + Sync>>,
@@ -77,105 +171,11 @@ pub enum CoreError {
         source: Option<Box<dyn std::error::Error + Send + Sync>>,
     },
 
-    /// GitHub API integration errors
-    #[error("GitHub operation failed: {source}")]
-    GitHub {
-        #[source]
-        source: Box<release_regent_github_client::Error>,
-        context: Option<ErrorContext>,
-    },
-
-    /// I/O errors (file operations, network, etc.)
-    #[error("I/O operation failed: {source}")]
-    Io {
-        #[from]
-        source: std::io::Error,
-    },
-
     /// YAML parsing errors
     #[error("YAML parsing failed: {source}")]
     YamlParsing {
         #[from]
         source: serde_yaml::Error,
-    },
-
-    /// TOML parsing errors
-    #[error("TOML parsing failed: {source}")]
-    TomlParsing {
-        #[from]
-        source: toml::de::Error,
-    },
-
-    /// JSON parsing errors
-    #[error("JSON parsing failed: {source}")]
-    JsonParsing {
-        #[from]
-        source: serde_json::Error,
-    },
-
-    /// Invalid input provided to core operations
-    #[error("Invalid input: {field} - {message}")]
-    InvalidInput {
-        field: String,
-        message: String,
-        context: Option<ErrorContext>,
-    },
-
-    /// Operation not supported in current context
-    #[error("Operation not supported: {operation} - {context}")]
-    NotSupported {
-        operation: String,
-        context: String,
-        error_context: Option<ErrorContext>,
-    },
-
-    /// Internal state inconsistency
-    #[error("Internal state error: {message}")]
-    InternalState {
-        message: String,
-        context: Option<ErrorContext>,
-        #[source]
-        source: Option<Box<dyn std::error::Error + Send + Sync>>,
-    },
-
-    /// Validation errors
-    #[error("Validation failed: {field} - {message}")]
-    Validation {
-        field: String,
-        message: String,
-        context: Option<ErrorContext>,
-    },
-
-    /// Timeout errors
-    #[error("Operation timed out: {operation} after {duration_ms}ms")]
-    Timeout {
-        operation: String,
-        duration_ms: u64,
-        context: Option<ErrorContext>,
-    },
-
-    /// Network-related errors
-    #[error("Network error: {message}")]
-    Network {
-        message: String,
-        context: Option<ErrorContext>,
-        #[source]
-        source: Option<Box<dyn std::error::Error + Send + Sync>>,
-    },
-
-    /// Authentication/authorization errors
-    #[error("Authentication error: {message}")]
-    Authentication {
-        message: String,
-        context: Option<ErrorContext>,
-    },
-
-    /// Rate limiting errors
-    #[error("Rate limit exceeded: {message}")]
-    RateLimit {
-        message: String,
-        retry_after_seconds: Option<u64>,
-        context: Option<ErrorContext>,
     },
 }
 
