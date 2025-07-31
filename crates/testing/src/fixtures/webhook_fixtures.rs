@@ -38,6 +38,31 @@ impl PushEventBuilder {
         }
     }
 
+    /// Create a sample commit (static method)
+    pub fn sample_commit(message: &str, author: &str) -> Value {
+        json!({
+            "id": generate_commit_sha(),
+            "tree_id": generate_commit_sha(),
+            "distinct": true,
+            "message": message,
+            "timestamp": generate_iso_timestamp(),
+            "url": format!("https://github.com/test-owner/test-repo/commit/{}", generate_commit_sha()),
+            "author": {
+                "name": author,
+                "email": format!("{}@example.com", author.replace(" ", ".")),
+                "username": generate_github_login()
+            },
+            "committer": {
+                "name": author,
+                "email": format!("{}@example.com", author.replace(" ", ".")),
+                "username": generate_github_login()
+            },
+            "added": [],
+            "removed": [],
+            "modified": ["README.md"]
+        })
+    }
+
     /// Set the branch reference
     pub fn with_ref(mut self, ref_name: &str) -> Self {
         self.ref_name = if ref_name.starts_with("refs/") {
@@ -204,6 +229,89 @@ impl PushEventBuilder {
 
     /// Build the webhook payload
     pub fn build(self) -> Value {
+        // Build repository object
+        let owner_data = json!({
+            "name": self.repository_owner,
+            "email": format!("{}@users.noreply.github.com", self.repository_owner),
+            "login": self.repository_owner,
+            "id": generate_id(),
+            "node_id": format!("MDQ6VXNlc{}", generate_id()),
+            "avatar_url": format!("https://avatars.githubusercontent.com/u/{}?v=4", generate_id()),
+            "gravatar_id": "",
+            "url": format!("https://api.github.com/users/{}", self.repository_owner),
+            "html_url": format!("https://github.com/{}", self.repository_owner),
+            "type": "User",
+            "site_admin": false
+        });
+
+        let license_data = json!({
+            "key": "mit",
+            "name": "MIT License",
+            "spdx_id": "MIT",
+            "url": "https://api.github.com/licenses/mit",
+            "node_id": "MDc6TGljZW5zZW1pdA=="
+        });
+
+        let repository_data = json!({
+            "id": generate_id(),
+            "node_id": format!("MDEwOlJlcG9zaXRvcnk{}", generate_id()),
+            "name": self.repository_name,
+            "full_name": format!("{}/{}", self.repository_owner, self.repository_name),
+            "private": false,
+            "owner": owner_data,
+            "html_url": format!("https://github.com/{}/{}", self.repository_owner, self.repository_name),
+            "description": "A test repository for Release Regent",
+            "fork": false,
+            "url": format!("https://api.github.com/repos/{}/{}", self.repository_owner, self.repository_name),
+            "created_at": "2024-01-01T00:00:00Z",
+            "updated_at": generate_iso_timestamp(),
+            "pushed_at": generate_iso_timestamp(),
+            "git_url": format!("git://github.com/{}/{}.git", self.repository_owner, self.repository_name),
+            "ssh_url": format!("git@github.com:{}/{}.git", self.repository_owner, self.repository_name),
+            "clone_url": format!("https://github.com/{}/{}.git", self.repository_owner, self.repository_name),
+            "size": 1024,
+            "stargazers_count": 42,
+            "watchers_count": 42,
+            "language": "Rust",
+            "has_issues": true,
+            "has_projects": true,
+            "has_wiki": true,
+            "has_pages": false,
+            "forks_count": 5,
+            "archived": false,
+            "disabled": false,
+            "open_issues_count": 2,
+            "license": license_data,
+            "allow_forking": true,
+            "is_template": false,
+            "topics": ["rust", "automation", "releases"],
+            "visibility": "public",
+            "forks": 5,
+            "open_issues": 2,
+            "watchers": 42,
+            "default_branch": "main",
+            "stargazers": 42,
+            "master_branch": "main"
+        });
+
+        let pusher_data = json!({
+            "name": self.repository_owner,
+            "email": format!("{}@users.noreply.github.com", self.repository_owner)
+        });
+
+        let sender_data = json!({
+            "login": self.repository_owner,
+            "id": generate_id(),
+            "node_id": format!("MDQ6VXNlc{}", generate_id()),
+            "avatar_url": format!("https://avatars.githubusercontent.com/u/{}?v=4", generate_id()),
+            "gravatar_id": "",
+            "url": format!("https://api.github.com/users/{}", self.repository_owner),
+            "html_url": format!("https://github.com/{}", self.repository_owner),
+            "type": "User",
+            "site_admin": false
+        });
+
+        // Build main payload
         json!({
             "ref": self.ref_name,
             "before": self.before_sha,
@@ -217,80 +325,9 @@ impl PushEventBuilder {
                              &self.before_sha[..12], &self.after_sha[..12]),
             "commits": self.commits,
             "head_commit": self.commits.last().cloned().unwrap_or(Self::default_commit()),
-            "repository": {
-                "id": generate_id(),
-                "node_id": format!("MDEwOlJlcG9zaXRvcnk{}", generate_id()),
-                "name": self.repository_name,
-                "full_name": format!("{}/{}", self.repository_owner, self.repository_name),
-                "private": false,
-                "owner": {
-                    "name": self.repository_owner,
-                    "email": format!("{}@users.noreply.github.com", self.repository_owner),
-                    "login": self.repository_owner,
-                    "id": generate_id(),
-                    "node_id": format!("MDQ6VXNlcnt}", generate_id()),
-                    "avatar_url": format!("https://avatars.githubusercontent.com/u/{}?v=4", generate_id()),
-                    "gravatar_id": "",
-                    "url": format!("https://api.github.com/users/{}", self.repository_owner),
-                    "html_url": format!("https://github.com/{}", self.repository_owner),
-                    "type": "User",
-                    "site_admin": false
-                },
-                "html_url": format!("https://github.com/{}/{}", self.repository_owner, self.repository_name),
-                "description": "A test repository for Release Regent",
-                "fork": false,
-                "url": format!("https://api.github.com/repos/{}/{}", self.repository_owner, self.repository_name),
-                "created_at": "2024-01-01T00:00:00Z",
-                "updated_at": generate_iso_timestamp(),
-                "pushed_at": generate_iso_timestamp(),
-                "git_url": format!("git://github.com/{}/{}.git", self.repository_owner, self.repository_name),
-                "ssh_url": format!("git@github.com:{}/{}.git", self.repository_owner, self.repository_name),
-                "clone_url": format!("https://github.com/{}/{}.git", self.repository_owner, self.repository_name),
-                "size": 1024,
-                "stargazers_count": 42,
-                "watchers_count": 42,
-                "language": "Rust",
-                "has_issues": true,
-                "has_projects": true,
-                "has_wiki": true,
-                "has_pages": false,
-                "forks_count": 5,
-                "archived": false,
-                "disabled": false,
-                "open_issues_count": 2,
-                "license": {
-                    "key": "mit",
-                    "name": "MIT License",
-                    "spdx_id": "MIT",
-                    "url": "https://api.github.com/licenses/mit",
-                    "node_id": "MDc6TGljZW5zZW1pdA=="
-                },
-                "allow_forking": true,
-                "is_template": false,
-                "topics": ["rust", "automation", "releases"],
-                "visibility": "public",
-                "forks": 5,
-                "open_issues": 2,
-                "watchers": 42,
-                "default_branch": "main",
-                "stargazers": 42,
-                "master_branch": "main"
-            },
-            "pusher": {
-                "name": self.repository_owner,
-                "email": format!("{}@users.noreply.github.com", self.repository_owner)
-            },
-            "sender": {
-                "login": self.repository_owner,
-                "id": generate_id(),
-                "node_id": format!("MDQ6VXNlcnt}", generate_id()),
-                "avatar_url": format!("https://avatars.githubusercontent.com/u/{}?v=4", generate_id()),
-                "gravatar_id": "",
-                "url": format!("https://api.github.com/users/{}", self.repository_owner),
-                "html_url": format!("https://github.com/{}", self.repository_owner),
-                "type": "User",
-                "site_admin": false
-            }
+            "repository": repository_data,
+            "pusher": pusher_data,
+            "sender": sender_data
         })
     }
 
@@ -446,150 +483,145 @@ impl PullRequestEventBuilder {
             None
         };
 
+        // Build components separately to avoid recursion limits
+        let user_data = json!({
+            "login": self.user_login,
+            "id": generate_id(),
+            "node_id": format!("MDQ6VXNlc{}", generate_id()),
+            "avatar_url": format!("https://avatars.githubusercontent.com/u/{}?v=4", generate_id()),
+            "gravatar_id": "",
+            "url": format!("https://api.github.com/users/{}", self.user_login),
+            "html_url": format!("https://github.com/{}", self.user_login),
+            "type": "User",
+            "site_admin": false
+        });
+
+        let repo_owner = json!({
+            "login": self.repository_owner,
+            "id": generate_id(),
+            "type": "User"
+        });
+
+        let repo_data = json!({
+            "id": generate_id(),
+            "name": self.repository_name,
+            "full_name": format!("{}/{}", self.repository_owner, self.repository_name),
+            "private": false,
+            "owner": repo_owner,
+            "html_url": format!("https://github.com/{}/{}", self.repository_owner, self.repository_name),
+            "clone_url": format!("https://github.com/{}/{}.git", self.repository_owner, self.repository_name),
+            "default_branch": "main"
+        });
+
+        let head_user = json!({
+            "login": self.user_login,
+            "id": generate_id(),
+            "type": "User"
+        });
+
+        let base_user = json!({
+            "login": self.repository_owner,
+            "id": generate_id(),
+            "type": "User"
+        });
+
+        let head_data = json!({
+            "label": format!("{}:{}", self.user_login, self.head_ref),
+            "ref": self.head_ref,
+            "sha": generate_commit_sha(),
+            "user": head_user,
+            "repo": repo_data.clone()
+        });
+
+        let base_data = json!({
+            "label": format!("{}:{}", self.repository_owner, self.base_ref),
+            "ref": self.base_ref,
+            "sha": generate_commit_sha(),
+            "user": base_user,
+            "repo": repo_data.clone()
+        });
+
+        let merged_by_data = if merged {
+            Some(json!({
+                "login": self.repository_owner,
+                "id": generate_id(),
+                "type": "User"
+            }))
+        } else {
+            None
+        };
+
+        // Build pull request object in parts
+        let mut pr_object = serde_json::Map::new();
+        pr_object.insert(
+            "url".to_string(),
+            json!(format!(
+                "https://api.github.com/repos/{}/{}/pulls/{}",
+                self.repository_owner, self.repository_name, self.number
+            )),
+        );
+        pr_object.insert("id".to_string(), json!(generate_id()));
+        pr_object.insert(
+            "node_id".to_string(),
+            json!(format!("MDExOlB1bGxSZXF1ZXN0{}", generate_id())),
+        );
+        pr_object.insert(
+            "html_url".to_string(),
+            json!(format!(
+                "https://github.com/{}/{}/pull/{}",
+                self.repository_owner, self.repository_name, self.number
+            )),
+        );
+        pr_object.insert("number".to_string(), json!(self.number));
+        pr_object.insert("state".to_string(), json!(self.state));
+        pr_object.insert("locked".to_string(), json!(false));
+        pr_object.insert("title".to_string(), json!(self.title));
+        pr_object.insert("user".to_string(), user_data);
+        pr_object.insert("body".to_string(), json!(self.body));
+        pr_object.insert("created_at".to_string(), json!("2024-01-01T00:00:00Z"));
+        pr_object.insert("updated_at".to_string(), json!(generate_iso_timestamp()));
+        pr_object.insert(
+            "closed_at".to_string(),
+            if self.state == "closed" {
+                json!(generate_iso_timestamp())
+            } else {
+                Value::Null
+            },
+        );
+        pr_object.insert(
+            "merged_at".to_string(),
+            if let Some(ts) = merged_at {
+                json!(ts)
+            } else {
+                Value::Null
+            },
+        );
+        pr_object.insert("draft".to_string(), json!(self.draft));
+        pr_object.insert("head".to_string(), head_data);
+        pr_object.insert("base".to_string(), base_data);
+        pr_object.insert("merged".to_string(), json!(merged));
+        pr_object.insert(
+            "merged_by".to_string(),
+            if let Some(data) = merged_by_data {
+                data
+            } else {
+                Value::Null
+            },
+        );
+
+        let sender_data = json!({
+            "login": self.user_login,
+            "id": generate_id(),
+            "type": "User"
+        });
+
+        // Build final payload
         json!({
             "action": self.action,
             "number": self.number,
-            "pull_request": {
-                "url": format!("https://api.github.com/repos/{}/{}/pulls/{}",
-                              self.repository_owner, self.repository_name, self.number),
-                "id": generate_id(),
-                "node_id": format!("MDExOlB1bGxSZXF1ZXN0e}", generate_id()),
-                "html_url": format!("https://github.com/{}/{}/pull/{}",
-                                   self.repository_owner, self.repository_name, self.number),
-                "diff_url": format!("https://github.com/{}/{}/pull/{}.diff",
-                                   self.repository_owner, self.repository_name, self.number),
-                "patch_url": format!("https://github.com/{}/{}/pull/{}.patch",
-                                    self.repository_owner, self.repository_name, self.number),
-                "issue_url": format!("https://api.github.com/repos/{}/{}/issues/{}",
-                                    self.repository_owner, self.repository_name, self.number),
-                "number": self.number,
-                "state": self.state,
-                "locked": false,
-                "title": self.title,
-                "user": {
-                    "login": self.user_login,
-                    "id": generate_id(),
-                    "node_id": format!("MDQ6VXNlcnt}", generate_id()),
-                    "avatar_url": format!("https://avatars.githubusercontent.com/u/{}?v=4", generate_id()),
-                    "gravatar_id": "",
-                    "url": format!("https://api.github.com/users/{}", self.user_login),
-                    "html_url": format!("https://github.com/{}", self.user_login),
-                    "type": "User",
-                    "site_admin": false
-                },
-                "body": self.body,
-                "created_at": "2024-01-01T00:00:00Z",
-                "updated_at": generate_iso_timestamp(),
-                "closed_at": if self.state == "closed" { Some(generate_iso_timestamp()) } else { None },
-                "merged_at": merged_at,
-                "merge_commit_sha": if merged { Some(generate_commit_sha()) } else { None },
-                "assignee": null,
-                "assignees": [],
-                "requested_reviewers": [],
-                "requested_teams": [],
-                "labels": [],
-                "milestone": null,
-                "draft": self.draft,
-                "commits_url": format!("https://api.github.com/repos/{}/{}/pulls/{}/commits",
-                                      self.repository_owner, self.repository_name, self.number),
-                "review_comments_url": format!("https://api.github.com/repos/{}/{}/pulls/{}/comments",
-                                              self.repository_owner, self.repository_name, self.number),
-                "review_comment_url": format!("https://api.github.com/repos/{}/{}/pulls/comments/{{number}}",
-                                             self.repository_owner, self.repository_name),
-                "comments_url": format!("https://api.github.com/repos/{}/{}/issues/{}/comments",
-                                       self.repository_owner, self.repository_name, self.number),
-                "statuses_url": format!("https://api.github.com/repos/{}/{}/statuses/{}",
-                                       self.repository_owner, self.repository_name, generate_commit_sha()),
-                "head": {
-                    "label": format!("{}:{}", self.user_login, self.head_ref),
-                    "ref": self.head_ref,
-                    "sha": generate_commit_sha(),
-                    "user": {
-                        "login": self.user_login,
-                        "id": generate_id(),
-                        "type": "User"
-                    },
-                    "repo": {
-                        "id": generate_id(),
-                        "name": self.repository_name,
-                        "full_name": format!("{}/{}", self.repository_owner, self.repository_name),
-                        "private": false,
-                        "owner": {
-                            "login": self.repository_owner,
-                            "id": generate_id(),
-                            "type": "User"
-                        },
-                        "html_url": format!("https://github.com/{}/{}", self.repository_owner, self.repository_name),
-                        "clone_url": format!("https://github.com/{}/{}.git", self.repository_owner, self.repository_name),
-                        "default_branch": "main"
-                    }
-                },
-                "base": {
-                    "label": format!("{}:{}", self.repository_owner, self.base_ref),
-                    "ref": self.base_ref,
-                    "sha": generate_commit_sha(),
-                    "user": {
-                        "login": self.repository_owner,
-                        "id": generate_id(),
-                        "type": "User"
-                    },
-                    "repo": {
-                        "id": generate_id(),
-                        "name": self.repository_name,
-                        "full_name": format!("{}/{}", self.repository_owner, self.repository_name),
-                        "private": false,
-                        "owner": {
-                            "login": self.repository_owner,
-                            "id": generate_id(),
-                            "type": "User"
-                        },
-                        "html_url": format!("https://github.com/{}/{}", self.repository_owner, self.repository_name),
-                        "clone_url": format!("https://github.com/{}/{}.git", self.repository_owner, self.repository_name),
-                        "default_branch": "main"
-                    }
-                },
-                "author_association": "CONTRIBUTOR",
-                "merged": merged,
-                "mergeable": null,
-                "rebaseable": null,
-                "mergeable_state": "unknown",
-                "merged_by": if merged {
-                    Some(json!({
-                        "login": self.repository_owner,
-                        "id": generate_id(),
-                        "type": "User"
-                    }))
-                } else {
-                    None
-                },
-                "comments": 0,
-                "review_comments": 0,
-                "maintainer_can_modify": false,
-                "commits": 1,
-                "additions": 10,
-                "deletions": 5,
-                "changed_files": 2
-            },
-            "repository": {
-                "id": generate_id(),
-                "name": self.repository_name,
-                "full_name": format!("{}/{}", self.repository_owner, self.repository_name),
-                "private": false,
-                "owner": {
-                    "login": self.repository_owner,
-                    "id": generate_id(),
-                    "type": "User"
-                },
-                "html_url": format!("https://github.com/{}/{}", self.repository_owner, self.repository_name),
-                "description": "A test repository",
-                "clone_url": format!("https://github.com/{}/{}.git", self.repository_owner, self.repository_name),
-                "default_branch": "main"
-            },
-            "sender": {
-                "login": self.user_login,
-                "id": generate_id(),
-                "type": "User"
-            }
+            "pull_request": Value::Object(pr_object),
+            "repository": repo_data,
+            "sender": sender_data
         })
     }
 }
@@ -722,7 +754,7 @@ impl ReleaseEventBuilder {
                 "author": {
                     "login": self.author_login,
                     "id": generate_id(),
-                    "node_id": format!("MDQ6VXNlcnt}", generate_id()),
+                    "node_id": format!("MDQ6VXNlc{}", generate_id()),
                     "avatar_url": format!("https://avatars.githubusercontent.com/u/{}?v=4", generate_id()),
                     "gravatar_id": "",
                     "url": format!("https://api.github.com/users/{}", self.author_login),
@@ -776,6 +808,47 @@ impl Default for ReleaseEventBuilder {
 }
 
 /// Convenience functions for common webhook scenarios
+
+/// Generate a simple push event payload
+pub fn push_event_simple() -> Value {
+    PushEventBuilder::new().build()
+}
+
+/// Generate a push event payload with commits
+pub fn push_event_with_commits() -> Value {
+    PushEventBuilder::new()
+        .with_commits(vec![
+            PushEventBuilder::sample_commit("feat: add new feature", "john.doe"),
+            PushEventBuilder::sample_commit("fix: resolve issue", "jane.smith"),
+        ])
+        .build()
+}
+
+/// Generate a pull request opened event payload
+pub fn pull_request_opened() -> Value {
+    PullRequestEventBuilder::new().with_action("opened").build()
+}
+
+/// Generate a pull request merged event payload
+pub fn pull_request_merged() -> Value {
+    PullRequestEventBuilder::new()
+        .with_action("closed")
+        .as_merged()
+        .build()
+}
+
+/// Generate a release published event payload
+pub fn release_published() -> Value {
+    ReleaseEventBuilder::new().with_action("published").build()
+}
+
+/// Generate a release draft event payload
+pub fn release_draft() -> Value {
+    ReleaseEventBuilder::new()
+        .with_action("created")
+        .as_draft()
+        .build()
+}
 
 /// Generate a GitHub push event webhook payload
 pub fn github_push_event() -> Value {

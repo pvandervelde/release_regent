@@ -93,66 +93,97 @@ impl RepositoryResponseBuilder {
 
     /// Build as JSON response
     pub fn build_json(self) -> Value {
-        json!({
-            "id": self.id,
-            "node_id": format!("MDEwOlJlcG9zaXRvcnk{}", self.id),
-            "name": self.name,
-            "full_name": self.full_name,
-            "private": self.private,
-            "owner": {
-                "login": self.owner,
-                "id": generate_id(),
-                "node_id": format!("MDQ6VXNlcnt}", generate_id()),
-                "avatar_url": format!("https://avatars.githubusercontent.com/u/{}?v=4", generate_id()),
-                "gravatar_id": "",
-                "url": format!("https://api.github.com/users/{}", self.owner),
-                "html_url": format!("https://github.com/{}", self.owner),
-                "type": "User",
-                "site_admin": false
-            },
-            "html_url": format!("https://github.com/{}", self.full_name),
-            "description": self.description,
-            "fork": false,
-            "url": format!("https://api.github.com/repos/{}", self.full_name),
-            "created_at": "2024-01-01T00:00:00Z",
-            "updated_at": generate_iso_timestamp(),
-            "pushed_at": generate_iso_timestamp(),
-            "git_url": format!("git://github.com/{}.git", self.full_name),
-            "ssh_url": format!("git@github.com:{}.git", self.full_name),
-            "clone_url": format!("https://github.com/{}.git", self.full_name),
-            "svn_url": format!("https://github.com/{}", self.full_name),
-            "homepage": null,
-            "size": 1024,
-            "stargazers_count": 42,
-            "watchers_count": 42,
-            "language": "Rust",
-            "has_issues": true,
-            "has_projects": true,
-            "has_wiki": true,
-            "has_pages": false,
-            "forks_count": 5,
-            "archived": false,
-            "disabled": false,
-            "open_issues_count": 2,
-            "license": {
-                "key": "mit",
-                "name": "MIT License",
-                "spdx_id": "MIT",
-                "url": "https://api.github.com/licenses/mit",
-                "node_id": "MDc6TGljZW5zZW1pdA=="
-            },
-            "allow_forking": true,
-            "is_template": false,
-            "topics": ["rust", "automation", "releases"],
-            "visibility": "public",
-            "forks": 5,
-            "open_issues": 2,
-            "watchers": 42,
-            "default_branch": self.default_branch,
-            "temp_clone_token": null,
-            "network_count": 5,
-            "subscribers_count": 10
-        })
+        let owner_data = json!({
+            "login": self.owner,
+            "id": generate_id(),
+            "node_id": format!("MDQ6VXNlcn{}", generate_id()),
+            "avatar_url": format!("https://avatars.githubusercontent.com/u/{}?v=4", generate_id()),
+            "gravatar_id": "",
+            "url": format!("https://api.github.com/users/{}", self.owner),
+            "html_url": format!("https://github.com/{}", self.owner),
+            "type": "User",
+            "site_admin": false
+        });
+
+        let license_data = json!({
+            "key": "mit",
+            "name": "MIT License",
+            "spdx_id": "MIT",
+            "url": "https://api.github.com/licenses/mit",
+            "node_id": "MDc6TGljZW5zZW1pdA=="
+        });
+
+        // Build JSON in parts to avoid macro recursion limits
+        let mut result = serde_json::Map::new();
+
+        result.insert("id".to_string(), json!(self.id));
+        result.insert(
+            "node_id".to_string(),
+            json!(format!("MDEwOlJlcG9zaXRvcnk{}", self.id)),
+        );
+        result.insert("name".to_string(), json!(self.name));
+        result.insert("full_name".to_string(), json!(self.full_name));
+        result.insert("private".to_string(), json!(self.private));
+        result.insert("owner".to_string(), owner_data);
+        result.insert(
+            "html_url".to_string(),
+            json!(format!("https://github.com/{}", self.full_name)),
+        );
+        result.insert("description".to_string(), json!(self.description));
+        result.insert("fork".to_string(), json!(false));
+        result.insert(
+            "url".to_string(),
+            json!(format!("https://api.github.com/repos/{}", self.full_name)),
+        );
+        result.insert("created_at".to_string(), json!("2024-01-01T00:00:00Z"));
+        result.insert("updated_at".to_string(), json!(generate_iso_timestamp()));
+        result.insert("pushed_at".to_string(), json!(generate_iso_timestamp()));
+        result.insert(
+            "git_url".to_string(),
+            json!(format!("git://github.com/{}.git", self.full_name)),
+        );
+        result.insert(
+            "ssh_url".to_string(),
+            json!(format!("git@github.com:{}.git", self.full_name)),
+        );
+        result.insert(
+            "clone_url".to_string(),
+            json!(format!("https://github.com/{}.git", self.full_name)),
+        );
+        result.insert(
+            "svn_url".to_string(),
+            json!(format!("https://github.com/{}", self.full_name)),
+        );
+        result.insert("homepage".to_string(), Value::Null);
+        result.insert("size".to_string(), json!(1024));
+        result.insert("stargazers_count".to_string(), json!(42));
+        result.insert("watchers_count".to_string(), json!(42));
+        result.insert("language".to_string(), json!("Rust"));
+        result.insert("has_issues".to_string(), json!(true));
+        result.insert("has_projects".to_string(), json!(true));
+        result.insert("has_wiki".to_string(), json!(true));
+        result.insert("has_pages".to_string(), json!(false));
+        result.insert("forks_count".to_string(), json!(5));
+        result.insert("archived".to_string(), json!(false));
+        result.insert("disabled".to_string(), json!(false));
+        result.insert("open_issues_count".to_string(), json!(2));
+        result.insert("license".to_string(), license_data);
+        result.insert("allow_forking".to_string(), json!(true));
+        result.insert("is_template".to_string(), json!(false));
+        result.insert(
+            "topics".to_string(),
+            json!(["rust", "automation", "releases"]),
+        );
+        result.insert("visibility".to_string(), json!("public"));
+        result.insert("forks".to_string(), json!(5));
+        result.insert("open_issues".to_string(), json!(2));
+        result.insert("watchers".to_string(), json!(42));
+        result.insert("default_branch".to_string(), json!(self.default_branch));
+        result.insert("temp_clone_token".to_string(), Value::Null);
+        result.insert("network_count".to_string(), json!(5));
+        result.insert("subscribers_count".to_string(), json!(10));
+
+        Value::Object(result)
     }
 }
 
@@ -284,91 +315,92 @@ impl PullRequestResponseBuilder {
 
     /// Build as JSON response
     pub fn build_json(self) -> Value {
-        json!({
-            "url": format!("https://api.github.com/repos/{}/{}/pulls/{}",
-                          self.repository_owner, self.repository_name, self.number),
-            "id": self.id,
-            "node_id": format!("MDExOlB1bGxSZXF1ZXN0e}", self.id),
-            "html_url": format!("https://github.com/{}/{}/pull/{}",
-                               self.repository_owner, self.repository_name, self.number),
-            "diff_url": format!("https://github.com/{}/{}/pull/{}.diff",
-                               self.repository_owner, self.repository_name, self.number),
-            "patch_url": format!("https://github.com/{}/{}/pull/{}.patch",
-                                self.repository_owner, self.repository_name, self.number),
-            "issue_url": format!("https://api.github.com/repos/{}/{}/issues/{}",
-                                self.repository_owner, self.repository_name, self.number),
-            "number": self.number,
-            "state": self.state,
-            "locked": false,
-            "title": self.title,
+        let user_data = json!({
+            "login": self.user_login,
+            "id": generate_id(),
+            "node_id": format!("MDQ6VXNlcn{}", generate_id()),
+            "avatar_url": format!("https://avatars.githubusercontent.com/u/{}?v=4", generate_id()),
+            "gravatar_id": "",
+            "url": format!("https://api.github.com/users/{}", self.user_login),
+            "html_url": format!("https://github.com/{}", self.user_login),
+            "type": "User",
+            "site_admin": false
+        });
+
+        let head_data = json!({
+            "label": format!("{}:{}", self.user_login, self.head_ref),
+            "ref": self.head_ref,
+            "sha": generate_commit_sha(),
             "user": {
                 "login": self.user_login,
                 "id": generate_id(),
-                "node_id": format!("MDQ6VXNlcnt}", generate_id()),
-                "avatar_url": format!("https://avatars.githubusercontent.com/u/{}?v=4", generate_id()),
-                "gravatar_id": "",
-                "url": format!("https://api.github.com/users/{}", self.user_login),
-                "html_url": format!("https://github.com/{}", self.user_login),
-                "type": "User",
-                "site_admin": false
+                "type": "User"
+            }
+        });
+
+        let base_data = json!({
+            "label": format!("{}:{}", self.repository_owner, self.base_ref),
+            "ref": self.base_ref,
+            "sha": generate_commit_sha(),
+            "user": {
+                "login": self.repository_owner,
+                "id": generate_id(),
+                "type": "User"
+            }
+        });
+
+        // Build JSON in parts to avoid macro recursion limits
+        let mut result = serde_json::Map::new();
+
+        result.insert(
+            "url".to_string(),
+            json!(format!(
+                "https://api.github.com/repos/{}/{}/pulls/{}",
+                self.repository_owner, self.repository_name, self.number
+            )),
+        );
+        result.insert("id".to_string(), json!(self.id));
+        result.insert(
+            "node_id".to_string(),
+            json!(format!("MDExOlB1bGxSZXF1ZXN0{}", self.id)),
+        );
+        result.insert(
+            "html_url".to_string(),
+            json!(format!(
+                "https://github.com/{}/{}/pull/{}",
+                self.repository_owner, self.repository_name, self.number
+            )),
+        );
+        result.insert("number".to_string(), json!(self.number));
+        result.insert("state".to_string(), json!(self.state));
+        result.insert("locked".to_string(), json!(false));
+        result.insert("title".to_string(), json!(self.title));
+        result.insert("user".to_string(), user_data);
+        result.insert("body".to_string(), json!(self.body));
+        result.insert("created_at".to_string(), json!("2024-01-01T00:00:00Z"));
+        result.insert("updated_at".to_string(), json!(generate_iso_timestamp()));
+        result.insert(
+            "closed_at".to_string(),
+            if self.state == "closed" {
+                json!(generate_iso_timestamp())
+            } else {
+                Value::Null
             },
-            "body": self.body,
-            "created_at": "2024-01-01T00:00:00Z",
-            "updated_at": generate_iso_timestamp(),
-            "closed_at": if self.state == "closed" { Some(generate_iso_timestamp()) } else { None },
-            "merged_at": null,
-            "merge_commit_sha": null,
-            "assignee": null,
-            "assignees": [],
-            "requested_reviewers": [],
-            "requested_teams": [],
-            "labels": [],
-            "milestone": null,
-            "draft": self.draft,
-            "commits_url": format!("https://api.github.com/repos/{}/{}/pulls/{}/commits",
-                                  self.repository_owner, self.repository_name, self.number),
-            "review_comments_url": format!("https://api.github.com/repos/{}/{}/pulls/{}/comments",
-                                          self.repository_owner, self.repository_name, self.number),
-            "review_comment_url": format!("https://api.github.com/repos/{}/{}/pulls/comments/{{number}}",
-                                         self.repository_owner, self.repository_name),
-            "comments_url": format!("https://api.github.com/repos/{}/{}/issues/{}/comments",
-                                   self.repository_owner, self.repository_name, self.number),
-            "statuses_url": format!("https://api.github.com/repos/{}/{}/statuses/{}",
-                                   self.repository_owner, self.repository_name, generate_commit_sha()),
-            "head": {
-                "label": format!("{}:{}", self.user_login, self.head_ref),
-                "ref": self.head_ref,
-                "sha": generate_commit_sha(),
-                "user": {
-                    "login": self.user_login,
-                    "id": generate_id(),
-                    "type": "User"
-                }
-            },
-            "base": {
-                "label": format!("{}:{}", self.repository_owner, self.base_ref),
-                "ref": self.base_ref,
-                "sha": generate_commit_sha(),
-                "user": {
-                    "login": self.repository_owner,
-                    "id": generate_id(),
-                    "type": "User"
-                }
-            },
-            "author_association": "CONTRIBUTOR",
-            "merged": false,
-            "mergeable": true,
-            "rebaseable": true,
-            "mergeable_state": "clean",
-            "merged_by": null,
-            "comments": 0,
-            "review_comments": 0,
-            "maintainer_can_modify": false,
-            "commits": 1,
-            "additions": 10,
-            "deletions": 5,
-            "changed_files": 2
-        })
+        );
+        result.insert("merged_at".to_string(), Value::Null);
+        result.insert("draft".to_string(), json!(self.draft));
+        result.insert("head".to_string(), head_data);
+        result.insert("base".to_string(), base_data);
+        result.insert("author_association".to_string(), json!("CONTRIBUTOR"));
+        result.insert("merged".to_string(), json!(false));
+        result.insert("mergeable".to_string(), json!(true));
+        result.insert("maintainer_can_modify".to_string(), json!(false));
+        result.insert("commits".to_string(), json!(1));
+        result.insert("additions".to_string(), json!(10));
+        result.insert("deletions".to_string(), json!(5));
+        result.insert("changed_files".to_string(), json!(2));
+
+        Value::Object(result)
     }
 }
 
@@ -465,42 +497,73 @@ impl ReleaseResponseBuilder {
 
     /// Build as JSON response
     pub fn build_json(self) -> Value {
-        json!({
-            "url": format!("https://api.github.com/repos/{}/{}/releases/{}",
-                          self.repository_owner, self.repository_name, self.id),
-            "assets_url": format!("https://api.github.com/repos/{}/{}/releases/{}/assets",
-                                 self.repository_owner, self.repository_name, self.id),
-            "upload_url": format!("https://uploads.github.com/repos/{}/{}/releases/{}/assets{{?name,label}}",
-                                 self.repository_owner, self.repository_name, self.id),
-            "html_url": format!("https://github.com/{}/{}/releases/tag/{}",
-                               self.repository_owner, self.repository_name, self.tag_name),
-            "id": self.id,
-            "author": {
-                "login": self.author_login,
-                "id": generate_id(),
-                "node_id": format!("MDQ6VXNlcnt}", generate_id()),
-                "avatar_url": format!("https://avatars.githubusercontent.com/u/{}?v=4", generate_id()),
-                "gravatar_id": "",
-                "url": format!("https://api.github.com/users/{}", self.author_login),
-                "html_url": format!("https://github.com/{}", self.author_login),
-                "type": "User",
-                "site_admin": false
+        let author_data = json!({
+            "login": self.author_login,
+            "id": generate_id(),
+            "node_id": format!("MDQ6VXNlcn{}", generate_id()),
+            "avatar_url": format!("https://avatars.githubusercontent.com/u/{}?v=4", generate_id()),
+            "gravatar_id": "",
+            "url": format!("https://api.github.com/users/{}", self.author_login),
+            "html_url": format!("https://github.com/{}", self.author_login),
+            "type": "User",
+            "site_admin": false
+        });
+
+        // Build JSON in parts to avoid macro recursion limits
+        let mut result = serde_json::Map::new();
+
+        result.insert(
+            "url".to_string(),
+            json!(format!(
+                "https://api.github.com/repos/{}/{}/releases/{}",
+                self.repository_owner, self.repository_name, self.id
+            )),
+        );
+        result.insert(
+            "html_url".to_string(),
+            json!(format!(
+                "https://github.com/{}/{}/releases/tag/{}",
+                self.repository_owner, self.repository_name, self.tag_name
+            )),
+        );
+        result.insert("id".to_string(), json!(self.id));
+        result.insert("author".to_string(), author_data);
+        result.insert(
+            "node_id".to_string(),
+            json!(format!("MDc6UmVsZWFzZX{}", self.id)),
+        );
+        result.insert("tag_name".to_string(), json!(self.tag_name));
+        result.insert("target_commitish".to_string(), json!("main"));
+        result.insert("name".to_string(), json!(self.name));
+        result.insert("draft".to_string(), json!(self.draft));
+        result.insert("prerelease".to_string(), json!(self.prerelease));
+        result.insert("created_at".to_string(), json!("2024-01-01T00:00:00Z"));
+        result.insert(
+            "published_at".to_string(),
+            if self.draft {
+                Value::Null
+            } else {
+                json!(generate_iso_timestamp())
             },
-            "node_id": format!("MDc6UmVsZWFzZX{}", self.id),
-            "tag_name": self.tag_name,
-            "target_commitish": "main",
-            "name": self.name,
-            "draft": self.draft,
-            "prerelease": self.prerelease,
-            "created_at": "2024-01-01T00:00:00Z",
-            "published_at": if self.draft { None } else { Some(generate_iso_timestamp()) },
-            "assets": [],
-            "tarball_url": format!("https://api.github.com/repos/{}/{}/tarball/{}",
-                                  self.repository_owner, self.repository_name, self.tag_name),
-            "zipball_url": format!("https://api.github.com/repos/{}/{}/zipball/{}",
-                                  self.repository_owner, self.repository_name, self.tag_name),
-            "body": self.body
-        })
+        );
+        result.insert("assets".to_string(), json!([]));
+        result.insert(
+            "tarball_url".to_string(),
+            json!(format!(
+                "https://api.github.com/repos/{}/{}/tarball/{}",
+                self.repository_owner, self.repository_name, self.tag_name
+            )),
+        );
+        result.insert(
+            "zipball_url".to_string(),
+            json!(format!(
+                "https://api.github.com/repos/{}/{}/zipball/{}",
+                self.repository_owner, self.repository_name, self.tag_name
+            )),
+        );
+        result.insert("body".to_string(), json!(self.body));
+
+        Value::Object(result)
     }
 }
 
@@ -547,7 +610,7 @@ pub fn sample_commits_list() -> Value {
     json!([
         {
             "sha": generate_commit_sha(),
-            "node_id": format!("MDY6Q29tbWl0e}", generate_id()),
+            "node_id": format!("MDY6Q29tbWl0{}", generate_id()),
             "commit": {
                 "author": {
                     "name": generate_full_name(),
