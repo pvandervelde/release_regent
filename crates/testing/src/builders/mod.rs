@@ -4,13 +4,21 @@
 //! test data with realistic values and proper relationships.
 
 pub mod commit_builder;
+pub mod configuration_builder;
+pub mod pull_request_builder;
+pub mod release_builder;
 pub mod repository_builder;
 pub mod version_builder;
+pub mod version_context_builder;
 pub mod webhook_builder;
 
 pub use commit_builder::CommitBuilder;
+pub use configuration_builder::ConfigurationBuilder;
+pub use pull_request_builder::PullRequestBuilder;
+pub use release_builder::ReleaseBuilder;
 pub use repository_builder::RepositoryBuilder;
 pub use version_builder::VersionBuilder;
+pub use version_context_builder::VersionContextBuilder;
 pub use webhook_builder::WebhookBuilder;
 
 /// Base trait for all test data builders
@@ -107,5 +115,69 @@ pub mod helpers {
             prefixes[rng.gen_range(0..prefixes.len())],
             subjects[rng.gen_range(0..subjects.len())]
         )
+    }
+
+    /// Generate a unique ID
+    pub fn generate_id() -> u64 {
+        let mut rng = rand::thread_rng();
+        rng.gen_range(100000..999999)
+    }
+
+    /// Generate a full name for testing
+    pub fn generate_full_name() -> String {
+        let first_names = ["Alice", "Bob", "Charlie", "Diana", "Eve"];
+        let last_names = ["Smith", "Johnson", "Williams", "Brown", "Jones"];
+        let mut rng = rand::thread_rng();
+
+        format!(
+            "{} {}",
+            first_names[rng.gen_range(0..first_names.len())],
+            last_names[rng.gen_range(0..last_names.len())]
+        )
+    }
+
+    /// Generate a PR number
+    pub fn generate_pr_number() -> u32 {
+        let mut rng = rand::thread_rng();
+        rng.gen_range(1..9999)
+    }
+
+    /// Generate a PR title
+    pub fn generate_pr_title() -> String {
+        let prefixes = ["Add", "Fix", "Update", "Remove", "Refactor"];
+        let subjects = [
+            "authentication",
+            "validation",
+            "error handling",
+            "documentation",
+            "tests",
+        ];
+        let mut rng = rand::thread_rng();
+
+        format!(
+            "{} {}",
+            prefixes[rng.gen_range(0..prefixes.len())],
+            subjects[rng.gen_range(0..subjects.len())]
+        )
+    }
+
+    /// Generate a PR description
+    pub fn generate_pr_description() -> String {
+        "This pull request implements important changes to improve the codebase.".to_string()
+    }
+
+    /// Generate release notes
+    pub fn generate_release_notes() -> String {
+        "## What's Changed\n\n* Bug fixes and improvements\n* Performance enhancements".to_string()
+    }
+
+    /// Generate a commit SHA (alias for git SHA)
+    pub fn generate_commit_sha() -> String {
+        generate_git_sha()
+    }
+
+    /// Generate an ISO timestamp string
+    pub fn generate_iso_timestamp() -> String {
+        generate_recent_timestamp().to_rfc3339()
     }
 }
