@@ -99,13 +99,17 @@
 //! - Atomic operation counting
 //! - Safe cleanup in multi-threaded scenarios
 
+pub mod api;
 pub mod assertions;
 pub mod builders;
 pub mod fixtures;
 pub mod mocks;
 pub mod utils;
 
-// Re-export commonly used items for convenience
+// Re-export the main API for easy access
+pub use api::{prelude, TestingApi};
+
+// Re-export commonly used items for convenience and backward compatibility
 pub use assertions::*;
 pub use builders::*;
 pub use fixtures::*;
