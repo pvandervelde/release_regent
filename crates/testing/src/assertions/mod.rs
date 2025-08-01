@@ -3,14 +3,13 @@
 //! This module provides utilities for testing against specifications
 //! and verifying behavioral compliance.
 
-use release_regent_core::{traits::*, CoreResult};
 use std::collections::HashMap;
 
-pub mod spec_runner;
 pub mod behavior_verifier;
 pub mod compliance_checker;
+pub mod examples;
+pub mod spec_runner;
 
-pub use spec_runner::*;
 pub use behavior_verifier::*;
 pub use compliance_checker::*;
 
@@ -82,9 +81,40 @@ impl SpecAssertion {
     /// # Returns
     /// Whether the assertion passed
     pub fn evaluate(&mut self) -> bool {
-        // TODO: implement - placeholder for compilation
-        // This will compare expected vs actual behavior
-        self.passed = true;
+        if let Some(actual) = &self.actual_behavior {
+            // Simple comparison - can be enhanced with more sophisticated matching
+            self.passed = actual.trim() == self.expected_behavior.trim();
+        } else {
+            self.passed = false;
+        }
+        self.passed
+    }
+
+    /// Evaluate with custom predicate
+    ///
+    /// # Parameters
+    /// - `predicate`: Custom evaluation function
+    ///
+    /// # Returns
+    /// Whether the assertion passed
+    pub fn evaluate_with<F>(&mut self, predicate: F) -> bool
+    where
+        F: FnOnce(&str, &Option<String>) -> bool,
+    {
+        self.passed = predicate(&self.expected_behavior, &self.actual_behavior);
+        self.passed
+    }
+
+    /// Evaluate using contains matching
+    ///
+    /// # Returns
+    /// Whether the assertion passed
+    pub fn evaluate_contains(&mut self) -> bool {
+        if let Some(actual) = &self.actual_behavior {
+            self.passed = actual.contains(&self.expected_behavior);
+        } else {
+            self.passed = false;
+        }
         self.passed
     }
 
