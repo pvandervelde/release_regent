@@ -34,43 +34,6 @@ use serde::{Deserialize, Serialize};
 /// The authentication mechanism is implementation-specific.
 #[async_trait]
 pub trait GitHubOperations: Send + Sync {
-    /// Retrieve repository information
-    ///
-    /// # Parameters
-    /// - `owner`: Repository owner (user or organization name)
-    /// - `repo`: Repository name
-    ///
-    /// # Returns
-    /// Repository information including metadata and configuration
-    ///
-    /// # Errors
-    /// - `CoreError::GitHub` - API communication failed
-    /// - `CoreError::InvalidInput` - Invalid owner or repo name
-    /// - `CoreError::NotSupported` - Repository not accessible
-    async fn get_repository(&self, owner: &str, repo: &str) -> CoreResult<Repository>;
-
-    /// List all tags in a repository
-    ///
-    /// # Parameters
-    /// - `owner`: Repository owner name
-    /// - `repo`: Repository name
-    /// - `per_page`: Number of tags per page (max 100)
-    /// - `page`: Page number to retrieve (1-based)
-    ///
-    /// # Returns
-    /// List of tags ordered by creation date (newest first)
-    ///
-    /// # Errors
-    /// - `CoreError::GitHub` - API communication failed
-    /// - `CoreError::InvalidInput` - Invalid pagination parameters
-    async fn list_tags(
-        &self,
-        owner: &str,
-        repo: &str,
-        per_page: Option<u8>,
-        page: Option<u32>,
-    ) -> CoreResult<Vec<Tag>>;
-
     /// Get commits between two references
     ///
     /// # Parameters
@@ -98,22 +61,6 @@ pub trait GitHubOperations: Send + Sync {
         page: Option<u32>,
     ) -> CoreResult<Vec<Commit>>;
 
-    /// Get specific commit information
-    ///
-    /// # Parameters
-    /// - `owner`: Repository owner name
-    /// - `repo`: Repository name
-    /// - `commit_sha`: Commit SHA to retrieve
-    ///
-    /// # Returns
-    /// Detailed commit information including author, message, and metadata
-    ///
-    /// # Errors
-    /// - `CoreError::GitHub` - API communication failed
-    /// - `CoreError::InvalidInput` - Invalid commit SHA format
-    /// - `CoreError::NotSupported` - Commit not found
-    async fn get_commit(&self, owner: &str, repo: &str, commit_sha: &str) -> CoreResult<Commit>;
-
     /// Create a new pull request
     ///
     /// # Parameters
@@ -133,54 +80,6 @@ pub trait GitHubOperations: Send + Sync {
         owner: &str,
         repo: &str,
         params: CreatePullRequestParams,
-    ) -> CoreResult<PullRequest>;
-
-    /// Get pull request information
-    ///
-    /// # Parameters
-    /// - `owner`: Repository owner name
-    /// - `repo`: Repository name
-    /// - `pr_number`: Pull request number
-    ///
-    /// # Returns
-    /// Pull request information including status and metadata
-    ///
-    /// # Errors
-    /// - `CoreError::GitHub` - API communication failed
-    /// - `CoreError::InvalidInput` - Invalid PR number
-    /// - `CoreError::NotSupported` - PR not found
-    async fn get_pull_request(
-        &self,
-        owner: &str,
-        repo: &str,
-        pr_number: u64,
-    ) -> CoreResult<PullRequest>;
-
-    /// Update an existing pull request
-    ///
-    /// # Parameters
-    /// - `owner`: Repository owner name
-    /// - `repo`: Repository name
-    /// - `pr_number`: Pull request number
-    /// - `title`: New PR title (optional)
-    /// - `body`: New PR body (optional)
-    /// - `state`: New PR state ("open" or "closed") (optional)
-    ///
-    /// # Returns
-    /// Updated pull request information
-    ///
-    /// # Errors
-    /// - `CoreError::GitHub` - API communication failed
-    /// - `CoreError::InvalidInput` - Invalid parameters
-    /// - `CoreError::NotSupported` - PR not found or insufficient permissions
-    async fn update_pull_request(
-        &self,
-        owner: &str,
-        repo: &str,
-        pr_number: u64,
-        title: Option<String>,
-        body: Option<String>,
-        state: Option<String>,
     ) -> CoreResult<PullRequest>;
 
     /// Create a new release
@@ -203,67 +102,6 @@ pub trait GitHubOperations: Send + Sync {
         repo: &str,
         params: CreateReleaseParams,
     ) -> CoreResult<Release>;
-
-    /// Get release information by tag name
-    ///
-    /// # Parameters
-    /// - `owner`: Repository owner name
-    /// - `repo`: Repository name
-    /// - `tag`: Tag name to find release for
-    ///
-    /// # Returns
-    /// Release information if found
-    ///
-    /// # Errors
-    /// - `CoreError::GitHub` - API communication failed
-    /// - `CoreError::InvalidInput` - Invalid tag name
-    /// - `CoreError::NotSupported` - Release not found
-    async fn get_release_by_tag(&self, owner: &str, repo: &str, tag: &str) -> CoreResult<Release>;
-
-    /// Update an existing release
-    ///
-    /// # Parameters
-    /// - `owner`: Repository owner name
-    /// - `repo`: Repository name
-    /// - `release_id`: Release ID to update
-    /// - `params`: Release update parameters
-    ///
-    /// # Returns
-    /// Updated release information
-    ///
-    /// # Errors
-    /// - `CoreError::GitHub` - API communication failed
-    /// - `CoreError::InvalidInput` - Invalid release ID or parameters
-    /// - `CoreError::NotSupported` - Release not found or insufficient permissions
-    async fn update_release(
-        &self,
-        owner: &str,
-        repo: &str,
-        release_id: u64,
-        params: UpdateReleaseParams,
-    ) -> CoreResult<Release>;
-
-    /// List releases in a repository
-    ///
-    /// # Parameters
-    /// - `owner`: Repository owner name
-    /// - `repo`: Repository name
-    /// - `per_page`: Number of releases per page (max 100)
-    /// - `page`: Page number to retrieve (1-based)
-    ///
-    /// # Returns
-    /// List of releases ordered by creation date (newest first)
-    ///
-    /// # Errors
-    /// - `CoreError::GitHub` - API communication failed
-    /// - `CoreError::InvalidInput` - Invalid pagination parameters
-    async fn list_releases(
-        &self,
-        owner: &str,
-        repo: &str,
-        per_page: Option<u8>,
-        page: Option<u32>,
-    ) -> CoreResult<Vec<Release>>;
 
     /// Create a new tag
     ///
@@ -292,6 +130,132 @@ pub trait GitHubOperations: Send + Sync {
         tagger: Option<GitUser>,
     ) -> CoreResult<Tag>;
 
+    /// Get specific commit information
+    ///
+    /// # Parameters
+    /// - `owner`: Repository owner name
+    /// - `repo`: Repository name
+    /// - `commit_sha`: Commit SHA to retrieve
+    ///
+    /// # Returns
+    /// Detailed commit information including author, message, and metadata
+    ///
+    /// # Errors
+    /// - `CoreError::GitHub` - API communication failed
+    /// - `CoreError::InvalidInput` - Invalid commit SHA format
+    /// - `CoreError::NotSupported` - Commit not found
+    async fn get_commit(&self, owner: &str, repo: &str, commit_sha: &str) -> CoreResult<Commit>;
+
+    /// Get the latest release (non-draft, non-prerelease)
+    ///
+    /// # Parameters
+    /// - `owner`: Repository owner name
+    /// - `repo`: Repository name
+    ///
+    /// # Returns
+    /// Latest stable release information, or None if no releases exist
+    ///
+    /// # Errors
+    /// - `CoreError::GitHub` - API communication failed
+    /// - `CoreError::InvalidInput` - Invalid repository parameters
+    async fn get_latest_release(&self, owner: &str, repo: &str) -> CoreResult<Option<Release>>;
+
+    /// Get pull request information
+    ///
+    /// # Parameters
+    /// - `owner`: Repository owner name
+    /// - `repo`: Repository name
+    /// - `pr_number`: Pull request number
+    ///
+    /// # Returns
+    /// Pull request information including status and metadata
+    ///
+    /// # Errors
+    /// - `CoreError::GitHub` - API communication failed
+    /// - `CoreError::InvalidInput` - Invalid PR number
+    /// - `CoreError::NotSupported` - PR not found
+    async fn get_pull_request(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: u64,
+    ) -> CoreResult<PullRequest>;
+
+    /// Get release information by tag name
+    ///
+    /// # Parameters
+    /// - `owner`: Repository owner name
+    /// - `repo`: Repository name
+    /// - `tag`: Tag name to find release for
+    ///
+    /// # Returns
+    /// Release information if found
+    ///
+    /// # Errors
+    /// - `CoreError::GitHub` - API communication failed
+    /// - `CoreError::InvalidInput` - Invalid tag name
+    /// - `CoreError::NotSupported` - Release not found
+    async fn get_release_by_tag(&self, owner: &str, repo: &str, tag: &str) -> CoreResult<Release>;
+
+    /// Retrieve repository information
+    ///
+    /// # Parameters
+    /// - `owner`: Repository owner (user or organization name)
+    /// - `repo`: Repository name
+    ///
+    /// # Returns
+    /// Repository information including metadata and configuration
+    ///
+    /// # Errors
+    /// - `CoreError::GitHub` - API communication failed
+    /// - `CoreError::InvalidInput` - Invalid owner or repo name
+    /// - `CoreError::NotSupported` - Repository not accessible
+    async fn get_repository(&self, owner: &str, repo: &str) -> CoreResult<Repository>;
+
+    /// List releases in a repository
+    ///
+    /// # Parameters
+    /// - `owner`: Repository owner name
+    /// - `repo`: Repository name
+    /// - `per_page`: Number of releases per page (max 100)
+    /// - `page`: Page number to retrieve (1-based)
+    ///
+    /// # Returns
+    /// List of releases ordered by creation date (newest first)
+    ///
+    /// # Errors
+    /// - `CoreError::GitHub` - API communication failed
+    /// - `CoreError::InvalidInput` - Invalid pagination parameters
+    async fn list_releases(
+        &self,
+        owner: &str,
+        repo: &str,
+        per_page: Option<u8>,
+        page: Option<u32>,
+    ) -> CoreResult<Vec<Release>>;
+
+    /// List all tags in a repository
+    ///
+    /// # Parameters
+    /// - `owner`: Repository owner name
+    /// - `repo`: Repository name
+    /// - `per_page`: Number of tags per page (max 100)
+    /// - `page`: Page number to retrieve (1-based)
+    ///
+    /// # Returns
+    /// List of tags ordered by creation date (newest first)
+    ///
+    /// # Errors
+    /// - `CoreError::GitHub` - API communication failed
+    /// - `CoreError::InvalidInput` - Invalid pagination parameters
+    async fn list_tags(
+        &self,
+        owner: &str,
+        repo: &str,
+        per_page: Option<u8>,
+        page: Option<u32>,
+    ) -> CoreResult<Vec<Tag>>;
+
     /// Check if a tag exists
     ///
     /// # Parameters
@@ -307,19 +271,55 @@ pub trait GitHubOperations: Send + Sync {
     /// - `CoreError::InvalidInput` - Invalid tag name
     async fn tag_exists(&self, owner: &str, repo: &str, tag_name: &str) -> CoreResult<bool>;
 
-    /// Get the latest release (non-draft, non-prerelease)
+    /// Update an existing pull request
     ///
     /// # Parameters
     /// - `owner`: Repository owner name
     /// - `repo`: Repository name
+    /// - `pr_number`: Pull request number
+    /// - `title`: New PR title (optional)
+    /// - `body`: New PR body (optional)
+    /// - `state`: New PR state ("open" or "closed") (optional)
     ///
     /// # Returns
-    /// Latest stable release information, or None if no releases exist
+    /// Updated pull request information
     ///
     /// # Errors
     /// - `CoreError::GitHub` - API communication failed
-    /// - `CoreError::InvalidInput` - Invalid repository parameters
-    async fn get_latest_release(&self, owner: &str, repo: &str) -> CoreResult<Option<Release>>;
+    /// - `CoreError::InvalidInput` - Invalid parameters
+    /// - `CoreError::NotSupported` - PR not found or insufficient permissions
+    async fn update_pull_request(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: u64,
+        title: Option<String>,
+        body: Option<String>,
+        state: Option<String>,
+    ) -> CoreResult<PullRequest>;
+
+    /// Update an existing release
+    ///
+    /// # Parameters
+    /// - `owner`: Repository owner name
+    /// - `repo`: Repository name
+    /// - `release_id`: Release ID to update
+    /// - `params`: Release update parameters
+    ///
+    /// # Returns
+    /// Updated release information
+    ///
+    /// # Errors
+    /// - `CoreError::GitHub` - API communication failed
+    /// - `CoreError::InvalidInput` - Invalid release ID or parameters
+    /// - `CoreError::NotSupported` - Release not found or insufficient permissions
+    async fn update_release(
+        &self,
+        owner: &str,
+        repo: &str,
+        release_id: u64,
+        params: UpdateReleaseParams,
+    ) -> CoreResult<Release>;
 }
 
 /// Git commit information
