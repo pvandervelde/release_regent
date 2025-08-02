@@ -46,8 +46,14 @@ impl CommitBuilder {
     }
 
     /// Set conventional commit message
-    pub fn with_conventional_message(mut self, commit_type: &str, description: &str) -> Self {
+    pub fn with_conventional(mut self, commit_type: &str, description: &str) -> Self {
         self.message = format!("{}: {}", commit_type, description);
+        self
+    }
+
+    /// Set conventional commit message (convenience method for single string)
+    pub fn with_conventional_message(mut self, message: &str) -> Self {
+        self.message = message.to_string();
         self
     }
 
@@ -67,25 +73,33 @@ impl Default for CommitBuilder {
 
 impl TestDataBuilder<Commit> for CommitBuilder {
     fn build(self) -> Commit {
-        // TODO: implement - placeholder for compilation
-        // This should create a proper Commit struct
         Commit {
             sha: self.sha,
             author: GitUser {
-                email: "user@example.com".to_string(),
-                login: Some("user".to_string()),
-                name: "user".to_string(),
+                email: self.author_email.clone(),
+                login: Some(
+                    self.author_name
+                        .split('@')
+                        .next()
+                        .unwrap_or("user")
+                        .to_string(),
+                ),
+                name: self.author_name.clone(),
             },
             committer: GitUser {
-                email: "user@example.com".to_string(),
-                login: Some("user".to_string()),
-                name: "user".to_string(),
+                email: self.committer_email.clone(),
+                login: Some(
+                    self.committer_name
+                        .split('@')
+                        .next()
+                        .unwrap_or("user")
+                        .to_string(),
+                ),
+                name: self.committer_name.clone(),
             },
             parents: self.parents.into_iter().map(|sha| sha).collect(),
-            date: chrono::DateTime::parse_from_rfc3339("2025-07-26T17:54:00+12:00")
-                .unwrap()
-                .to_utc(),
-            message: "This is not a good commit message".to_string(),
+            date: self.author_date,
+            message: self.message,
         }
     }
 

@@ -55,9 +55,8 @@ impl Default for RepositoryBuilder {
 
 impl TestDataBuilder<Repository> for RepositoryBuilder {
     fn build(self) -> Repository {
-        // TODO: implement - placeholder for compilation
-        let id = 12345;
-        let timestamp = Utc::now();
+        let id = generate_id();
+        let _timestamp = Utc::now();
 
         Repository {
             id,

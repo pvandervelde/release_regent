@@ -86,7 +86,7 @@ mod mock_tests {
             .with_validation_success(true);
 
         // Test configuration loading
-        let result = mock.load_config("test.yaml", LoadOptions::default()).await;
+        let result = mock.load_global_config(LoadOptions::default()).await;
         assert!(result.is_ok());
 
         // Test validation
@@ -376,9 +376,7 @@ mod integration_tests {
         let repository = github_mock.get_repository("test", "repo").await;
         assert!(repository.is_ok());
 
-        let config = config_mock
-            .load_config("test.yaml", LoadOptions::default())
-            .await;
+        let config = config_mock.load_global_config(LoadOptions::default()).await;
         assert!(config.is_ok());
 
         let context = VersionContext {
@@ -429,8 +427,8 @@ mod integration_tests {
         assert!(!repository.owner.login.is_empty());
     }
 
-    #[test]
-    fn test_deterministic_behavior() {
+    #[tokio::test]
+    async fn test_deterministic_behavior() {
         // Test that mock behavior is deterministic when configured
         let config = MockConfig {
             deterministic: true,
@@ -440,8 +438,21 @@ mod integration_tests {
         let mock1 = MockGitHubOperations::with_config(config.clone()).with_repository_exists(true);
         let mock2 = MockGitHubOperations::with_config(config).with_repository_exists(true);
 
-        // Both mocks should behave identically
-        // (This would need async context to test fully)
+        // Perform identical operations on both mocks
+        let repo1 = mock1.get_repository("test", "repo").await;
+        let repo2 = mock2.get_repository("test", "repo").await;
+
+        // Both should succeed and return identical results
+        assert!(repo1.is_ok());
+        assert!(repo2.is_ok());
+
+        // In deterministic mode, identical inputs should produce identical outputs
+        let repo1_data = repo1.unwrap();
+        let repo2_data = repo2.unwrap();
+        assert_eq!(repo1_data.name, repo2_data.name);
+        assert_eq!(repo1_data.owner.login, repo2_data.owner.login);
+
+        // Both mocks should have the same call count after identical operations
         assert_eq!(mock1.call_count(), mock2.call_count());
     }
 }
