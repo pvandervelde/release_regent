@@ -104,7 +104,7 @@ impl BehaviorVerifier {
         .with_metadata("config_type", config_type);
 
         // Custom evaluation for key presence
-        assertion.evaluate_with(|expected_desc, actual_desc| {
+        assertion.evaluate_with(|_expected_desc, actual_desc| {
             if let Some(actual_desc) = actual_desc {
                 // Simple check - all expected keys should be present
                 expected_keys.iter().all(|key| actual_desc.contains(key))

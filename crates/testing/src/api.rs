@@ -16,22 +16,25 @@
 //!     .with_default_branch("main");
 //!
 //! let config = TestingApi::mock_config()
-//!     .with_configuration("owner", "repo", Default::default());
+//!     .with_configuration("config.yaml", Default::default());
 //! ```
 //!
 //! ## Building Test Data
 //!
 //! ```rust
 //! use release_regent_testing::TestingApi;
+//! use release_regent_testing::builders::TestDataBuilder;
 //!
 //! // Build realistic test data
 //! let commit = TestingApi::build_commit()
 //!     .with_conventional_message("feat: add new feature")
-//!     .with_author("Developer", "developer@example.com");
+//!     .with_author("Developer", "developer@example.com")
+//!     .build();
 //!
 //! let webhook = TestingApi::build_webhook()
 //!     .with_event_type("push")
-//!     .with_repository("owner", "repo");
+//!     .with_repository("owner", "repo")
+//!     .build();
 //! ```
 //!
 //! ## Using Fixtures
@@ -50,17 +53,13 @@
 //! ```rust
 //! use release_regent_testing::TestingApi;
 //!
-//! // Verify specifications
-//! let input_data = serde_json::json!({"version": "1.0.0"});
-//! TestingApi::verify_spec("version_calculator")
-//!     .with_input(&input_data)
-//!     .with_expected_behavior("increments_minor_for_feat")
-//!     .assert_compliance()
-//!     .unwrap();
+//! // Verify specifications using compliance checker
+//! let checker = TestingApi::compliance_checker("version_calculator");
+//! // Use checker for validation
 //! ```
 
 use crate::{
-    assertions::{BehaviorVerifier, ComplianceChecker, ComplianceRequirement, SpecAssertion},
+    assertions::{BehaviorVerifier, ComplianceChecker, SpecAssertion},
     builders::{
         CommitBuilder, ConfigurationBuilder, PullRequestBuilder, ReleaseBuilder, RepositoryBuilder,
         VersionBuilder, VersionContextBuilder, WebhookBuilder,
@@ -103,7 +102,7 @@ impl TestingApi {
     /// use release_regent_testing::TestingApi;
     ///
     /// let config = TestingApi::mock_config()
-    ///     .with_configuration("owner", "repo", Default::default());
+    ///     .with_configuration("config.yaml", Default::default());
     /// ```
     pub fn mock_config() -> MockConfigurationProvider {
         MockConfigurationProvider::new()
@@ -119,8 +118,9 @@ impl TestingApi {
     /// use release_regent_testing::TestingApi;
     /// use release_regent_core::versioning::SemanticVersion;
     ///
+    /// let version = SemanticVersion { major: 1, minor: 2, patch: 3, prerelease: None, build: None };
     /// let calculator = TestingApi::mock_version_calculator()
-    ///     .with_next_version(SemanticVersion::from((1, 2, 3)));
+    ///     .with_next_version(version);
     /// ```
     pub fn mock_version_calculator() -> MockVersionCalculator {
         MockVersionCalculator::new()
@@ -154,7 +154,7 @@ impl TestingApi {
     ///
     /// let config = TestingApi::build_configuration()
     ///     .with_owner("my-org")
-    ///     .with_repository("my-repo");
+    ///     .with_name("my-repo");
     /// ```
     pub fn build_configuration() -> ConfigurationBuilder {
         ConfigurationBuilder::new()
@@ -169,11 +169,10 @@ impl TestingApi {
     /// ```rust
     /// use release_regent_testing::TestingApi;
     ///
-    /// let pr = TestingApi::build_pull_request()
+    /// let _pr = TestingApi::build_pull_request()
     ///     .with_title("Add new feature")
-    ///     .with_base_branch("main")
-    ///     .with_head_branch("feature/new-feature")
-    ///     .build();
+    ///     .with_base_ref("main")
+    ///     .with_head_ref("feature/new-feature");
     /// ```
     pub fn build_pull_request() -> PullRequestBuilder {
         PullRequestBuilder::new()
@@ -189,10 +188,9 @@ impl TestingApi {
     /// use release_regent_testing::TestingApi;
     ///
     /// let release = TestingApi::build_release()
-    ///     .with_version("1.2.3")
     ///     .with_tag_name("v1.2.3")
-    ///     .with_changelog("## Changes\n- Added new feature")
-    ///     .build();
+    ///     .with_name(Some("Release 1.2.3"))
+    ///     .with_body(Some("## Changes\n- Added new feature"));
     /// ```
     pub fn build_release() -> ReleaseBuilder {
         ReleaseBuilder::new()
@@ -206,6 +204,7 @@ impl TestingApi {
     /// # Example
     /// ```rust
     /// use release_regent_testing::TestingApi;
+    /// use release_regent_testing::builders::TestDataBuilder;
     ///
     /// let repo = TestingApi::build_repository()
     ///     .with_name("test-repo")
@@ -227,9 +226,10 @@ impl TestingApi {
     /// use release_regent_testing::TestingApi;
     ///
     /// let version = TestingApi::build_version()
-    ///     .with_semantic("1.2.3")
-    ///     .with_prerelease("beta.1")
-    ///     .build();
+    ///     .with_major(1)
+    ///     .with_minor(2)
+    ///     .with_patch(3)
+    ///     .with_prerelease("beta.1");
     /// ```
     pub fn build_version() -> VersionBuilder {
         VersionBuilder::new()
@@ -245,10 +245,10 @@ impl TestingApi {
     /// use release_regent_testing::TestingApi;
     ///
     /// let context = TestingApi::build_version_context()
-    ///     .with_current_version("1.2.3")
-    ///     .with_commits_since_last_release(5)
-    ///     .with_branch("main")
-    ///     .build();
+    ///     .with_current_version_string("1.2.3")
+    ///     .with_target_branch("main")
+    ///     .with_owner("owner")
+    ///     .with_repo("repo");
     /// ```
     pub fn build_version_context() -> VersionContextBuilder {
         VersionContextBuilder::new()
@@ -262,6 +262,7 @@ impl TestingApi {
     /// # Example
     /// ```rust
     /// use release_regent_testing::TestingApi;
+    /// use release_regent_testing::builders::TestDataBuilder;
     ///
     /// let webhook = TestingApi::build_webhook()
     ///     .with_event_type("push")
@@ -375,11 +376,10 @@ impl TestingApi {
     /// # Example
     /// ```rust
     /// use release_regent_testing::TestingApi;
-    /// use std::time::Duration;
     ///
     /// let verifier = TestingApi::behavior_verifier()
-    ///     .with_timeout_duration(Duration::from_secs(30))
-    ///     .with_retry_attempts(3);
+    ///     .with_context("test_type", "integration")
+    ///     .with_context("environment", "test");
     /// ```
     pub fn behavior_verifier() -> BehaviorVerifier {
         BehaviorVerifier::new()

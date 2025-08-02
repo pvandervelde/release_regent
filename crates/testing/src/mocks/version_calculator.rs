@@ -28,8 +28,9 @@ use tokio::sync::RwLock;
 /// use release_regent_testing::mocks::version_calculator::MockVersionCalculator;
 /// use release_regent_core::versioning::SemanticVersion;
 ///
+/// let version = SemanticVersion { major: 1, minor: 2, patch: 3, prerelease: None, build: None };
 /// let mock = MockVersionCalculator::new()
-///     .with_next_version(SemanticVersion::new(1, 2, 3));
+///     .with_next_version(version);
 /// ```
 #[derive(Debug)]
 pub struct MockVersionCalculator {

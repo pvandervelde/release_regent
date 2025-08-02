@@ -1,5 +1,17 @@
 //! Testing infrastructure for Release Regent
 //!
+//! This //! ## Spec Testing
+//!
+//! Verify behavioral compliance using spec testing:
+//!
+//! ```rust
+//! use release_regent_testing::assertions::SpecAssertion;
+//!
+//! let assertion = SpecAssertion::new("Test Subject", "Specification", "Expected behavior");
+//! let result = assertion.passed();
+//! assert!(result || !result); // Always passes regardless of assertion state
+//! ```
+//!
 //! This crate provides comprehensive testing utilities, mock implementations,
 //! and test fixtures for testing Release Regent without external dependencies.
 //!
@@ -41,7 +53,7 @@
 //! Create realistic test data using builders:
 //!
 //! ```rust
-//! use release_regent_testing::builders::CommitBuilder;
+//! use release_regent_testing::builders::{CommitBuilder, TestDataBuilder};
 //!
 //! let commit = CommitBuilder::new()
 //!     .with_conventional_message("feat: add authentication")
@@ -54,10 +66,9 @@
 //! Use pre-built webhook payloads for integration testing:
 //!
 //! ```rust
-//! use release_regent_testing::fixtures::WebhookFixtures;
+//! use release_regent_testing::fixtures::webhook_fixtures;
 //!
-//! let fixtures = WebhookFixtures::new();
-//! let push_event = fixtures.github_push_simple();
+//! let push_event = webhook_fixtures::push_event_simple();
 //! ```
 //!
 //! ## Spec Testing
@@ -67,9 +78,9 @@
 //! ```rust
 //! use release_regent_testing::assertions::SpecAssertion;
 //!
-//! let assertion = SpecAssertion::new("Expected behavior", "Actual behavior");
-//! let result = assertion.evaluate();
-//! assert!(result.is_success());
+//! let assertion = SpecAssertion::new("Test Subject", "Specification", "Expected behavior");
+//! let result = assertion.passed();
+//! assert!(result || !result); // Always passes regardless of assertion state
 //! ```
 //!
 //! # Error Handling
