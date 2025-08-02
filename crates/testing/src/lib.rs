@@ -45,7 +45,7 @@
 //!
 //! let commit = CommitBuilder::new()
 //!     .with_conventional_message("feat: add authentication")
-//!     .with_author("developer@example.com")
+//!     .with_author("Developer", "developer@example.com")
 //!     .build();
 //! ```
 //!
@@ -56,10 +56,8 @@
 //! ```rust
 //! use release_regent_testing::fixtures::WebhookFixtures;
 //!
-//! let push_event = WebhookFixtures::github_push_event()
-//!     .with_branch("main")
-//!     .with_commits(3)
-//!     .build();
+//! let fixtures = WebhookFixtures::new();
+//! let push_event = fixtures.github_push_simple();
 //! ```
 //!
 //! ## Spec Testing
@@ -69,9 +67,9 @@
 //! ```rust
 //! use release_regent_testing::assertions::SpecAssertion;
 //!
-//! SpecAssertion::new()
-//!     .verify_version_calculation(&calculator, &spec)
-//!     .assert_compliance();
+//! let assertion = SpecAssertion::new("Expected behavior", "Actual behavior");
+//! let result = assertion.evaluate();
+//! assert!(result.is_success());
 //! ```
 //!
 //! # Error Handling

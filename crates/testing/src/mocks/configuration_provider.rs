@@ -24,7 +24,7 @@ use tokio::sync::RwLock;
 /// # Example Usage
 ///
 /// ```rust
-/// use release_regent_testing::mocks::MockConfigurationProvider;
+/// use release_regent_testing::mocks::configuration_provider::MockConfigurationProvider;
 /// use release_regent_core::config::ReleaseRegentConfig;
 ///
 /// let config = ReleaseRegentConfig::default();

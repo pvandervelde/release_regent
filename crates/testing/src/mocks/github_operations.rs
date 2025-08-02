@@ -22,12 +22,11 @@ use tokio::sync::RwLock;
 /// # Example Usage
 ///
 /// ```rust
-/// use release_regent_testing::mocks::MockGitHubOperations;
+/// use release_regent_testing::mocks::github_operations::MockGitHubOperations;
 ///
 /// let mock = MockGitHubOperations::new()
 ///     .with_repository_exists(true)
-///     .with_default_branch("main")
-///     .with_commits(vec![/* test commits */]);
+///     .with_default_branch("main");
 /// ```
 #[derive(Debug)]
 pub struct MockGitHubOperations {

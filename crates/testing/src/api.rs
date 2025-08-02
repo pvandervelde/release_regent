@@ -8,58 +8,53 @@
 //! ## Setting up Mocks
 //!
 //! ```rust
-//! use release_regent_testing::prelude::*;
+//! use release_regent_testing::TestingApi;
 //!
 //! // Create mock implementations
 //! let github = TestingApi::mock_github()
 //!     .with_repository_exists(true)
-//!     .with_default_branch("main")
-//!     .build();
+//!     .with_default_branch("main");
 //!
 //! let config = TestingApi::mock_config()
-//!     .with_repository_config("repo.yml")
-//!     .with_yaml_format()
-//!     .build();
+//!     .with_configuration("owner", "repo", Default::default());
 //! ```
 //!
 //! ## Building Test Data
 //!
 //! ```rust
-//! use release_regent_testing::prelude::*;
+//! use release_regent_testing::TestingApi;
 //!
 //! // Build realistic test data
 //! let commit = TestingApi::build_commit()
 //!     .with_conventional_message("feat: add new feature")
-//!     .with_author("developer@example.com")
-//!     .build();
+//!     .with_author("Developer", "developer@example.com");
 //!
 //! let webhook = TestingApi::build_webhook()
-//!     .github_push_event()
-//!     .with_branch("main")
-//!     .with_commits(vec![commit])
-//!     .build();
+//!     .with_event_type("push")
+//!     .with_repository("owner", "repo");
 //! ```
 //!
 //! ## Using Fixtures
 //!
 //! ```rust
-//! use release_regent_testing::prelude::*;
+//! use release_regent_testing::TestingApi;
 //!
 //! // Get pre-built fixtures
 //! let fixtures = TestingApi::fixtures();
-//! let push_event = fixtures.github_push_simple();
-//! let pr_event = fixtures.github_pull_request_opened();
+//! let push_event = fixtures.get_webhook_fixture("push", "simple");
+//! let pr_event = fixtures.get_webhook_fixture("pull_request", "opened");
 //! ```
 //!
-//! ## Spec Testing
+//! ## Specification Testing
 //!
 //! ```rust
-//! use release_regent_testing::prelude::*;
+//! use release_regent_testing::TestingApi;
 //!
 //! // Verify specifications
+//! let input_data = serde_json::json!({"version": "1.0.0"});
 //! TestingApi::verify_spec("version_calculator")
 //!     .with_input(&input_data)
-//!     .with_expected_output(&expected_result)
+//!     .with_expected_behavior("increments_minor_for_feat")
 //!     .assert_compliance()
 //!     .unwrap();
 //! ```
@@ -88,10 +83,11 @@ impl TestingApi {
     ///
     /// # Example
     /// ```rust
+    /// use release_regent_testing::TestingApi;
+    ///
     /// let github = TestingApi::mock_github()
     ///     .with_repository_exists(true)
-    ///     .with_default_branch("main")
-    ///     .build();
+    ///     .with_default_branch("main");
     /// ```
     pub fn mock_github() -> MockGitHubOperations {
         MockGitHubOperations::new()
@@ -104,10 +100,10 @@ impl TestingApi {
     ///
     /// # Example
     /// ```rust
+    /// use release_regent_testing::TestingApi;
+    ///
     /// let config = TestingApi::mock_config()
-    ///     .with_repository_config("repo.yml")
-    ///     .with_yaml_format()
-    ///     .build();
+    ///     .with_configuration("owner", "repo", Default::default());
     /// ```
     pub fn mock_config() -> MockConfigurationProvider {
         MockConfigurationProvider::new()
@@ -120,10 +116,11 @@ impl TestingApi {
     ///
     /// # Example
     /// ```rust
+    /// use release_regent_testing::TestingApi;
+    /// use release_regent_core::versioning::SemanticVersion;
+    ///
     /// let calculator = TestingApi::mock_version_calculator()
-    ///     .with_strategy("semantic")
-    ///     .with_deterministic_results()
-    ///     .build();
+    ///     .with_next_version(SemanticVersion::from((1, 2, 3)));
     /// ```
     pub fn mock_version_calculator() -> MockVersionCalculator {
         MockVersionCalculator::new()
@@ -136,10 +133,11 @@ impl TestingApi {
     ///
     /// # Example
     /// ```rust
+    /// use release_regent_testing::TestingApi;
+    ///
     /// let commit = TestingApi::build_commit()
     ///     .with_conventional_message("feat: add authentication")
-    ///     .with_author("developer@example.com")
-    ///     .build();
+    ///     .with_author("Developer", "developer@example.com");
     /// ```
     pub fn build_commit() -> CommitBuilder {
         CommitBuilder::new()
@@ -152,10 +150,11 @@ impl TestingApi {
     ///
     /// # Example
     /// ```rust
+    /// use release_regent_testing::TestingApi;
+    ///
     /// let config = TestingApi::build_configuration()
-    ///     .with_versioning_strategy("semantic")
-    ///     .with_branch_patterns(vec!["main", "release/*"])
-    ///     .build();
+    ///     .with_owner("my-org")
+    ///     .with_repository("my-repo");
     /// ```
     pub fn build_configuration() -> ConfigurationBuilder {
         ConfigurationBuilder::new()
@@ -168,6 +167,8 @@ impl TestingApi {
     ///
     /// # Example
     /// ```rust
+    /// use release_regent_testing::TestingApi;
+    ///
     /// let pr = TestingApi::build_pull_request()
     ///     .with_title("Add new feature")
     ///     .with_base_branch("main")
@@ -185,6 +186,8 @@ impl TestingApi {
     ///
     /// # Example
     /// ```rust
+    /// use release_regent_testing::TestingApi;
+    ///
     /// let release = TestingApi::build_release()
     ///     .with_version("1.2.3")
     ///     .with_tag_name("v1.2.3")
@@ -202,6 +205,8 @@ impl TestingApi {
     ///
     /// # Example
     /// ```rust
+    /// use release_regent_testing::TestingApi;
+    ///
     /// let repo = TestingApi::build_repository()
     ///     .with_name("test-repo")
     ///     .with_owner("testuser")
@@ -219,6 +224,8 @@ impl TestingApi {
     ///
     /// # Example
     /// ```rust
+    /// use release_regent_testing::TestingApi;
+    ///
     /// let version = TestingApi::build_version()
     ///     .with_semantic("1.2.3")
     ///     .with_prerelease("beta.1")
@@ -235,6 +242,8 @@ impl TestingApi {
     ///
     /// # Example
     /// ```rust
+    /// use release_regent_testing::TestingApi;
+    ///
     /// let context = TestingApi::build_version_context()
     ///     .with_current_version("1.2.3")
     ///     .with_commits_since_last_release(5)
@@ -252,10 +261,11 @@ impl TestingApi {
     ///
     /// # Example
     /// ```rust
+    /// use release_regent_testing::TestingApi;
+    ///
     /// let webhook = TestingApi::build_webhook()
-    ///     .github_push_event()
-    ///     .with_branch("main")
-    ///     .with_commits(3)
+    ///     .with_event_type("push")
+    ///     .with_repository("owner", "repo")
     ///     .build();
     /// ```
     pub fn build_webhook() -> WebhookBuilder {
@@ -269,9 +279,11 @@ impl TestingApi {
     ///
     /// # Example
     /// ```rust
+    /// use release_regent_testing::TestingApi;
+    ///
     /// let fixtures = TestingApi::fixtures();
-    /// let push_event = fixtures.github_push_simple();
-    /// let pr_merged = fixtures.github_pull_request_merged();
+    /// let push_event = fixtures.get_webhook_fixture("push", "simple");
+    /// let pr_merged = fixtures.get_webhook_fixture("pull_request", "merged");
     /// ```
     pub fn fixtures() -> FixtureProvider {
         FixtureProvider::new()
@@ -284,9 +296,11 @@ impl TestingApi {
     ///
     /// # Example
     /// ```rust
+    /// use release_regent_testing::TestingApi;
+    ///
     /// let push_event = TestingApi::github_push_event()
     ///     .with_branch("main")
-    ///     .with_commits(vec![commit])
+    ///     .with_conventional_commit("feat", "add new feature")
     ///     .build();
     /// ```
     pub fn github_push_event() -> PushEventBuilder {
@@ -300,6 +314,8 @@ impl TestingApi {
     ///
     /// # Example
     /// ```rust
+    /// use release_regent_testing::TestingApi;
+    ///
     /// let pr_event = TestingApi::github_pull_request_event()
     ///     .with_action("opened")
     ///     .with_title("Add new feature")
@@ -316,6 +332,8 @@ impl TestingApi {
     ///
     /// # Example
     /// ```rust
+    /// use release_regent_testing::TestingApi;
+    ///
     /// let release_event = TestingApi::github_release_event()
     ///     .with_action("published")
     ///     .with_tag_name("v1.0.0")
@@ -335,9 +353,12 @@ impl TestingApi {
     ///
     /// # Example
     /// ```rust
+    /// use release_regent_testing::TestingApi;
+    ///
+    /// let input_data = serde_json::json!({"version": "1.0.0"});
     /// TestingApi::verify_spec("version_calculator")
     ///     .with_specification("semantic_versioning_v2")
-    ///     .with_input(&test_data)
+    ///     .with_input(&input_data)
     ///     .with_expected_behavior("increments_minor_for_feat")
     ///     .assert_compliance()
     ///     .unwrap();
@@ -353,6 +374,9 @@ impl TestingApi {
     ///
     /// # Example
     /// ```rust
+    /// use release_regent_testing::TestingApi;
+    /// use std::time::Duration;
+    ///
     /// let verifier = TestingApi::behavior_verifier()
     ///     .with_timeout_duration(Duration::from_secs(30))
     ///     .with_retry_attempts(3);
@@ -371,6 +395,9 @@ impl TestingApi {
     ///
     /// # Example
     /// ```rust
+    /// use release_regent_testing::TestingApi;
+    /// use release_regent_testing::assertions::ComplianceRequirement;
+    ///
     /// let checker = TestingApi::compliance_checker("semantic_versioning_v2")
     ///     .with_requirement(ComplianceRequirement::new("versioning", "Must follow semver"))
     ///     .with_requirement(ComplianceRequirement::new("changelog", "Must generate changelog"));
@@ -386,10 +413,13 @@ impl TestingApi {
     ///
     /// # Example
     /// ```rust
+    /// use release_regent_testing::TestingApi;
+    ///
     /// let env = TestingApi::test_environment()
     ///     .with_temporary_directory()
     ///     .with_cleanup_on_drop(true)
     ///     .build()?;
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn test_environment() -> TestEnvironmentBuilder {
         TestEnvironmentBuilder::new()
@@ -577,21 +607,22 @@ impl TestEnvironmentBuilder {
 }
 
 /// Convenient prelude for common testing imports
+///
+/// Convenient imports for common testing scenarios
+///
+/// This prelude provides easy access to the most commonly used
+/// testing utilities without requiring specific module imports.
+///
+/// # Example
+/// ```rust
+/// use release_regent_testing::prelude::*;
+///
+/// // All common testing utilities are now available
+/// let github = TestingApi::mock_github();
+/// let commit = TestingApi::build_commit();
+/// let fixtures = TestingApi::fixtures();
+/// ```
 pub mod prelude {
-    //! Convenient imports for common testing scenarios
-    //!
-    //! This prelude provides easy access to the most commonly used
-    //! testing utilities without requiring specific module imports.
-    //!
-    //! # Example
-    //! ```rust
-    //! use release_regent_testing::prelude::*;
-    //!
-    //! // All common testing utilities are now available
-    //! let github = TestingApi::mock_github();
-    //! let commit = TestingApi::build_commit();
-    //! let fixtures = TestingApi::fixtures();
-    //! ```
 
     pub use super::TestingApi;
     pub use crate::{

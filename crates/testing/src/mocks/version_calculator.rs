@@ -25,12 +25,11 @@ use tokio::sync::RwLock;
 /// # Example Usage
 ///
 /// ```rust
-/// use release_regent_testing::mocks::MockVersionCalculator;
+/// use release_regent_testing::mocks::version_calculator::MockVersionCalculator;
 /// use release_regent_core::versioning::SemanticVersion;
 ///
 /// let mock = MockVersionCalculator::new()
-///     .with_next_version(SemanticVersion::new(1, 2, 3))
-///     .with_version_bump(VersionBump::Minor);
+///     .with_next_version(SemanticVersion::new(1, 2, 3));
 /// ```
 #[derive(Debug)]
 pub struct MockVersionCalculator {
