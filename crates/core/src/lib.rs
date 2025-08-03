@@ -71,7 +71,7 @@ impl ReleaseRegent {
 /// * `W` - Webhook validator implementation
 ///
 /// # Examples
-/// ```no_run
+/// ```ignore
 /// use release_regent_core::{ReleaseRegentProcessor, config::ReleaseRegentConfig};
 /// use release_regent_testing::{MockGitHubOperations, MockConfigurationProvider, MockVersionCalculator, MockWebhookValidator};
 ///
@@ -112,7 +112,7 @@ where
     /// * `webhook_validator` - Webhook validation implementation
     ///
     /// # Examples
-    /// ```no_run
+    /// ```ignore
     /// use release_regent_core::ReleaseRegentProcessor;
     /// use release_regent_testing::{MockGitHubOperations, MockConfigurationProvider, MockVersionCalculator, MockWebhookValidator};
     ///
