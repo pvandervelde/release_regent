@@ -298,7 +298,8 @@ impl VersionCalculator for MockVersionCalculator {
         // Simulate failure if configured
         if self.should_simulate_failure().await {
             let error = CoreError::versioning("Simulated version calculation error");
-            self.record_call(method, &params, CallResult::Error(error.to_string()));
+            self.record_call(method, &params, CallResult::Error(error.to_string()))
+                .await;
             return Err(error);
         }
 
@@ -309,7 +310,7 @@ impl VersionCalculator for MockVersionCalculator {
             .cloned()
             .unwrap_or_else(|| self.create_default_calculation_result(&context, &strategy));
 
-        self.record_call(method, &params, CallResult::Success);
+        self.record_call(method, &params, CallResult::Success).await;
         Ok(result)
     }
 
@@ -348,7 +349,8 @@ impl VersionCalculator for MockVersionCalculator {
         // Simulate failure if configured
         if self.should_simulate_failure().await {
             let error = CoreError::versioning("Simulated commit analysis error");
-            self.record_call(method, &params, CallResult::Error(error.to_string()));
+            self.record_call(method, &params, CallResult::Error(error.to_string()))
+                .await;
             return Err(error);
         }
 
@@ -359,7 +361,7 @@ impl VersionCalculator for MockVersionCalculator {
             .cloned()
             .unwrap_or_default();
 
-        self.record_call(method, &params, CallResult::Success);
+        self.record_call(method, &params, CallResult::Success).await;
         Ok(analyses)
     }
 
@@ -396,13 +398,14 @@ impl VersionCalculator for MockVersionCalculator {
         // Simulate failure if configured
         if self.should_simulate_failure().await {
             let error = CoreError::versioning("Simulated version validation error");
-            self.record_call(method, &params, CallResult::Error(error.to_string()));
+            self.record_call(method, &params, CallResult::Error(error.to_string()))
+                .await;
             return Err(error);
         }
 
         // Default to valid version
         let is_valid = true;
-        self.record_call(method, &params, CallResult::Success);
+        self.record_call(method, &params, CallResult::Success).await;
         Ok(is_valid)
     }
 
@@ -436,7 +439,8 @@ impl VersionCalculator for MockVersionCalculator {
         // Simulate failure if configured
         if self.should_simulate_failure().await {
             let error = CoreError::versioning("Simulated version bump error");
-            self.record_call(method, &params, CallResult::Error(error.to_string()));
+            self.record_call(method, &params, CallResult::Error(error.to_string()))
+                .await;
             return Err(error);
         }
 
@@ -447,7 +451,7 @@ impl VersionCalculator for MockVersionCalculator {
             .cloned()
             .unwrap_or(self.default_version_bump.clone());
 
-        self.record_call(method, &params, CallResult::Success);
+        self.record_call(method, &params, CallResult::Success).await;
         Ok(bump)
     }
 
@@ -486,7 +490,8 @@ impl VersionCalculator for MockVersionCalculator {
         // Simulate failure if configured
         if self.should_simulate_failure().await {
             let error = CoreError::changelog_generation("Simulated changelog generation error");
-            self.record_call(method, &params, CallResult::Error(error.to_string()));
+            self.record_call(method, &params, CallResult::Error(error.to_string()))
+                .await;
             return Err(error);
         }
 
@@ -497,7 +502,7 @@ impl VersionCalculator for MockVersionCalculator {
             .cloned()
             .unwrap_or_default();
 
-        self.record_call(method, &params, CallResult::Success);
+        self.record_call(method, &params, CallResult::Success).await;
         Ok(entries)
     }
 
@@ -537,14 +542,15 @@ impl VersionCalculator for MockVersionCalculator {
         // Simulate failure if configured
         if self.should_simulate_failure().await {
             let error = CoreError::versioning("Simulated preview calculation error");
-            self.record_call(method, &params, CallResult::Error(error.to_string()));
+            self.record_call(method, &params, CallResult::Error(error.to_string()))
+                .await;
             return Err(error);
         }
 
         // Reuse calculate_version logic
         let result = self.calculate_version(context, strategy, options).await?;
 
-        self.record_call(method, &params, CallResult::Success);
+        self.record_call(method, &params, CallResult::Success).await;
         Ok(result)
     }
 

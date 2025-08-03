@@ -124,3 +124,8 @@ pub use builders::*;
 pub use fixtures::*;
 pub use mocks::*;
 pub use utils::*;
+
+// Reference the tests module in the separate file
+#[cfg(test)]
+#[path = "lib_tests.rs"]
+mod tests;
