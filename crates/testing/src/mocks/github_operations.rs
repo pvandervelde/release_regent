@@ -175,7 +175,8 @@ impl MockGitHubOperations {
         // Simulate failure if configured
         if self.should_simulate_failure().await {
             let error = CoreError::network("Simulated GitHub API error");
-            self.record_call(method, &params, CallResult::Error(error.to_string())).await;
+            self.record_call(method, &params, CallResult::Error(error.to_string()))
+                .await;
             return Err(error);
         }
 
