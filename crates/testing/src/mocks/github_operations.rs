@@ -147,7 +147,7 @@ impl MockGitHubOperations {
         let key = format!("{}/{}", owner, name);
         let releases = self.releases.get(&key).cloned().unwrap_or_default();
 
-        self.record_call(method, &params, CallResult::Success);
+        self.record_call(method, &params, CallResult::Success).await;
         Ok(releases)
     }
 
@@ -175,14 +175,15 @@ impl MockGitHubOperations {
         // Simulate failure if configured
         if self.should_simulate_failure().await {
             let error = CoreError::network("Simulated GitHub API error");
-            self.record_call(method, &params, CallResult::Error(error.to_string()));
+            self.record_call(method, &params, CallResult::Error(error.to_string()))
+                .await;
             return Err(error);
         }
 
         let key = format!("{}/{}", owner, name);
         let tags = self.tags.get(&key).cloned().unwrap_or_default();
 
-        self.record_call(method, &params, CallResult::Success);
+        self.record_call(method, &params, CallResult::Success).await;
         Ok(tags)
     }
 
