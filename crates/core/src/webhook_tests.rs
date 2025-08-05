@@ -1,5 +1,39 @@
 use super::*;
+use crate::traits::WebhookValidator;
+use async_trait::async_trait;
 use std::collections::HashMap;
+
+// Simple mock webhook validator for tests
+#[derive(Debug)]
+struct TestWebhookValidator {
+    should_validate: bool,
+}
+
+impl TestWebhookValidator {
+    fn new(should_validate: bool) -> Self {
+        Self { should_validate }
+    }
+}
+
+#[async_trait]
+impl WebhookValidator for TestWebhookValidator {
+    async fn verify_signature(
+        &self,
+        _payload: &[u8],
+        _signature: &str,
+        _secret: &str,
+    ) -> CoreResult<bool> {
+        Ok(self.should_validate)
+    }
+
+    async fn validate_payload(
+        &self,
+        _payload: &serde_json::Value,
+        _event_type: &str,
+    ) -> CoreResult<bool> {
+        Ok(true)
+    }
+}
 
 #[test]
 fn test_processing_result_match() {
@@ -68,7 +102,8 @@ fn test_repository_info() {
 
 #[tokio::test]
 async fn test_unsupported_event_type() {
-    let processor = WebhookProcessor::new(None);
+    let validator = TestWebhookValidator::new(true);
+    let processor = WebhookProcessor::new(&validator, None);
 
     let event = WebhookEvent::new(
         "issues".to_string(),
@@ -107,16 +142,18 @@ fn test_webhook_event_creation() {
 
 #[tokio::test]
 async fn test_webhook_processor_creation() {
-    let processor = WebhookProcessor::new(Some("secret123".to_string()));
+    let validator = TestWebhookValidator::new(true);
+    let processor = WebhookProcessor::new(&validator, Some("secret123".to_string()));
     assert!(processor.webhook_secret.is_some());
 
-    let processor_no_secret = WebhookProcessor::new(None);
+    let processor_no_secret = WebhookProcessor::new(&validator, None);
     assert!(processor_no_secret.webhook_secret.is_none());
 }
 
 #[tokio::test]
 async fn test_webhook_signature_validation_integration() {
-    let processor = WebhookProcessor::new(Some("test-secret".to_string()));
+    let validator = TestWebhookValidator::new(false); // Set to false to simulate signature validation failure
+    let processor = WebhookProcessor::new(&validator, Some("test-secret".to_string()));
 
     // Create a test payload
     let payload = serde_json::json!({
@@ -156,7 +193,8 @@ async fn test_webhook_signature_validation_integration() {
 
 #[tokio::test]
 async fn test_webhook_missing_signature_header() {
-    let processor = WebhookProcessor::new(Some("test-secret".to_string()));
+    let validator = TestWebhookValidator::new(true);
+    let processor = WebhookProcessor::new(&validator, Some("test-secret".to_string()));
 
     let payload = serde_json::json!({
         "action": "closed",

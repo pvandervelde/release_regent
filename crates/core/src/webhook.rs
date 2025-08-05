@@ -2,8 +2,7 @@
 //!
 //! This module handles GitHub webhook events and processes them for release management.
 
-use crate::{CoreError, CoreResult};
-use release_regent_github_client::GitHubAuthManager;
+use crate::{traits::WebhookValidator, CoreError, CoreResult};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tracing::{debug, info};
@@ -61,18 +60,32 @@ pub enum ProcessingResult {
     },
 }
 
-/// Webhook processor
-pub struct WebhookProcessor {
+/// Webhook processor with dependency injection
+///
+/// This processor uses trait abstractions for all external dependencies,
+/// enabling comprehensive testing and separation of concerns.
+pub struct WebhookProcessor<'a, W>
+where
+    W: WebhookValidator,
+{
+    webhook_validator: &'a W,
     webhook_secret: Option<String>,
 }
 
-impl WebhookProcessor {
-    /// Create a new webhook processor
+impl<'a, W> WebhookProcessor<'a, W>
+where
+    W: WebhookValidator,
+{
+    /// Create a new webhook processor with injected dependencies
     ///
     /// # Arguments
-    /// * `webhook_secret` - Secret for validating webhook signatures
-    pub fn new(webhook_secret: Option<String>) -> Self {
-        Self { webhook_secret }
+    /// * `webhook_validator` - Webhook validation implementation
+    /// * `webhook_secret` - Optional secret for validating webhook signatures
+    pub fn new(webhook_validator: &'a W, webhook_secret: Option<String>) -> Self {
+        Self {
+            webhook_validator,
+            webhook_secret,
+        }
     }
 
     /// Process a webhook event
@@ -90,7 +103,7 @@ impl WebhookProcessor {
 
         // Validate webhook signature if secret is configured
         if let Some(secret) = &self.webhook_secret {
-            self.validate_signature(event, secret)?;
+            self.validate_signature(event, secret).await?;
         }
 
         match event.event_type.as_str() {
@@ -139,8 +152,8 @@ impl WebhookProcessor {
         }
     }
 
-    /// Validate webhook signature
-    fn validate_signature(&self, event: &WebhookEvent, secret: &str) -> CoreResult<()> {
+    /// Validate webhook signature using the injected validator
+    async fn validate_signature(&self, event: &WebhookEvent, secret: &str) -> CoreResult<()> {
         debug!("Validating webhook signature");
 
         // Get signature from headers
@@ -153,7 +166,6 @@ impl WebhookProcessor {
             })?;
 
         // Get the raw payload for signature verification
-        // We need to reconstruct the raw payload from the event
         let payload = serde_json::to_vec(&event.payload).map_err(|e| {
             CoreError::webhook(
                 "signature_validation",
@@ -161,14 +173,11 @@ impl WebhookProcessor {
             )
         })?;
 
-        // Use GitHub client's signature verification
-        let is_valid = GitHubAuthManager::verify_webhook_signature(&payload, signature, secret)
-            .map_err(|e| {
-                CoreError::webhook(
-                    "signature_validation",
-                    &format!("Signature verification failed: {}", e),
-                )
-            })?;
+        // Use injected webhook validator for signature verification
+        let is_valid = self
+            .webhook_validator
+            .verify_signature(&payload, signature, secret)
+            .await?;
 
         if !is_valid {
             return Err(CoreError::webhook(

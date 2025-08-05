@@ -27,10 +27,12 @@
 pub mod configuration_provider;
 pub mod github_operations;
 pub mod version_calculator;
+pub mod webhook_validator;
 
 pub use configuration_provider::ConfigurationProvider;
 pub use github_operations::GitHubOperations;
 pub use version_calculator::VersionCalculator;
+pub use webhook_validator::WebhookValidator;
 
 #[cfg(test)]
 mod tests;
