@@ -573,8 +573,6 @@ impl Default for ReleaseResponseBuilder {
     }
 }
 
-/// Convenience functions for common API responses
-
 /// Generate a sample repository response
 pub fn sample_repository() -> Repository {
     RepositoryResponseBuilder::new().build()
@@ -653,7 +651,7 @@ pub fn sample_commits_list() -> Value {
 }
 
 /// Generate error response for API calls
-pub fn error_response(status: u16, message: &str) -> Value {
+pub fn error_response(_status: u16, message: &str) -> Value {
     json!({
         "message": message,
         "documentation_url": "https://docs.github.com/rest"

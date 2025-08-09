@@ -372,12 +372,12 @@ impl GitHubOperations for MockGitHubOperations {
     /// - `CoreError::NotSupported` - References not found
     async fn compare_commits(
         &self,
-        owner: &str,
-        repo: &str,
-        base: &str,
-        head: &str,
-        per_page: Option<u8>,
-        page: Option<u32>,
+        _owner: &str,
+        _repo: &str,
+        _base: &str,
+        _head: &str,
+        _per_page: Option<u8>,
+        _page: Option<u32>,
     ) -> CoreResult<Vec<Commit>> {
         // TODO: implement - placeholder for compilation
         Err(CoreError::not_supported(
@@ -402,9 +402,9 @@ impl GitHubOperations for MockGitHubOperations {
     /// - `CoreError::NotSupported` - Insufficient permissions
     async fn create_pull_request(
         &self,
-        owner: &str,
-        repo: &str,
-        params: CreatePullRequestParams,
+        _owner: &str,
+        _repo: &str,
+        _params: CreatePullRequestParams,
     ) -> CoreResult<PullRequest> {
         // TODO: implement - placeholder for compilation
         Err(CoreError::not_supported(
@@ -452,12 +452,12 @@ impl GitHubOperations for MockGitHubOperations {
     /// - `CoreError::NotSupported` - Not yet implemented in mock
     async fn create_tag(
         &self,
-        owner: &str,
-        repo: &str,
-        tag_name: &str,
-        commit_sha: &str,
-        message: Option<String>,
-        tagger: Option<GitUser>,
+        _owner: &str,
+        _repo: &str,
+        _tag_name: &str,
+        _commit_sha: &str,
+        _message: Option<String>,
+        _tagger: Option<GitUser>,
     ) -> CoreResult<Tag> {
         // TODO: implement - placeholder for compilation
         Err(CoreError::not_supported(
@@ -480,7 +480,7 @@ impl GitHubOperations for MockGitHubOperations {
     /// - `CoreError::GitHub` - API communication failed
     /// - `CoreError::InvalidInput` - Invalid commit SHA format
     /// - `CoreError::NotSupported` - Commit not found
-    async fn get_commit(&self, owner: &str, repo: &str, commit_sha: &str) -> CoreResult<Commit> {
+    async fn get_commit(&self, _owner: &str, _repo: &str, _commit_sha: &str) -> CoreResult<Commit> {
         // TODO: implement - placeholder for compilation
         Err(CoreError::not_supported(
             "MockGitHubOperations",
@@ -500,7 +500,7 @@ impl GitHubOperations for MockGitHubOperations {
     /// # Errors
     /// - `CoreError::GitHub` - API communication failed
     /// - `CoreError::InvalidInput` - Invalid repository parameters
-    async fn get_latest_release(&self, owner: &str, repo: &str) -> CoreResult<Option<Release>> {
+    async fn get_latest_release(&self, _owner: &str, _repo: &str) -> CoreResult<Option<Release>> {
         // TODO: implement - placeholder for compilation
         Err(CoreError::not_supported(
             "MockGitHubOperations",
@@ -524,9 +524,9 @@ impl GitHubOperations for MockGitHubOperations {
     /// - `CoreError::NotSupported` - PR not found
     async fn get_pull_request(
         &self,
-        owner: &str,
-        repo: &str,
-        pr_number: u64,
+        _owner: &str,
+        _repo: &str,
+        _pr_number: u64,
     ) -> CoreResult<PullRequest> {
         // TODO: implement - placeholder for compilation
         Err(CoreError::not_supported(
@@ -549,7 +549,12 @@ impl GitHubOperations for MockGitHubOperations {
     /// - `CoreError::GitHub` - API communication failed
     /// - `CoreError::InvalidInput` - Invalid tag name
     /// - `CoreError::NotSupported` - Release not found
-    async fn get_release_by_tag(&self, owner: &str, repo: &str, tag: &str) -> CoreResult<Release> {
+    async fn get_release_by_tag(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _tag: &str,
+    ) -> CoreResult<Release> {
         // TODO: implement - placeholder for compilation
         Err(CoreError::not_supported(
             "MockGitHubOperations",
@@ -618,10 +623,10 @@ impl GitHubOperations for MockGitHubOperations {
     /// - `CoreError::InvalidInput` - Invalid pagination parameters
     async fn list_releases(
         &self,
-        owner: &str,
-        repo: &str,
-        per_page: Option<u8>,
-        page: Option<u32>,
+        _owner: &str,
+        _repo: &str,
+        _per_page: Option<u8>,
+        _page: Option<u32>,
     ) -> CoreResult<Vec<Release>> {
         // TODO: implement - placeholder for compilation
         Err(CoreError::not_supported(
@@ -646,10 +651,10 @@ impl GitHubOperations for MockGitHubOperations {
     /// - `CoreError::InvalidInput` - Invalid pagination parameters
     async fn list_tags(
         &self,
-        owner: &str,
-        repo: &str,
-        per_page: Option<u8>,
-        page: Option<u32>,
+        _owner: &str,
+        _repo: &str,
+        _per_page: Option<u8>,
+        _page: Option<u32>,
     ) -> CoreResult<Vec<Tag>> {
         // TODO: implement - placeholder for compilation
         Err(CoreError::not_supported(
@@ -671,7 +676,7 @@ impl GitHubOperations for MockGitHubOperations {
     /// # Errors
     /// - `CoreError::GitHub` - API communication failed
     /// - `CoreError::InvalidInput` - Invalid tag name
-    async fn tag_exists(&self, owner: &str, repo: &str, tag_name: &str) -> CoreResult<bool> {
+    async fn tag_exists(&self, _owner: &str, _repo: &str, _tag_name: &str) -> CoreResult<bool> {
         // TODO: implement - placeholder for compilation
         Err(CoreError::not_supported(
             "MockGitHubOperations",
@@ -698,12 +703,12 @@ impl GitHubOperations for MockGitHubOperations {
     /// - `CoreError::NotSupported` - PR not found or insufficient permissions
     async fn update_pull_request(
         &self,
-        owner: &str,
-        repo: &str,
-        pr_number: u64,
-        title: Option<String>,
-        body: Option<String>,
-        state: Option<String>,
+        _owner: &str,
+        _repo: &str,
+        _pr_number: u64,
+        _title: Option<String>,
+        _body: Option<String>,
+        _state: Option<String>,
     ) -> CoreResult<PullRequest> {
         // TODO: implement - placeholder for compilation
         Err(CoreError::not_supported(

@@ -28,8 +28,8 @@ azure_identity = { workspace = true }
 azure_security_keyvault_secrets = { workspace = true }
 
 # Release Regent dependencies
-release-regent-core = { workspace = true }
-release-regent-github-client = { workspace = true }
+release-regent-core = { path = "../core" }
+release-regent-github-client = { path = "../github_client" }
 
 [dev-dependencies]
 tokio-test = { workspace = true }
