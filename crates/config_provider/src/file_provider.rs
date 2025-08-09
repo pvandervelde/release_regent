@@ -231,8 +231,11 @@ impl FileConfigurationProvider {
         let default_config = self.get_default_config().await?;
 
         // Detect format from path or use default
-        let format = FormatDetector::detect_from_path(path)
-            .or_else(|_| Ok::<ConfigFormat, ConfigProviderError>(self.default_format.unwrap_or(ConfigFormat::Yaml)))?;
+        let format = FormatDetector::detect_from_path(path).or_else(|_| {
+            Ok::<ConfigFormat, ConfigProviderError>(
+                self.default_format.unwrap_or(ConfigFormat::Yaml),
+            )
+        })?;
 
         // Serialize configuration
         let content = format.serialize(&default_config)?;
@@ -271,10 +274,11 @@ impl FileConfigurationProvider {
                 "webhook.url" => {
                     // WebhookConfig only has 'url' and 'headers' fields
                     if config.notifications.webhook.is_none() {
-                        config.notifications.webhook = Some(release_regent_core::config::WebhookConfig {
-                            url: value.clone(),
-                            headers: std::collections::HashMap::new(),
-                        });
+                        config.notifications.webhook =
+                            Some(release_regent_core::config::WebhookConfig {
+                                url: value.clone(),
+                                headers: std::collections::HashMap::new(),
+                            });
                     } else if let Some(webhook) = &mut config.notifications.webhook {
                         webhook.url = value.clone();
                     }

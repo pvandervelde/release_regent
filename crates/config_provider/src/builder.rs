@@ -181,9 +181,13 @@ impl ConfigurationBuilder {
         let provider = self.build().await?;
         provider
             .get_merged_config(
-                owner.ok_or_else(|| ConfigProviderError::Builder { message: "Owner is required".to_string() })?,
-                repo.ok_or_else(|| ConfigProviderError::Builder { message: "Repository is required".to_string() })?,
-                LoadOptions::default()
+                owner.ok_or_else(|| ConfigProviderError::Builder {
+                    message: "Owner is required".to_string(),
+                })?,
+                repo.ok_or_else(|| ConfigProviderError::Builder {
+                    message: "Repository is required".to_string(),
+                })?,
+                LoadOptions::default(),
             )
             .await
             .map_err(ConfigProviderError::Core)
@@ -192,7 +196,8 @@ impl ConfigurationBuilder {
     /// Build and load just the global configuration
     pub async fn build_and_load_global(self) -> ConfigProviderResult<ReleaseRegentConfig> {
         let provider = self.build().await?;
-        provider.load_global_config(LoadOptions::default())
+        provider
+            .load_global_config(LoadOptions::default())
             .await
             .map_err(ConfigProviderError::Core)
     }
@@ -260,7 +265,10 @@ impl ConfigurationBuilder {
         let mut builder = Self::new();
 
         // Common configuration directories to check
-        let release_regent_config_path = format!("{}/.config/release-regent", std::env::var("HOME").unwrap_or_default());
+        let release_regent_config_path = format!(
+            "{}/.config/release-regent",
+            std::env::var("HOME").unwrap_or_default()
+        );
         let common_dirs = vec![
             "./config",
             "./.config",
@@ -289,7 +297,10 @@ impl ConfigurationBuilder {
                         if (file_name.starts_with("release-regent")
                             || file_name.starts_with("release_regent")
                             || file_name == "config.yaml"
-                            || file_name == "config.yml" || file_name == "config.toml") && FormatDetector::detect_from_path(&path).is_ok() {
+                            || file_name == "config.yml"
+                            || file_name == "config.toml")
+                            && FormatDetector::detect_from_path(&path).is_ok()
+                        {
                             builder = builder.with_global_config_path(path);
                             break;
                         }

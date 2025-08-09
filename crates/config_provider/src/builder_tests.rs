@@ -1,8 +1,8 @@
 //! Unit tests for configuration builder.
 
 use super::*;
-use tempfile::TempDir;
 use std::collections::HashMap;
+use tempfile::TempDir;
 
 #[test]
 fn test_configuration_builder_creation() {
@@ -36,9 +36,18 @@ fn test_configuration_builder_with_search_directories() {
         .with_search_directories(vec!["/path/to/dir2", "/path/to/dir3"]);
 
     assert_eq!(builder.search_directories.len(), 3);
-    assert_eq!(builder.search_directories[0], PathBuf::from("/path/to/dir1"));
-    assert_eq!(builder.search_directories[1], PathBuf::from("/path/to/dir2"));
-    assert_eq!(builder.search_directories[2], PathBuf::from("/path/to/dir3"));
+    assert_eq!(
+        builder.search_directories[0],
+        PathBuf::from("/path/to/dir1")
+    );
+    assert_eq!(
+        builder.search_directories[1],
+        PathBuf::from("/path/to/dir2")
+    );
+    assert_eq!(
+        builder.search_directories[2],
+        PathBuf::from("/path/to/dir3")
+    );
 }
 
 #[test]
@@ -76,8 +85,7 @@ async fn test_determine_base_directory() {
     let temp_dir = TempDir::new().unwrap();
     let config_path = temp_dir.path().join("config.yaml");
 
-    let builder = ConfigurationBuilder::new()
-        .with_global_config_path(&config_path);
+    let builder = ConfigurationBuilder::new().with_global_config_path(&config_path);
 
     let base_dir = builder.determine_base_directory().unwrap();
     assert_eq!(base_dir, temp_dir.path());
