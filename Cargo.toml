@@ -64,7 +64,7 @@ mockall = "0.13"
 # Additional utilities
 dirs = "5.0"
 walkdir = "2.4"
-jsonschema = "0.18"
+jsonschema = "0.32"
 once_cell = "1.19"
 
 # Web framework
