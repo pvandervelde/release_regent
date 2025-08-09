@@ -23,7 +23,7 @@ git-conventional = "0.12"
 git-cliff-core = { version = "2.9", default-features = false, features = [
     "repo",
 ] }
-toml = "0.8"
+toml = "0.9"
 
 # GitHub client
 release-regent-github-client = { path = "../github_client" }
