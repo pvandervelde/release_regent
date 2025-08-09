@@ -34,7 +34,7 @@ reqwest = { version = "0.11", features = ["json", "rustls-tls"] }
 
 # JWT and security
 jsonwebtoken = "9.2"
-secrecy = "0.8"
+secrecy = "0.10"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.6", features = ["v4", "serde"] }
 
