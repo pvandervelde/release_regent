@@ -1,0 +1,46 @@
+[package]
+name = "release_regent_config_provider"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Configuration provider implementation for Release Regent with YAML and TOML support"
+
+[dependencies]
+# Core dependencies
+release-regent-core = { path = "../core" }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+
+# Serialization and configuration formats
+serde = { workspace = true }
+serde_yaml = { workspace = true, optional = true }
+toml = { workspace = true, optional = true }
+
+# Time and date
+chrono = { workspace = true }
+
+# File system and path handling
+dirs = { workspace = true }
+walkdir = { workspace = true }
+
+# Error handling and logging
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+# Validation
+jsonschema = { workspace = true }
+once_cell = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio-test = { workspace = true }
+release_regent_testing = { path = "../testing" }
+
+[features]
+default = ["yaml", "toml"]
+yaml = ["dep:serde_yaml"]
+toml = ["dep:toml"]
