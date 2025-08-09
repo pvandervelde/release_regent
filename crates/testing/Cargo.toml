@@ -21,7 +21,7 @@ tokio = { workspace = true }
 tempfile = "3.0"
 
 # Mock data generation
-fake = { version = "2.9", features = [
+fake = { version = "4.0", features = [
     "derive",
     "chrono",
     "uuid",
