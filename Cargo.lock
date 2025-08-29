@@ -2709,7 +2709,7 @@ dependencies = [
  "chrono",
  "git-cliff-core",
  "git-conventional",
- "release-regent-github-client",
+ "release_regent_testing",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -2732,6 +2732,7 @@ dependencies = [
  "jsonwebtoken",
  "mockall",
  "octocrab",
+ "release-regent-core",
  "reqwest 0.11.27",
  "secrecy",
  "serde",
@@ -2956,7 +2957,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3513,7 +3514,7 @@ dependencies = [
  "getrandom 0.3.3",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4331,7 +4332,7 @@ version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf221c93e13a30d793f7645a0e7762c55d169dbb0a49671918a2319d289b10bb"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

@@ -6,13 +6,16 @@
 use crate::traits::*;
 use crate::versioning::SemanticVersion;
 use chrono::Utc;
+use release_regent_testing::mocks::{
+    MockConfigurationProvider, MockGitHubOperations, MockVersionCalculator,
+};
 use std::collections::HashMap;
 
 /// Test that GitHubOperations trait can be object-safe and used in generic contexts
 #[tokio::test]
 async fn test_github_operations_trait_object_safety() {
     // This test verifies that GitHubOperations can be used as a trait object
-    let mock: Box<dyn GitHubOperations> = Box::new(github_operations::MockGitHubOperations);
+    let mock: Box<dyn GitHubOperations> = Box::new(MockGitHubOperations::new());
 
     // Test that all methods return the expected error for unimplemented mock
     let result = mock.get_repository("owner", "repo").await;
@@ -26,8 +29,7 @@ async fn test_github_operations_trait_object_safety() {
 #[tokio::test]
 async fn test_configuration_provider_trait_object_safety() {
     // This test verifies that ConfigurationProvider can be used as a trait object
-    let mock: Box<dyn ConfigurationProvider> =
-        Box::new(configuration_provider::MockConfigurationProvider);
+    let mock: Box<dyn ConfigurationProvider> = Box::new(MockConfigurationProvider::new());
 
     // Test that all methods return the expected error for unimplemented mock
     let options = configuration_provider::LoadOptions::default();
@@ -42,7 +44,7 @@ async fn test_configuration_provider_trait_object_safety() {
 #[tokio::test]
 async fn test_version_calculator_trait_object_safety() {
     // This test verifies that VersionCalculator can be used as a trait object
-    let mock: Box<dyn VersionCalculator> = Box::new(version_calculator::MockVersionCalculator);
+    let mock: Box<dyn VersionCalculator> = Box::new(MockVersionCalculator::new());
 
     // Test that all methods return the expected error for unimplemented mock
     let context = version_calculator::VersionContext {
@@ -178,9 +180,9 @@ fn test_configuration_provider_data_structures() {
 /// Test error handling for mock implementations
 #[tokio::test]
 async fn test_mock_error_handling() {
-    let github_mock = github_operations::MockGitHubOperations;
-    let config_mock = configuration_provider::MockConfigurationProvider;
-    let version_mock = version_calculator::MockVersionCalculator;
+    let github_mock = MockGitHubOperations::new();
+    let config_mock = MockConfigurationProvider::new();
+    let version_mock = MockVersionCalculator::new();
 
     // Test GitHub operations error
     let result = github_mock.list_tags("owner", "repo", None, None).await;
@@ -259,9 +261,9 @@ async fn test_async_trait_compatibility() {
         Ok(())
     }
 
-    let github_mock = github_operations::MockGitHubOperations;
-    let config_mock = configuration_provider::MockConfigurationProvider;
-    let version_mock = version_calculator::MockVersionCalculator;
+    let github_mock = MockGitHubOperations::new();
+    let config_mock = MockConfigurationProvider::new();
+    let version_mock = MockVersionCalculator::new();
 
     // These should compile and fail with the expected "not implemented" error
     assert!(test_github_operations(&github_mock).await.is_err());
@@ -273,15 +275,15 @@ async fn test_async_trait_compatibility() {
 #[test]
 fn test_trait_objects_in_collections() {
     let github_clients: Vec<Box<dyn GitHubOperations>> =
-        vec![Box::new(github_operations::MockGitHubOperations)];
+        vec![Box::new(MockGitHubOperations::new())];
     assert_eq!(github_clients.len(), 1);
 
     let config_providers: Vec<Box<dyn ConfigurationProvider>> =
-        vec![Box::new(configuration_provider::MockConfigurationProvider)];
+        vec![Box::new(MockConfigurationProvider::new())];
     assert_eq!(config_providers.len(), 1);
 
     let version_calculators: Vec<Box<dyn VersionCalculator>> =
-        vec![Box::new(version_calculator::MockVersionCalculator)];
+        vec![Box::new(MockVersionCalculator::new())];
     assert_eq!(version_calculators.len(), 1);
 }
 

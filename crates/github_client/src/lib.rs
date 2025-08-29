@@ -3,8 +3,10 @@
 //! This crate provides a client for making authenticated requests to GitHub,
 //! authenticating as a GitHub App using its ID and private key.
 
+use async_trait::async_trait;
 use octocrab::{Octocrab, Result as OctocrabResult};
-use tracing::{error, info, instrument};
+use release_regent_core::{traits::github_operations::*, CoreError, CoreResult, GitHubOperations};
+use tracing::{debug, error, info, instrument};
 
 pub mod errors;
 pub use errors::{Error, GitHubResult};
@@ -56,6 +58,54 @@ pub struct GitHubClient {
 }
 
 impl GitHubClient {
+    /// Creates an installation client for the specified installation ID.
+    ///
+    /// This method creates a new GitHubClient instance that is authenticated with
+    /// an installation token for the specified installation ID. If an authentication
+    /// manager is available, it will use token caching for better performance.
+    ///
+    /// # Arguments
+    ///
+    /// * `installation_id` - The GitHub App installation ID
+    ///
+    /// # Returns
+    ///
+    /// Returns a new `GitHubClient` instance authenticated for the installation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no authentication manager is available or if the
+    /// installation token cannot be acquired.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use release_regent_github_client::{GitHubClient, AuthConfig, GitHubAuthManager};
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let config = AuthConfig::new(123456, "private_key", None)?;
+    ///     let auth_manager = GitHubAuthManager::new(config)?;
+    ///     let github_client = GitHubClient::with_auth_manager(auth_manager).await?;
+    ///     let installation_client = github_client.create_installation_client(987654).await?;
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
+    pub async fn create_installation_client(&self, installation_id: u64) -> GitHubResult<Self> {
+        let auth_manager = self.auth_manager.as_ref().ok_or_else(|| {
+            Error::configuration("auth_manager", "Authentication manager not available")
+        })?;
+
+        let client = auth_manager
+            .create_installation_client(installation_id)
+            .await?;
+        Ok(Self {
+            client,
+            auth_manager: Some(auth_manager.clone()),
+        })
+    }
+
     /// Fetches details for a specific repository.
     ///
     /// # Arguments
@@ -217,53 +267,391 @@ impl GitHubClient {
             auth_manager: Some(auth_manager),
         })
     }
+}
 
-    /// Creates an installation client for the specified installation ID.
+#[async_trait]
+impl GitHubOperations for GitHubClient {
+    /// Get commits between two references
     ///
-    /// This method creates a new GitHubClient instance that is authenticated with
-    /// an installation token for the specified installation ID. If an authentication
-    /// manager is available, it will use token caching for better performance.
-    ///
-    /// # Arguments
-    ///
-    /// * `installation_id` - The GitHub App installation ID
+    /// # Parameters
+    /// - `owner`: Repository owner name
+    /// - `repo`: Repository name
+    /// - `base`: Base reference (commit SHA, branch, or tag)
+    /// - `head`: Head reference (commit SHA, branch, or tag)
+    /// - `per_page`: Number of commits per page (max 250)
+    /// - `page`: Page number to retrieve (1-based)
     ///
     /// # Returns
-    ///
-    /// Returns a new `GitHubClient` instance authenticated for the installation.
+    /// List of commits between base and head, ordered chronologically
     ///
     /// # Errors
-    ///
-    /// Returns an error if no authentication manager is available or if the
-    /// installation token cannot be acquired.
-    ///
-    /// # Examples
-    ///
-    /// ```rust,no_run
-    /// use release_regent_github_client::{GitHubClient, AuthConfig, GitHubAuthManager};
-    ///
-    /// #[tokio::main]
-    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    ///     let config = AuthConfig::new(123456, "private_key", None)?;
-    ///     let auth_manager = GitHubAuthManager::new(config)?;
-    ///     let github_client = GitHubClient::with_auth_manager(auth_manager).await?;
-    ///     let installation_client = github_client.create_installation_client(987654).await?;
-    ///
-    ///     Ok(())
-    /// }
-    /// ```
-    pub async fn create_installation_client(&self, installation_id: u64) -> GitHubResult<Self> {
-        let auth_manager = self.auth_manager.as_ref().ok_or_else(|| {
-            Error::configuration("auth_manager", "Authentication manager not available")
-        })?;
+    /// - `CoreError::GitHub` - API communication failed
+    /// - `CoreError::InvalidInput` - Invalid references or pagination
+    /// - `CoreError::NotSupported` - References not found
+    async fn compare_commits(
+        &self,
+        owner: &str,
+        repo: &str,
+        base: &str,
+        head: &str,
+        per_page: Option<u8>,
+        page: Option<u32>,
+    ) -> CoreResult<Vec<Commit>> {
+        // TODO: Implement using octocrab compare API
+        Err(CoreError::not_supported(
+            "compare_commits",
+            "Not yet implemented",
+        ))
+    }
 
-        let client = auth_manager
-            .create_installation_client(installation_id)
-            .await?;
-        Ok(Self {
-            client,
-            auth_manager: Some(auth_manager.clone()),
-        })
+    /// Create a new pull request
+    ///
+    /// # Parameters
+    /// - `owner`: Repository owner name
+    /// - `repo`: Repository name
+    /// - `params`: Pull request creation parameters
+    ///
+    /// # Returns
+    /// Created pull request information
+    ///
+    /// # Errors
+    /// - `CoreError::GitHub` - API communication failed
+    /// - `CoreError::InvalidInput` - Invalid branch names or parameters
+    /// - `CoreError::NotSupported` - Insufficient permissions
+    async fn create_pull_request(
+        &self,
+        owner: &str,
+        repo: &str,
+        params: CreatePullRequestParams,
+    ) -> CoreResult<PullRequest> {
+        // TODO: Implement using octocrab pulls API
+        Err(CoreError::not_supported(
+            "create_pull_request",
+            "Not yet implemented",
+        ))
+    }
+
+    /// Create a new release
+    ///
+    /// # Parameters
+    /// - `owner`: Repository owner name
+    /// - `repo`: Repository name
+    /// - `params`: Release creation parameters
+    ///
+    /// # Returns
+    /// Created release information
+    ///
+    /// # Errors
+    /// - `CoreError::GitHub` - API communication failed
+    /// - `CoreError::InvalidInput` - Invalid tag name or parameters
+    /// - `CoreError::NotSupported` - Tag already exists or insufficient permissions
+    async fn create_release(
+        &self,
+        owner: &str,
+        repo: &str,
+        params: CreateReleaseParams,
+    ) -> CoreResult<Release> {
+        // TODO: Implement using octocrab releases API
+        Err(CoreError::not_supported(
+            "create_release",
+            "Not yet implemented",
+        ))
+    }
+
+    /// Create a new tag
+    ///
+    /// # Parameters
+    /// - `owner`: Repository owner name
+    /// - `repo`: Repository name
+    /// - `tag_name`: Name of the tag to create
+    /// - `commit_sha`: Commit SHA to tag
+    /// - `message`: Tag message for annotated tags (optional)
+    /// - `tagger`: Tagger information (optional, defaults to authenticated user)
+    ///
+    /// # Returns
+    /// Created tag information
+    ///
+    /// # Errors
+    /// - `CoreError::GitHub` - API communication failed
+    /// - `CoreError::InvalidInput` - Invalid tag name or commit SHA
+    /// - `CoreError::NotSupported` - Tag already exists or insufficient permissions
+    async fn create_tag(
+        &self,
+        owner: &str,
+        repo: &str,
+        tag_name: &str,
+        commit_sha: &str,
+        message: Option<String>,
+        tagger: Option<GitUser>,
+    ) -> CoreResult<Tag> {
+        // TODO: Implement using octocrab git refs API
+        Err(CoreError::not_supported(
+            "create_tag",
+            "Not yet implemented",
+        ))
+    }
+
+    /// Get specific commit information
+    ///
+    /// # Parameters
+    /// - `owner`: Repository owner name
+    /// - `repo`: Repository name
+    /// - `commit_sha`: Commit SHA to retrieve
+    ///
+    /// # Returns
+    /// Detailed commit information including author, message, and metadata
+    ///
+    /// # Errors
+    /// - `CoreError::GitHub` - API communication failed
+    /// - `CoreError::InvalidInput` - Invalid commit SHA format
+    /// - `CoreError::NotSupported` - Commit not found
+    async fn get_commit(&self, owner: &str, repo: &str, commit_sha: &str) -> CoreResult<Commit> {}
+
+    /// Get the latest release (non-draft, non-prerelease)
+    ///
+    /// # Parameters
+    /// - `owner`: Repository owner name
+    /// - `repo`: Repository name
+    ///
+    /// # Returns
+    /// Latest stable release information, or None if no releases exist
+    ///
+    /// # Errors
+    /// - `CoreError::GitHub` - API communication failed
+    /// - `CoreError::InvalidInput` - Invalid repository parameters
+    async fn get_latest_release(&self, _owner: &str, _repo: &str) -> CoreResult<Option<Release>> {
+        // TODO: Implement using octocrab releases API
+        Err(CoreError::not_supported(
+            "get_latest_release",
+            "Not yet implemented",
+        ))
+    }
+
+    /// Get pull request information
+    ///
+    /// # Parameters
+    /// - `owner`: Repository owner name
+    /// - `repo`: Repository name
+    /// - `pr_number`: Pull request number
+    ///
+    /// # Returns
+    /// Pull request information including status and metadata
+    ///
+    /// # Errors
+    /// - `CoreError::GitHub` - API communication failed
+    /// - `CoreError::InvalidInput` - Invalid PR number
+    /// - `CoreError::NotSupported` - PR not found
+    async fn get_pull_request(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: u64,
+    ) -> CoreResult<PullRequest> {
+        // TODO: Implement using octocrab pulls API
+        Err(CoreError::not_supported(
+            "get_pull_request",
+            "Not yet implemented",
+        ))
+    }
+
+    /// Get release information by tag name
+    ///
+    /// # Parameters
+    /// - `owner`: Repository owner name
+    /// - `repo`: Repository name
+    /// - `tag`: Tag name to find release for
+    ///
+    /// # Returns
+    /// Release information if found
+    ///
+    /// # Errors
+    /// - `CoreError::GitHub` - API communication failed
+    /// - `CoreError::InvalidInput` - Invalid tag name
+    /// - `CoreError::NotSupported` - Release not found
+    async fn get_release_by_tag(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _tag: &str,
+    ) -> CoreResult<Release> {
+        // TODO: Implement using octocrab releases API
+        Err(CoreError::not_supported(
+            "get_release_by_tag",
+            "Not yet implemented",
+        ))
+    }
+
+    /// Retrieve repository information
+    ///
+    /// # Parameters
+    /// - `owner`: Repository owner (user or organization name)
+    /// - `repo`: Repository name
+    ///
+    /// # Returns
+    /// Repository information including metadata and configuration
+    ///
+    /// # Errors
+    /// - `CoreError::GitHub` - API communication failed
+    /// - `CoreError::InvalidInput` - Invalid owner or repo name
+    /// - `CoreError::NotSupported` - Repository not accessible
+    async fn get_repository(&self, owner: &str, repo: &str) -> CoreResult<Repository> {
+        debug!("Getting repository {}/{}", owner, repo);
+
+        let result = self.client.repos(owner, repo).get().await;
+        match result {
+            Ok(r) => Ok(Repository {
+                id: r.id.0,
+                name: r.name,
+                full_name: r.full_name.unwrap_or_else(|| format!("{}/{}", owner, repo)),
+                owner: r.owner.unwrap().login,
+                description: r.description,
+                homepage: r.homepage,
+                private: r.private.unwrap_or(false),
+                default_branch: r.default_branch.unwrap_or_else(|| "main".to_string()),
+                clone_url: r.clone_url.map(|u| u.to_string()).unwrap_or_default(),
+                ssh_url: r.ssh_url.unwrap_or_default(),
+            }),
+            Err(e) => {
+                error!("Failed to get repository: {}", e);
+                Err(CoreError::github(crate::Error::from(e)))
+            }
+        }
+    }
+
+    /// List releases in a repository
+    ///
+    /// # Parameters
+    /// - `owner`: Repository owner name
+    /// - `repo`: Repository name
+    /// - `per_page`: Number of releases per page (max 100)
+    /// - `page`: Page number to retrieve (1-based)
+    ///
+    /// # Returns
+    /// List of releases ordered by creation date (newest first)
+    ///
+    /// # Errors
+    /// - `CoreError::GitHub` - API communication failed
+    /// - `CoreError::InvalidInput` - Invalid pagination parameters
+    async fn list_releases(
+        &self,
+        owner: &str,
+        repo: &str,
+        per_page: Option<u8>,
+        page: Option<u32>,
+    ) -> CoreResult<Vec<Release>> {
+        // TODO: Implement using octocrab releases API
+        Err(CoreError::not_supported(
+            "list_releases",
+            "Not yet implemented",
+        ))
+    }
+
+    /// List all tags in a repository
+    ///
+    /// # Parameters
+    /// - `owner`: Repository owner name
+    /// - `repo`: Repository name
+    /// - `per_page`: Number of tags per page (max 100)
+    /// - `page`: Page number to retrieve (1-based)
+    ///
+    /// # Returns
+    /// List of tags ordered by creation date (newest first)
+    ///
+    /// # Errors
+    /// - `CoreError::GitHub` - API communication failed
+    /// - `CoreError::InvalidInput` - Invalid pagination parameters
+    async fn list_tags(
+        &self,
+        owner: &str,
+        repo: &str,
+        per_page: Option<u8>,
+        page: Option<u32>,
+    ) -> CoreResult<Vec<Tag>> {
+        // TODO: Implement using octocrab git refs API
+        Err(CoreError::not_supported("list_tags", "Not yet implemented"))
+    }
+
+    /// Check if a tag exists
+    ///
+    /// # Parameters
+    /// - `owner`: Repository owner name
+    /// - `repo`: Repository name
+    /// - `tag_name`: Tag name to check
+    ///
+    /// # Returns
+    /// True if tag exists, false otherwise
+    ///
+    /// # Errors
+    /// - `CoreError::GitHub` - API communication failed
+    /// - `CoreError::InvalidInput` - Invalid tag name
+    async fn tag_exists(&self, _owner: &str, _repo: &str, _tag_name: &str) -> CoreResult<bool> {
+        // TODO: Implement using octocrab git refs API
+        Err(CoreError::not_supported(
+            "tag_exists",
+            "Not yet implemented",
+        ))
+    }
+
+    /// Update an existing pull request
+    ///
+    /// # Parameters
+    /// - `owner`: Repository owner name
+    /// - `repo`: Repository name
+    /// - `pr_number`: Pull request number
+    /// - `title`: New PR title (optional)
+    /// - `body`: New PR body (optional)
+    /// - `state`: New PR state ("open" or "closed") (optional)
+    ///
+    /// # Returns
+    /// Updated pull request information
+    ///
+    /// # Errors
+    /// - `CoreError::GitHub` - API communication failed
+    /// - `CoreError::InvalidInput` - Invalid parameters
+    /// - `CoreError::NotSupported` - PR not found or insufficient permissions
+    async fn update_pull_request(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: u64,
+        title: Option<String>,
+        body: Option<String>,
+        state: Option<String>,
+    ) -> CoreResult<PullRequest> {
+        // TODO: Implement using octocrab pulls API
+        Err(CoreError::not_supported(
+            "update_pull_request",
+            "Not yet implemented",
+        ))
+    }
+
+    /// Update an existing release
+    ///
+    /// # Parameters
+    /// - `owner`: Repository owner name
+    /// - `repo`: Repository name
+    /// - `release_id`: Release ID to update
+    /// - `params`: Release update parameters
+    ///
+    /// # Returns
+    /// Updated release information
+    ///
+    /// # Errors
+    /// - `CoreError::GitHub` - API communication failed
+    /// - `CoreError::InvalidInput` - Invalid release ID or parameters
+    /// - `CoreError::NotSupported` - Release not found or insufficient permissions
+    async fn update_release(
+        &self,
+        owner: &str,
+        repo: &str,
+        release_id: u64,
+        params: UpdateReleaseParams,
+    ) -> CoreResult<Release> {
+        // TODO: Implement using octocrab releases API
+        Err(CoreError::not_supported(
+            "update_release",
+            "Not yet implemented",
+        ))
     }
 }
 
