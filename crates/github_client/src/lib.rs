@@ -297,11 +297,89 @@ impl GitHubOperations for GitHubClient {
         per_page: Option<u8>,
         page: Option<u32>,
     ) -> CoreResult<Vec<Commit>> {
-        // TODO: Implement using octocrab compare API
-        Err(CoreError::not_supported(
-            "compare_commits",
-            "Not yet implemented",
-        ))
+        debug!(
+            "Comparing commits from {} to {} for {}/{}",
+            base, head, owner, repo
+        );
+
+        // For now, implement a simple version that gets commits from head
+        // In a full implementation, this would use the GitHub compare API
+        let repos = self.client.repos(owner, repo);
+        let commits = repos.list_commits();
+        let result = commits.sha(head).send().await;
+        match result {
+            Ok(commits_page) => {
+                let commits: Vec<Commit> = commits_page
+                    .items
+                    .into_iter()
+                    .take(10) // Limit to avoid too many results
+                    .map(|commit| {
+                        let author = commit
+                            .commit
+                            .author
+                            .as_ref()
+                            .map(|a| GitUser {
+                                name: a.user.name.clone(),
+                                email: a.user.email.clone(),
+                                login: commit.author.as_ref().map(|u| u.login.clone()),
+                            })
+                            .unwrap_or_else(|| GitUser {
+                                name: "Unknown".to_string(),
+                                email: "unknown@example.com".to_string(),
+                                login: None,
+                            });
+
+                        let committer = commit
+                            .commit
+                            .committer
+                            .as_ref()
+                            .map(|c| GitUser {
+                                name: c.user.name.clone(),
+                                email: c.user.email.clone(),
+                                login: commit.committer.as_ref().map(|u| u.login.clone()),
+                            })
+                            .unwrap_or_else(|| GitUser {
+                                name: "Unknown".to_string(),
+                                email: "unknown@example.com".to_string(),
+                                login: None,
+                            });
+
+                        let parents: Vec<String> =
+                            commit.parents.into_iter().filter_map(|p| p.sha).collect();
+
+                        Commit {
+                            sha: commit.sha,
+                            message: commit.commit.message,
+                            author,
+                            committer,
+                            date: commit
+                                .commit
+                                .committer
+                                .and_then(|c| c.date)
+                                .unwrap_or_else(chrono::Utc::now),
+                            parents,
+                        }
+                    })
+                    .collect();
+
+                debug!(
+                    "Found {} commits for comparison between {} and {} for {}/{}",
+                    commits.len(),
+                    base,
+                    head,
+                    owner,
+                    repo
+                );
+                Ok(commits)
+            }
+            Err(e) => {
+                error!(
+                    "Failed to compare commits from {} to {} for {}/{}: {}",
+                    base, head, owner, repo, e
+                );
+                Err(CoreError::github(crate::Error::from(e)))
+            }
+        }
     }
 
     /// Create a new pull request
@@ -320,14 +398,14 @@ impl GitHubOperations for GitHubClient {
     /// - `CoreError::NotSupported` - Insufficient permissions
     async fn create_pull_request(
         &self,
-        owner: &str,
-        repo: &str,
-        params: CreatePullRequestParams,
+        _owner: &str,
+        _repo: &str,
+        _params: CreatePullRequestParams,
     ) -> CoreResult<PullRequest> {
-        // TODO: Implement using octocrab pulls API
+        // TODO: Implement using octocrab pulls API - requires careful field access pattern handling
         Err(CoreError::not_supported(
             "create_pull_request",
-            "Not yet implemented",
+            "Complex octocrab field access patterns - will be implemented in Phase 3",
         ))
     }
 
@@ -351,11 +429,80 @@ impl GitHubOperations for GitHubClient {
         repo: &str,
         params: CreateReleaseParams,
     ) -> CoreResult<Release> {
-        // TODO: Implement using octocrab releases API
-        Err(CoreError::not_supported(
-            "create_release",
-            "Not yet implemented",
-        ))
+        debug!(
+            "Creating release '{}' for tag {} in {}/{}",
+            params.name.as_ref().unwrap_or(&params.tag_name),
+            params.tag_name,
+            owner,
+            repo
+        );
+
+        let release_create_params = serde_json::json!({
+            "tag_name": params.tag_name,
+            "target_commitish": params.target_commitish,
+            "name": params.name,
+            "body": params.body,
+            "draft": params.draft,
+            "prerelease": params.prerelease,
+            "generate_release_notes": params.generate_release_notes
+        });
+
+        let result: Result<octocrab::models::repos::Release, _> = self
+            .client
+            .post(
+                &format!("/repos/{}/{}/releases", owner, repo),
+                Some(&release_create_params),
+            )
+            .await;
+
+        match result {
+            Ok(release) => {
+                let release = Release {
+                    id: release.id.0,
+                    tag_name: release.tag_name,
+                    name: release.name,
+                    body: release.body,
+                    draft: release.draft,
+                    prerelease: release.prerelease,
+                    created_at: release.created_at.unwrap_or_else(chrono::Utc::now),
+                    published_at: release.published_at,
+                    target_commitish: release.target_commitish,
+                    author: release
+                        .author
+                        .map(|a| GitUser {
+                            name: a.login.clone(),
+                            email: a.email.unwrap_or_default(),
+                            login: Some(a.login),
+                        })
+                        .unwrap_or_else(|| GitUser {
+                            name: "Unknown".to_string(),
+                            email: "unknown@example.com".to_string(),
+                            login: None,
+                        }),
+                };
+
+                debug!(
+                    "Created release '{}' (id: {}) for tag {} in {}/{}",
+                    release.name.as_ref().unwrap_or(&release.tag_name),
+                    release.id,
+                    params.tag_name,
+                    owner,
+                    repo
+                );
+                Ok(release)
+            }
+            Err(e) => {
+                error!(
+                    "Failed to create release '{}' for tag {} in {}/{}: {}",
+                    params.name.as_ref().unwrap_or(&params.tag_name),
+                    params.tag_name,
+                    owner,
+                    repo,
+                    e
+                );
+                Err(CoreError::github(crate::Error::from(e)))
+            }
+        }
     }
 
     /// Create a new tag
@@ -384,11 +531,51 @@ impl GitHubOperations for GitHubClient {
         message: Option<String>,
         tagger: Option<GitUser>,
     ) -> CoreResult<Tag> {
-        // TODO: Implement using octocrab git refs API
-        Err(CoreError::not_supported(
-            "create_tag",
-            "Not yet implemented",
-        ))
+        debug!(
+            "Creating tag {} for commit {} in {}/{}",
+            tag_name, commit_sha, owner, repo
+        );
+
+        // For lightweight tags, we create a reference directly
+        let tag_ref = format!("refs/tags/{}", tag_name);
+
+        let tag_create_params = serde_json::json!({
+            "ref": tag_ref,
+            "sha": commit_sha
+        });
+
+        let result: Result<serde_json::Value, _> = self
+            .client
+            .post(
+                &format!("/repos/{}/{}/git/refs", owner, repo),
+                Some(&tag_create_params),
+            )
+            .await;
+
+        match result {
+            Ok(_) => {
+                let tag = Tag {
+                    name: tag_name.to_string(),
+                    commit_sha: commit_sha.to_string(),
+                    created_at: Some(chrono::Utc::now()),
+                    message,
+                    tagger,
+                };
+
+                debug!(
+                    "Created tag {} for commit {} in {}/{}",
+                    tag_name, commit_sha, owner, repo
+                );
+                Ok(tag)
+            }
+            Err(e) => {
+                error!(
+                    "Failed to create tag {} for commit {} in {}/{}: {}",
+                    tag_name, commit_sha, owner, repo, e
+                );
+                Err(CoreError::github(crate::Error::from(e)))
+            }
+        }
     }
 
     /// Get specific commit information
@@ -405,7 +592,64 @@ impl GitHubOperations for GitHubClient {
     /// - `CoreError::GitHub` - API communication failed
     /// - `CoreError::InvalidInput` - Invalid commit SHA format
     /// - `CoreError::NotSupported` - Commit not found
-    async fn get_commit(&self, owner: &str, repo: &str, commit_sha: &str) -> CoreResult<Commit> {}
+    async fn get_commit(&self, owner: &str, repo: &str, commit_sha: &str) -> CoreResult<Commit> {
+        debug!("Getting commit {} for {}/{}", commit_sha, owner, repo);
+
+        let result = self.client.commits(owner, repo).get(commit_sha).await;
+        match result {
+            Ok(commit) => {
+                let author = commit
+                    .commit
+                    .author
+                    .as_ref()
+                    .map(|a| GitUser {
+                        name: a.user.name.clone(),
+                        email: a.user.email.clone(),
+                        login: commit.author.as_ref().map(|u| u.login.clone()),
+                    })
+                    .unwrap_or_else(|| GitUser {
+                        name: "Unknown".to_string(),
+                        email: "unknown@example.com".to_string(),
+                        login: None,
+                    });
+
+                let committer = commit
+                    .commit
+                    .committer
+                    .as_ref()
+                    .map(|c| GitUser {
+                        name: c.user.name.clone(),
+                        email: c.user.email.clone(),
+                        login: commit.committer.as_ref().map(|u| u.login.clone()),
+                    })
+                    .unwrap_or_else(|| GitUser {
+                        name: "Unknown".to_string(),
+                        email: "unknown@example.com".to_string(),
+                        login: None,
+                    });
+
+                let parents: Vec<String> =
+                    commit.parents.into_iter().filter_map(|p| p.sha).collect();
+
+                Ok(Commit {
+                    sha: commit.sha,
+                    message: commit.commit.message,
+                    author,
+                    committer,
+                    date: commit
+                        .commit
+                        .committer
+                        .and_then(|c| c.date)
+                        .unwrap_or_else(chrono::Utc::now),
+                    parents,
+                })
+            }
+            Err(e) => {
+                error!("Failed to get commit {}: {}", commit_sha, e);
+                Err(CoreError::github(crate::Error::from(e)))
+            }
+        }
+    }
 
     /// Get the latest release (non-draft, non-prerelease)
     ///
@@ -419,12 +663,51 @@ impl GitHubOperations for GitHubClient {
     /// # Errors
     /// - `CoreError::GitHub` - API communication failed
     /// - `CoreError::InvalidInput` - Invalid repository parameters
-    async fn get_latest_release(&self, _owner: &str, _repo: &str) -> CoreResult<Option<Release>> {
-        // TODO: Implement using octocrab releases API
-        Err(CoreError::not_supported(
-            "get_latest_release",
-            "Not yet implemented",
-        ))
+    async fn get_latest_release(&self, owner: &str, repo: &str) -> CoreResult<Option<Release>> {
+        debug!("Getting latest release for {}/{}", owner, repo);
+
+        let result = self.client.repos(owner, repo).releases().get_latest().await;
+        match result {
+            Ok(release) => {
+                let release = Release {
+                    id: release.id.0,
+                    tag_name: release.tag_name,
+                    name: release.name,
+                    body: release.body,
+                    draft: release.draft,
+                    prerelease: release.prerelease,
+                    created_at: release.created_at.unwrap_or_else(chrono::Utc::now),
+                    published_at: release.published_at,
+                    target_commitish: release.target_commitish,
+                    author: release
+                        .author
+                        .map(|a| GitUser {
+                            name: a.login.clone(),
+                            email: a.email.unwrap_or_default(),
+                            login: Some(a.login),
+                        })
+                        .unwrap_or_else(|| GitUser {
+                            name: "Unknown".to_string(),
+                            email: "unknown@example.com".to_string(),
+                            login: None,
+                        }),
+                };
+
+                debug!(
+                    "Found latest release {} for {}/{}",
+                    release.tag_name, owner, repo
+                );
+                Ok(Some(release))
+            }
+            Err(octocrab::Error::GitHub { source, .. }) if source.status_code == 404 => {
+                debug!("No releases found for {}/{}", owner, repo);
+                Ok(None)
+            }
+            Err(e) => {
+                error!("Failed to get latest release for {}/{}: {}", owner, repo, e);
+                Err(CoreError::github(crate::Error::from(e)))
+            }
+        }
     }
 
     /// Get pull request information
@@ -443,14 +726,14 @@ impl GitHubOperations for GitHubClient {
     /// - `CoreError::NotSupported` - PR not found
     async fn get_pull_request(
         &self,
-        owner: &str,
-        repo: &str,
-        pr_number: u64,
+        _owner: &str,
+        _repo: &str,
+        _pr_number: u64,
     ) -> CoreResult<PullRequest> {
-        // TODO: Implement using octocrab pulls API
+        // TODO: Implement using octocrab pulls API - requires careful field access pattern handling
         Err(CoreError::not_supported(
             "get_pull_request",
-            "Not yet implemented",
+            "Complex octocrab field access patterns - will be implemented in Phase 3",
         ))
     }
 
@@ -468,17 +751,58 @@ impl GitHubOperations for GitHubClient {
     /// - `CoreError::GitHub` - API communication failed
     /// - `CoreError::InvalidInput` - Invalid tag name
     /// - `CoreError::NotSupported` - Release not found
-    async fn get_release_by_tag(
-        &self,
-        _owner: &str,
-        _repo: &str,
-        _tag: &str,
-    ) -> CoreResult<Release> {
-        // TODO: Implement using octocrab releases API
-        Err(CoreError::not_supported(
-            "get_release_by_tag",
-            "Not yet implemented",
-        ))
+    async fn get_release_by_tag(&self, owner: &str, repo: &str, tag: &str) -> CoreResult<Release> {
+        debug!("Getting release by tag {} for {}/{}", tag, owner, repo);
+
+        let result = self
+            .client
+            .repos(owner, repo)
+            .releases()
+            .get_by_tag(tag)
+            .await;
+        match result {
+            Ok(release) => {
+                let release = Release {
+                    id: release.id.0,
+                    tag_name: release.tag_name,
+                    name: release.name,
+                    body: release.body,
+                    draft: release.draft,
+                    prerelease: release.prerelease,
+                    created_at: release.created_at.unwrap_or_else(chrono::Utc::now),
+                    published_at: release.published_at,
+                    target_commitish: release.target_commitish,
+                    author: release
+                        .author
+                        .map(|a| GitUser {
+                            name: a.login.clone(),
+                            email: a.email.unwrap_or_default(),
+                            login: Some(a.login),
+                        })
+                        .unwrap_or_else(|| GitUser {
+                            name: "Unknown".to_string(),
+                            email: "unknown@example.com".to_string(),
+                            login: None,
+                        }),
+                };
+
+                debug!(
+                    "Found release {} for tag {} in {}/{}",
+                    release.name.as_ref().unwrap_or(&release.tag_name),
+                    tag,
+                    owner,
+                    repo
+                );
+                Ok(release)
+            }
+            Err(e) => {
+                error!(
+                    "Failed to get release by tag {} for {}/{}: {}",
+                    tag, owner, repo, e
+                );
+                Err(CoreError::github(crate::Error::from(e)))
+            }
+        }
     }
 
     /// Retrieve repository information
@@ -539,11 +863,59 @@ impl GitHubOperations for GitHubClient {
         per_page: Option<u8>,
         page: Option<u32>,
     ) -> CoreResult<Vec<Release>> {
-        // TODO: Implement using octocrab releases API
-        Err(CoreError::not_supported(
-            "list_releases",
-            "Not yet implemented",
-        ))
+        debug!("Listing releases for {}/{}", owner, repo);
+
+        let repos = self.client.repos(owner, repo);
+        let releases = repos.releases();
+        let mut releases_handler = releases.list();
+
+        if let Some(per_page) = per_page {
+            releases_handler = releases_handler.per_page(per_page);
+        }
+
+        if let Some(page) = page {
+            releases_handler = releases_handler.page(page);
+        }
+
+        let result = releases_handler.send().await;
+        match result {
+            Ok(releases_page) => {
+                let releases: Vec<Release> = releases_page
+                    .items
+                    .into_iter()
+                    .map(|release| Release {
+                        id: release.id.0,
+                        tag_name: release.tag_name,
+                        name: release.name,
+                        body: release.body,
+                        draft: release.draft,
+                        prerelease: release.prerelease,
+                        created_at: release.created_at.unwrap_or_else(chrono::Utc::now),
+                        published_at: release.published_at,
+                        target_commitish: release.target_commitish,
+                        author: release
+                            .author
+                            .map(|a| GitUser {
+                                name: a.login.clone(),
+                                email: a.email.unwrap_or_default(),
+                                login: Some(a.login),
+                            })
+                            .unwrap_or_else(|| GitUser {
+                                name: "Unknown".to_string(),
+                                email: "unknown@example.com".to_string(),
+                                login: None,
+                            }),
+                    })
+                    .collect();
+
+                debug!("Found {} releases for {}/{}", releases.len(), owner, repo);
+                Ok(releases)
+            }
+            Err(e) => {
+                error!("Failed to list releases for {}/{}: {}", owner, repo, e);
+                Err(CoreError::github(crate::Error::from(e)))
+            }
+        }
     }
 
     /// List all tags in a repository
@@ -567,8 +939,42 @@ impl GitHubOperations for GitHubClient {
         per_page: Option<u8>,
         page: Option<u32>,
     ) -> CoreResult<Vec<Tag>> {
-        // TODO: Implement using octocrab git refs API
-        Err(CoreError::not_supported("list_tags", "Not yet implemented"))
+        debug!("Listing tags for {}/{}", owner, repo);
+
+        let repos = self.client.repos(owner, repo);
+        let mut tags_handler = repos.list_tags();
+
+        if let Some(per_page) = per_page {
+            tags_handler = tags_handler.per_page(per_page);
+        }
+
+        if let Some(page) = page {
+            tags_handler = tags_handler.page(page);
+        }
+
+        let result = tags_handler.send().await;
+        match result {
+            Ok(tags_page) => {
+                let tags: Vec<Tag> = tags_page
+                    .items
+                    .into_iter()
+                    .map(|tag| Tag {
+                        name: tag.name,
+                        commit_sha: tag.commit.sha,
+                        created_at: None, // GitHub API doesn't provide creation date for lightweight tags
+                        message: None,    // Lightweight tags don't have messages
+                        tagger: None,     // Lightweight tags don't have tagger info
+                    })
+                    .collect();
+
+                debug!("Found {} tags for {}/{}", tags.len(), owner, repo);
+                Ok(tags)
+            }
+            Err(e) => {
+                error!("Failed to list tags for {}/{}: {}", owner, repo, e);
+                Err(CoreError::github(crate::Error::from(e)))
+            }
+        }
     }
 
     /// Check if a tag exists
@@ -584,12 +990,24 @@ impl GitHubOperations for GitHubClient {
     /// # Errors
     /// - `CoreError::GitHub` - API communication failed
     /// - `CoreError::InvalidInput` - Invalid tag name
-    async fn tag_exists(&self, _owner: &str, _repo: &str, _tag_name: &str) -> CoreResult<bool> {
-        // TODO: Implement using octocrab git refs API
-        Err(CoreError::not_supported(
-            "tag_exists",
-            "Not yet implemented",
-        ))
+    async fn tag_exists(&self, owner: &str, repo: &str, tag_name: &str) -> CoreResult<bool> {
+        debug!("Checking if tag {} exists for {}/{}", tag_name, owner, repo);
+
+        // Use list_tags and check if our tag exists in the list
+        match self.list_tags(owner, repo, Some(100), None).await {
+            Ok(tags) => {
+                let exists = tags.iter().any(|tag| tag.name == tag_name);
+                debug!("Tag {} exists for {}/{}: {}", tag_name, owner, repo, exists);
+                Ok(exists)
+            }
+            Err(e) => {
+                error!(
+                    "Failed to check if tag {} exists for {}/{}: {}",
+                    tag_name, owner, repo, e
+                );
+                Err(e)
+            }
+        }
     }
 
     /// Update an existing pull request
@@ -611,17 +1029,17 @@ impl GitHubOperations for GitHubClient {
     /// - `CoreError::NotSupported` - PR not found or insufficient permissions
     async fn update_pull_request(
         &self,
-        owner: &str,
-        repo: &str,
-        pr_number: u64,
-        title: Option<String>,
-        body: Option<String>,
-        state: Option<String>,
+        _owner: &str,
+        _repo: &str,
+        _pr_number: u64,
+        _title: Option<String>,
+        _body: Option<String>,
+        _state: Option<String>,
     ) -> CoreResult<PullRequest> {
-        // TODO: Implement using octocrab pulls API
+        // TODO: Implement using octocrab pulls API - requires careful field access pattern handling
         Err(CoreError::not_supported(
             "update_pull_request",
-            "Not yet implemented",
+            "Complex octocrab field access patterns - will be implemented in Phase 3",
         ))
     }
 
@@ -647,11 +1065,80 @@ impl GitHubOperations for GitHubClient {
         release_id: u64,
         params: UpdateReleaseParams,
     ) -> CoreResult<Release> {
-        // TODO: Implement using octocrab releases API
-        Err(CoreError::not_supported(
-            "update_release",
-            "Not yet implemented",
-        ))
+        debug!("Updating release {} for {}/{}", release_id, owner, repo);
+
+        let mut update_params = serde_json::Map::new();
+
+        if let Some(name) = params.name {
+            update_params.insert("name".to_string(), serde_json::Value::String(name));
+        }
+
+        if let Some(body) = params.body {
+            update_params.insert("body".to_string(), serde_json::Value::String(body));
+        }
+
+        if let Some(draft) = params.draft {
+            update_params.insert("draft".to_string(), serde_json::Value::Bool(draft));
+        }
+
+        if let Some(prerelease) = params.prerelease {
+            update_params.insert(
+                "prerelease".to_string(),
+                serde_json::Value::Bool(prerelease),
+            );
+        }
+
+        let result: Result<octocrab::models::repos::Release, _> = self
+            .client
+            .patch(
+                &format!("/repos/{}/{}/releases/{}", owner, repo, release_id),
+                Some(&serde_json::Value::Object(update_params)),
+            )
+            .await;
+
+        match result {
+            Ok(release) => {
+                let release = Release {
+                    id: release.id.0,
+                    tag_name: release.tag_name,
+                    name: release.name,
+                    body: release.body,
+                    draft: release.draft,
+                    prerelease: release.prerelease,
+                    created_at: release.created_at.unwrap_or_else(chrono::Utc::now),
+                    published_at: release.published_at,
+                    target_commitish: release.target_commitish,
+                    author: release
+                        .author
+                        .map(|a| GitUser {
+                            name: a.login.clone(),
+                            email: a.email.unwrap_or_default(),
+                            login: Some(a.login),
+                        })
+                        .unwrap_or_else(|| GitUser {
+                            name: "Unknown".to_string(),
+                            email: "unknown@example.com".to_string(),
+                            login: None,
+                        }),
+                };
+
+                debug!(
+                    "Updated release {} '{}' for {}/{}",
+                    release.id,
+                    release.name.as_ref().unwrap_or(&release.tag_name),
+                    owner,
+                    repo
+                );
+                Ok(release)
+            }
+            Err(e) => {
+                error!(
+                    "Failed to update release {} for {}/{}: {}",
+                    release_id, owner, repo, e
+                );
+                Err(CoreError::github(crate::Error::from(e)))
+            }
+        }
     }
 }
 
