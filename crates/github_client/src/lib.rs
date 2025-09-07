@@ -6,7 +6,10 @@
 use async_trait::async_trait;
 use octocrab::{Octocrab, Result as OctocrabResult};
 use release_regent_core::{traits::github_operations::*, CoreError, CoreResult, GitHubOperations};
-use tracing::{debug, error, info, instrument};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio::sync::Mutex;
+use tracing::{debug, error, info, instrument, warn};
 
 pub mod errors;
 pub use errors::{Error, GitHubResult};
@@ -23,6 +26,54 @@ pub mod models;
 
 pub mod pr_management;
 pub mod release;
+
+/// Configuration for retry logic
+#[derive(Debug, Clone)]
+pub struct RetryConfig {
+    /// Maximum number of retry attempts
+    pub max_attempts: u32,
+    /// Base delay between retries (will be exponentially increased)
+    pub base_delay: Duration,
+    /// Maximum delay between retries
+    pub max_delay: Duration,
+    /// Factor by which delay is multiplied after each retry
+    pub backoff_factor: f64,
+}
+
+impl Default for RetryConfig {
+    fn default() -> Self {
+        Self {
+            max_attempts: 3,
+            base_delay: Duration::from_millis(100),
+            max_delay: Duration::from_secs(30),
+            backoff_factor: 2.0,
+        }
+    }
+}
+
+/// Rate limiting state tracker
+#[derive(Debug)]
+struct RateLimitState {
+    /// Remaining requests in current window
+    remaining: Option<u32>,
+    /// Time when rate limit window resets
+    reset_time: Option<Instant>,
+    /// Whether we're currently rate limited
+    is_limited: bool,
+    /// Time when secondary rate limit expires (if any)
+    secondary_reset_time: Option<Instant>,
+}
+
+impl Default for RateLimitState {
+    fn default() -> Self {
+        Self {
+            remaining: None,
+            reset_time: None,
+            is_limited: false,
+            secondary_reset_time: None,
+        }
+    }
+}
 
 /// A client for interacting with the GitHub API, authenticated as a GitHub App.
 ///
@@ -55,6 +106,12 @@ pub struct GitHubClient {
     client: Octocrab,
     /// Optional authentication manager for advanced token management
     auth_manager: Option<GitHubAuthManager>,
+    /// Retry configuration for handling transient failures
+    retry_config: RetryConfig,
+    /// Rate limiting state to track API limits
+    rate_limit_state: Arc<Mutex<RateLimitState>>,
+    /// Correlation ID for request tracking
+    correlation_id: String,
 }
 
 impl GitHubClient {
@@ -103,6 +160,9 @@ impl GitHubClient {
         Ok(Self {
             client,
             auth_manager: Some(auth_manager.clone()),
+            retry_config: RetryConfig::default(),
+            rate_limit_state: Arc::new(Mutex::new(RateLimitState::default())),
+            correlation_id: uuid::Uuid::new_v4().to_string(),
         })
     }
 
@@ -229,6 +289,9 @@ impl GitHubClient {
         Self {
             client,
             auth_manager: None,
+            retry_config: RetryConfig::default(),
+            rate_limit_state: Arc::new(Mutex::new(RateLimitState::default())),
+            correlation_id: uuid::Uuid::new_v4().to_string(),
         }
     }
 
@@ -265,7 +328,234 @@ impl GitHubClient {
         Ok(Self {
             client,
             auth_manager: Some(auth_manager),
+            retry_config: RetryConfig::default(),
+            rate_limit_state: Arc::new(Mutex::new(RateLimitState::default())),
+            correlation_id: uuid::Uuid::new_v4().to_string(),
         })
+    }
+
+    /// Configure retry behavior for API requests
+    ///
+    /// # Arguments
+    /// * `retry_config` - Configuration for retry logic including max attempts and backoff settings
+    ///
+    /// # Examples
+    /// ```rust,no_run
+    /// use release_regent_github_client::{GitHubClient, RetryConfig};
+    /// use std::time::Duration;
+    ///
+    /// let mut client = GitHubClient::new(octocrab_client);
+    /// let retry_config = RetryConfig {
+    ///     max_attempts: 5,
+    ///     base_delay: Duration::from_millis(200),
+    ///     max_delay: Duration::from_secs(60),
+    ///     backoff_factor: 2.5,
+    /// };
+    /// client.with_retry_config(retry_config);
+    /// ```
+    pub fn with_retry_config(mut self, retry_config: RetryConfig) -> Self {
+        self.retry_config = retry_config;
+        self
+    }
+
+    /// Get the current correlation ID for request tracking
+    pub fn correlation_id(&self) -> &str {
+        &self.correlation_id
+    }
+
+    /// Execute a GitHub API operation with retry logic and rate limiting
+    async fn execute_with_retry<F, T, Fut>(
+        &self,
+        operation_name: &str,
+        operation: F,
+    ) -> CoreResult<T>
+    where
+        F: Fn() -> Fut,
+        Fut: std::future::Future<Output = Result<T, octocrab::Error>>,
+    {
+        let mut attempt = 0;
+        let mut delay = self.retry_config.base_delay;
+
+        loop {
+            attempt += 1;
+
+            // Check and wait for rate limits before making the request
+            self.check_rate_limits().await?;
+
+            let start_time = Instant::now();
+
+            info!(
+                operation = operation_name,
+                attempt = attempt,
+                correlation_id = self.correlation_id,
+                "Executing GitHub API operation"
+            );
+
+            match operation().await {
+                Ok(result) => {
+                    let duration = start_time.elapsed();
+                    info!(
+                        operation = operation_name,
+                        attempt = attempt,
+                        duration_ms = duration.as_millis(),
+                        correlation_id = self.correlation_id,
+                        "GitHub API operation completed successfully"
+                    );
+                    return Ok(result);
+                }
+                Err(error) => {
+                    let duration = start_time.elapsed();
+
+                    // Update rate limit state from error headers if available
+                    self.update_rate_limit_from_error(&error).await;
+
+                    // Check if this is a retryable error
+                    if !self.is_retryable_error(&error) || attempt >= self.retry_config.max_attempts
+                    {
+                        error!(
+                            operation = operation_name,
+                            attempt = attempt,
+                            duration_ms = duration.as_millis(),
+                            error = %error,
+                            correlation_id = self.correlation_id,
+                            "GitHub API operation failed permanently"
+                        );
+                        return Err(CoreError::github(crate::Error::from(error)));
+                    }
+
+                    warn!(
+                        operation = operation_name,
+                        attempt = attempt,
+                        duration_ms = duration.as_millis(),
+                        error = %error,
+                        next_delay_ms = delay.as_millis(),
+                        correlation_id = self.correlation_id,
+                        "GitHub API operation failed, retrying"
+                    );
+
+                    // Wait before retrying
+                    tokio::time::sleep(delay).await;
+
+                    // Calculate next delay with exponential backoff
+                    delay = Duration::from_millis(std::cmp::min(
+                        (delay.as_millis() as f64 * self.retry_config.backoff_factor) as u64,
+                        self.retry_config.max_delay.as_millis() as u64,
+                    ));
+                }
+            }
+        }
+    }
+
+    /// Check if we need to wait for rate limits
+    async fn check_rate_limits(&self) -> CoreResult<()> {
+        let mut state = self.rate_limit_state.lock().await;
+        let now = Instant::now();
+
+        // Check secondary rate limit first (abuse detection)
+        if let Some(secondary_reset) = state.secondary_reset_time {
+            if now < secondary_reset {
+                let wait_time = secondary_reset.duration_since(now);
+                warn!(
+                    wait_time_ms = wait_time.as_millis(),
+                    correlation_id = self.correlation_id,
+                    "Waiting for secondary rate limit to reset"
+                );
+                drop(state); // Release lock before sleeping
+                tokio::time::sleep(wait_time).await;
+                return Ok(());
+            } else {
+                // Secondary rate limit has expired
+                let mut state = self.rate_limit_state.lock().await;
+                state.secondary_reset_time = None;
+            }
+        }
+
+        // Check primary rate limit
+        if state.is_limited {
+            if let Some(reset_time) = state.reset_time {
+                if now < reset_time {
+                    let wait_time = reset_time.duration_since(now);
+                    warn!(
+                        wait_time_ms = wait_time.as_millis(),
+                        remaining = state.remaining,
+                        correlation_id = self.correlation_id,
+                        "Waiting for primary rate limit to reset"
+                    );
+                    drop(state); // Release lock before sleeping
+                    tokio::time::sleep(wait_time).await;
+                    return Ok(());
+                } else {
+                    // Rate limit has reset
+                    state.is_limited = false;
+                    state.reset_time = None;
+                    state.remaining = None;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Update rate limit state from GitHub API error
+    async fn update_rate_limit_from_error(&self, error: &octocrab::Error) {
+        if let octocrab::Error::GitHub { source, .. } = error {
+            let mut state = self.rate_limit_state.lock().await;
+
+            // Check for rate limit exceeded (status 403)
+            if source.status_code == 403 {
+                // Primary rate limit exceeded
+                if source.message.contains("rate limit exceeded") {
+                    state.is_limited = true;
+                    // GitHub typically resets every hour, but we'll be conservative
+                    state.reset_time = Some(Instant::now() + Duration::from_secs(3600));
+                    warn!(
+                        error_message = source.message,
+                        correlation_id = self.correlation_id,
+                        "Primary rate limit exceeded"
+                    );
+                }
+                // Secondary rate limit (abuse detection)
+                else if source.message.contains("abuse") || source.status_code == 403 {
+                    state.secondary_reset_time = Some(Instant::now() + Duration::from_secs(60));
+                    warn!(
+                        error_message = source.message,
+                        correlation_id = self.correlation_id,
+                        "Secondary rate limit (abuse detection) triggered"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Check if an error is retryable
+    fn is_retryable_error(&self, error: &octocrab::Error) -> bool {
+        match error {
+            octocrab::Error::GitHub { source, .. } => {
+                match source.status_code.as_u16() {
+                    // Rate limiting - retryable after waiting
+                    403 if source.message.contains("rate limit") => true,
+                    // Secondary rate limiting - retryable after waiting
+                    403 if source.message.contains("abuse") => true,
+                    // Server errors - retryable
+                    500..=599 => true,
+                    // Request timeout - retryable
+                    408 => true,
+                    // Too many requests - retryable
+                    429 => true,
+                    // Client errors are generally not retryable
+                    400..=499 => false,
+                    // Other status codes - not retryable
+                    _ => false,
+                }
+            }
+            // Network/connection errors - retryable
+            octocrab::Error::InvalidHeaderValue { .. } => false,
+            octocrab::Error::Uri { .. } => false,
+            octocrab::Error::UriParse { .. } => false,
+            octocrab::Error::InvalidUtf8 { .. } => false,
+            // Default to retryable for unknown error types
+            _ => true,
+        }
     }
 }
 
@@ -430,11 +720,15 @@ impl GitHubOperations for GitHubClient {
         params: CreateReleaseParams,
     ) -> CoreResult<Release> {
         debug!(
-            "Creating release '{}' for tag {} in {}/{}",
-            params.name.as_ref().unwrap_or(&params.tag_name),
-            params.tag_name,
-            owner,
-            repo
+            operation = "create_release",
+            owner = owner,
+            repo = repo,
+            tag_name = params.tag_name,
+            name = params.name.as_ref().unwrap_or(&params.tag_name),
+            draft = params.draft,
+            prerelease = params.prerelease,
+            correlation_id = self.correlation_id,
+            "Creating new release"
         );
 
         let release_create_params = serde_json::json!({
@@ -447,62 +741,47 @@ impl GitHubOperations for GitHubClient {
             "generate_release_notes": params.generate_release_notes
         });
 
-        let result: Result<octocrab::models::repos::Release, _> = self
-            .client
-            .post(
-                &format!("/repos/{}/{}/releases", owner, repo),
-                Some(&release_create_params),
-            )
-            .await;
+        let release: octocrab::models::repos::Release = self
+            .execute_with_retry("create_release", || async {
+                self.client
+                    .post(
+                        &format!("/repos/{}/{}/releases", owner, repo),
+                        Some(&release_create_params),
+                    )
+                    .await
+            })
+            .await?;
 
-        match result {
-            Ok(release) => {
-                let release = Release {
-                    id: release.id.0,
-                    tag_name: release.tag_name,
-                    name: release.name,
-                    body: release.body,
-                    draft: release.draft,
-                    prerelease: release.prerelease,
-                    created_at: release.created_at.unwrap_or_else(chrono::Utc::now),
-                    published_at: release.published_at,
-                    target_commitish: release.target_commitish,
-                    author: release
-                        .author
-                        .map(|a| GitUser {
-                            name: a.login.clone(),
-                            email: a.email.unwrap_or_default(),
-                            login: Some(a.login),
-                        })
-                        .unwrap_or_else(|| GitUser {
-                            name: "Unknown".to_string(),
-                            email: "unknown@example.com".to_string(),
-                            login: None,
-                        }),
-                };
+        let result = Release {
+            id: release.id.0,
+            tag_name: release.tag_name,
+            name: release.name,
+            body: release.body,
+            draft: release.draft,
+            prerelease: release.prerelease,
+            created_at: release.created_at.unwrap_or_else(chrono::Utc::now),
+            published_at: release.published_at,
+            target_commitish: release.target_commitish,
+            author: release
+                .author
+                .map(|a| GitUser {
+                    name: a.login.clone(),
+                    email: a.email.unwrap_or_default(),
+                    login: Some(a.login),
+                })
+                .unwrap_or_else(|| GitUser {
+                    name: "Unknown".to_string(),
+                    email: "unknown@example.com".to_string(),
+                    login: None,
+                }),
+        };
 
-                debug!(
-                    "Created release '{}' (id: {}) for tag {} in {}/{}",
-                    release.name.as_ref().unwrap_or(&release.tag_name),
-                    release.id,
-                    params.tag_name,
-                    owner,
-                    repo
-                );
-                Ok(release)
-            }
-            Err(e) => {
-                error!(
-                    "Failed to create release '{}' for tag {} in {}/{}: {}",
-                    params.name.as_ref().unwrap_or(&params.tag_name),
-                    params.tag_name,
-                    owner,
-                    repo,
-                    e
-                );
-                Err(CoreError::github(crate::Error::from(e)))
-            }
-        }
+        debug!(
+            release_id = result.id,
+            correlation_id = self.correlation_id,
+            "Successfully created release"
+        );
+        Ok(result)
     }
 
     /// Create a new tag
@@ -593,62 +872,65 @@ impl GitHubOperations for GitHubClient {
     /// - `CoreError::InvalidInput` - Invalid commit SHA format
     /// - `CoreError::NotSupported` - Commit not found
     async fn get_commit(&self, owner: &str, repo: &str, commit_sha: &str) -> CoreResult<Commit> {
-        debug!("Getting commit {} for {}/{}", commit_sha, owner, repo);
+        debug!(
+            operation = "get_commit",
+            owner = owner,
+            repo = repo,
+            commit_sha = commit_sha,
+            correlation_id = self.correlation_id,
+            "Getting commit information"
+        );
 
-        let result = self.client.commits(owner, repo).get(commit_sha).await;
-        match result {
-            Ok(commit) => {
-                let author = commit
-                    .commit
-                    .author
-                    .as_ref()
-                    .map(|a| GitUser {
-                        name: a.user.name.clone(),
-                        email: a.user.email.clone(),
-                        login: commit.author.as_ref().map(|u| u.login.clone()),
-                    })
-                    .unwrap_or_else(|| GitUser {
-                        name: "Unknown".to_string(),
-                        email: "unknown@example.com".to_string(),
-                        login: None,
-                    });
+        let commit = self
+            .execute_with_retry("get_commit", || async {
+                self.client.commits(owner, repo).get(commit_sha).await
+            })
+            .await?;
 
-                let committer = commit
-                    .commit
-                    .committer
-                    .as_ref()
-                    .map(|c| GitUser {
-                        name: c.user.name.clone(),
-                        email: c.user.email.clone(),
-                        login: commit.committer.as_ref().map(|u| u.login.clone()),
-                    })
-                    .unwrap_or_else(|| GitUser {
-                        name: "Unknown".to_string(),
-                        email: "unknown@example.com".to_string(),
-                        login: None,
-                    });
+        let author = commit
+            .commit
+            .author
+            .as_ref()
+            .map(|a| GitUser {
+                name: a.user.name.clone(),
+                email: a.user.email.clone(),
+                login: commit.author.as_ref().map(|u| u.login.clone()),
+            })
+            .unwrap_or_else(|| GitUser {
+                name: "Unknown".to_string(),
+                email: "unknown@example.com".to_string(),
+                login: None,
+            });
 
-                let parents: Vec<String> =
-                    commit.parents.into_iter().filter_map(|p| p.sha).collect();
+        let committer = commit
+            .commit
+            .committer
+            .as_ref()
+            .map(|c| GitUser {
+                name: c.user.name.clone(),
+                email: c.user.email.clone(),
+                login: commit.committer.as_ref().map(|u| u.login.clone()),
+            })
+            .unwrap_or_else(|| GitUser {
+                name: "Unknown".to_string(),
+                email: "unknown@example.com".to_string(),
+                login: None,
+            });
 
-                Ok(Commit {
-                    sha: commit.sha,
-                    message: commit.commit.message,
-                    author,
-                    committer,
-                    date: commit
-                        .commit
-                        .committer
-                        .and_then(|c| c.date)
-                        .unwrap_or_else(chrono::Utc::now),
-                    parents,
-                })
-            }
-            Err(e) => {
-                error!("Failed to get commit {}: {}", commit_sha, e);
-                Err(CoreError::github(crate::Error::from(e)))
-            }
-        }
+        let parents: Vec<String> = commit.parents.into_iter().filter_map(|p| p.sha).collect();
+
+        Ok(Commit {
+            sha: commit.sha,
+            message: commit.commit.message,
+            author,
+            committer,
+            date: commit
+                .commit
+                .committer
+                .and_then(|c| c.date)
+                .unwrap_or_else(chrono::Utc::now),
+            parents,
+        })
     }
 
     /// Get the latest release (non-draft, non-prerelease)
@@ -819,27 +1101,30 @@ impl GitHubOperations for GitHubClient {
     /// - `CoreError::InvalidInput` - Invalid owner or repo name
     /// - `CoreError::NotSupported` - Repository not accessible
     async fn get_repository(&self, owner: &str, repo: &str) -> CoreResult<Repository> {
-        debug!("Getting repository {}/{}", owner, repo);
+        debug!(
+            operation = "get_repository",
+            owner = owner,
+            repo = repo,
+            correlation_id = self.correlation_id,
+            "Getting repository information"
+        );
 
-        let result = self.client.repos(owner, repo).get().await;
-        match result {
-            Ok(r) => Ok(Repository {
-                id: r.id.0,
-                name: r.name,
-                full_name: r.full_name.unwrap_or_else(|| format!("{}/{}", owner, repo)),
-                owner: r.owner.unwrap().login,
-                description: r.description,
-                homepage: r.homepage,
-                private: r.private.unwrap_or(false),
-                default_branch: r.default_branch.unwrap_or_else(|| "main".to_string()),
-                clone_url: r.clone_url.map(|u| u.to_string()).unwrap_or_default(),
-                ssh_url: r.ssh_url.unwrap_or_default(),
-            }),
-            Err(e) => {
-                error!("Failed to get repository: {}", e);
-                Err(CoreError::github(crate::Error::from(e)))
-            }
-        }
+        self.execute_with_retry("get_repository", || async {
+            self.client.repos(owner, repo).get().await
+        })
+        .await
+        .map(|r| Repository {
+            id: r.id.0,
+            name: r.name,
+            full_name: r.full_name.unwrap_or_else(|| format!("{}/{}", owner, repo)),
+            owner: r.owner.unwrap().login,
+            description: r.description,
+            homepage: r.homepage,
+            private: r.private.unwrap_or(false),
+            default_branch: r.default_branch.unwrap_or_else(|| "main".to_string()),
+            clone_url: r.clone_url.map(|u| u.to_string()).unwrap_or_default(),
+            ssh_url: r.ssh_url.unwrap_or_default(),
+        })
     }
 
     /// List releases in a repository
@@ -939,42 +1224,51 @@ impl GitHubOperations for GitHubClient {
         per_page: Option<u8>,
         page: Option<u32>,
     ) -> CoreResult<Vec<Tag>> {
-        debug!("Listing tags for {}/{}", owner, repo);
+        debug!(
+            operation = "list_tags",
+            owner = owner,
+            repo = repo,
+            per_page = per_page.unwrap_or(30),
+            page = page.unwrap_or(1),
+            correlation_id = self.correlation_id,
+            "Listing repository tags"
+        );
 
-        let repos = self.client.repos(owner, repo);
-        let mut tags_handler = repos.list_tags();
+        let tags_page = self
+            .execute_with_retry("list_tags", || async {
+                let repos = self.client.repos(owner, repo);
+                let mut tags_handler = repos.list_tags();
 
-        if let Some(per_page) = per_page {
-            tags_handler = tags_handler.per_page(per_page);
-        }
+                if let Some(per_page) = per_page {
+                    tags_handler = tags_handler.per_page(per_page);
+                }
 
-        if let Some(page) = page {
-            tags_handler = tags_handler.page(page);
-        }
+                if let Some(page) = page {
+                    tags_handler = tags_handler.page(page);
+                }
 
-        let result = tags_handler.send().await;
-        match result {
-            Ok(tags_page) => {
-                let tags: Vec<Tag> = tags_page
-                    .items
-                    .into_iter()
-                    .map(|tag| Tag {
-                        name: tag.name,
-                        commit_sha: tag.commit.sha,
-                        created_at: None, // GitHub API doesn't provide creation date for lightweight tags
-                        message: None,    // Lightweight tags don't have messages
-                        tagger: None,     // Lightweight tags don't have tagger info
-                    })
-                    .collect();
+                tags_handler.send().await
+            })
+            .await?;
 
-                debug!("Found {} tags for {}/{}", tags.len(), owner, repo);
-                Ok(tags)
-            }
-            Err(e) => {
-                error!("Failed to list tags for {}/{}: {}", owner, repo, e);
-                Err(CoreError::github(crate::Error::from(e)))
-            }
-        }
+        let tags: Vec<Tag> = tags_page
+            .items
+            .into_iter()
+            .map(|tag| Tag {
+                name: tag.name,
+                commit_sha: tag.commit.sha,
+                created_at: None, // GitHub API doesn't provide creation date for lightweight tags
+                message: None,    // Lightweight tags don't have messages
+                tagger: None,     // Lightweight tags don't have tagger info
+            })
+            .collect();
+
+        debug!(
+            tags_count = tags.len(),
+            correlation_id = self.correlation_id,
+            "Successfully retrieved tags"
+        );
+        Ok(tags)
     }
 
     /// Check if a tag exists
