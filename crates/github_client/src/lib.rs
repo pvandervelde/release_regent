@@ -691,10 +691,21 @@ impl GitHubOperations for GitHubClient {
     /// - `CoreError::NotSupported` - Insufficient permissions
     async fn create_pull_request(
         &self,
-        _owner: &str,
-        _repo: &str,
-        _params: CreatePullRequestParams,
+        owner: &str,
+        repo: &str,
+        params: CreatePullRequestParams,
     ) -> CoreResult<PullRequest> {
+        debug!(
+            operation = "create_pull_request",
+            owner = owner,
+            repo = repo,
+            head = params.head,
+            base = params.base,
+            title = params.title,
+            correlation_id = self.correlation_id,
+            "Creating pull request (not yet implemented)"
+        );
+
         // TODO: Implement using octocrab pulls API - requires careful field access pattern handling
         Err(CoreError::not_supported(
             "create_pull_request",
@@ -831,7 +842,7 @@ impl GitHubOperations for GitHubClient {
             "sha": commit_sha
         });
 
-        let result: serde_json::Value = self
+        let _result: serde_json::Value = self
             .execute_with_retry("create_tag", || async {
                 self.client
                     .post(
@@ -967,9 +978,9 @@ impl GitHubOperations for GitHubClient {
 
         let release = match release_result {
             Ok(release) => release,
-            Err(CoreError::GitHub(github_err)) => {
+            Err(CoreError::GitHub { source, .. }) => {
                 // Check if this is a 404 (no releases found)
-                if github_err.to_string().contains("404") {
+                if source.to_string().contains("404") {
                     debug!(
                         operation = "get_latest_release",
                         owner = owner,
@@ -979,7 +990,10 @@ impl GitHubOperations for GitHubClient {
                     );
                     return Ok(None);
                 }
-                return Err(CoreError::GitHub(github_err));
+                return Err(CoreError::GitHub {
+                    source,
+                    context: None,
+                });
             }
             Err(e) => return Err(e),
         };
@@ -1035,10 +1049,19 @@ impl GitHubOperations for GitHubClient {
     /// - `CoreError::NotSupported` - PR not found
     async fn get_pull_request(
         &self,
-        _owner: &str,
-        _repo: &str,
-        _pr_number: u64,
+        owner: &str,
+        repo: &str,
+        pr_number: u64,
     ) -> CoreResult<PullRequest> {
+        debug!(
+            operation = "get_pull_request",
+            owner = owner,
+            repo = repo,
+            pr_number = pr_number,
+            correlation_id = self.correlation_id,
+            "Getting pull request (not yet implemented)"
+        );
+
         // TODO: Implement using octocrab pulls API - requires careful field access pattern handling
         Err(CoreError::not_supported(
             "get_pull_request",
@@ -1061,57 +1084,59 @@ impl GitHubOperations for GitHubClient {
     /// - `CoreError::InvalidInput` - Invalid tag name
     /// - `CoreError::NotSupported` - Release not found
     async fn get_release_by_tag(&self, owner: &str, repo: &str, tag: &str) -> CoreResult<Release> {
-        debug!("Getting release by tag {} for {}/{}", tag, owner, repo);
+        debug!(
+            operation = "get_release_by_tag",
+            owner = owner,
+            repo = repo,
+            tag = tag,
+            correlation_id = self.correlation_id,
+            "Getting release by tag"
+        );
 
-        let result = self
-            .client
-            .repos(owner, repo)
-            .releases()
-            .get_by_tag(tag)
-            .await;
-        match result {
-            Ok(release) => {
-                let release = Release {
-                    id: release.id.0,
-                    tag_name: release.tag_name,
-                    name: release.name,
-                    body: release.body,
-                    draft: release.draft,
-                    prerelease: release.prerelease,
-                    created_at: release.created_at.unwrap_or_else(chrono::Utc::now),
-                    published_at: release.published_at,
-                    target_commitish: release.target_commitish,
-                    author: release
-                        .author
-                        .map(|a| GitUser {
-                            name: a.login.clone(),
-                            email: a.email.unwrap_or_default(),
-                            login: Some(a.login),
-                        })
-                        .unwrap_or_else(|| GitUser {
-                            name: "Unknown".to_string(),
-                            email: "unknown@example.com".to_string(),
-                            login: None,
-                        }),
-                };
+        let release = self
+            .execute_with_retry("get_release_by_tag", || async {
+                self.client
+                    .repos(owner, repo)
+                    .releases()
+                    .get_by_tag(tag)
+                    .await
+            })
+            .await?;
 
-                debug!(
-                    "Found release {} for tag {} in {}/{}",
-                    release.name.as_ref().unwrap_or(&release.tag_name),
-                    tag,
-                    owner,
-                    repo
-                );
-                Ok(release)
-            }
-            Err(e) => {
-                error!(
-                    "Failed to get release by tag {} for {}/{}: {}",
-                    tag, owner, repo, e
-                );
-                Err(CoreError::github(crate::Error::from(e)))
-            }
-        }
+        let result = Release {
+            id: release.id.0,
+            tag_name: release.tag_name,
+            name: release.name,
+            body: release.body,
+            draft: release.draft,
+            prerelease: release.prerelease,
+            created_at: release.created_at.unwrap_or_else(chrono::Utc::now),
+            published_at: release.published_at,
+            target_commitish: release.target_commitish,
+            author: release
+                .author
+                .map(|a| GitUser {
+                    name: a.login.clone(),
+                    email: a.email.unwrap_or_default(),
+                    login: Some(a.login),
+                })
+                .unwrap_or_else(|| GitUser {
+                    name: "Unknown".to_string(),
+                    email: "unknown@example.com".to_string(),
+                    login: None,
+                }),
+        };
+
+        debug!(
+            operation = "get_release_by_tag",
+            owner = owner,
+            repo = repo,
+            tag = tag,
+            release_name = result.name.as_ref().unwrap_or(&result.tag_name),
+            correlation_id = self.correlation_id,
+            "Successfully retrieved release by tag"
+        );
+        Ok(result)
     }
 
     /// Retrieve repository information
@@ -1175,59 +1200,71 @@ impl GitHubOperations for GitHubClient {
         per_page: Option<u8>,
         page: Option<u32>,
     ) -> CoreResult<Vec<Release>> {
-        debug!("Listing releases for {}/{}", owner, repo);
+        debug!(
+            operation = "list_releases",
+            owner = owner,
+            repo = repo,
+            per_page = per_page.unwrap_or(30),
+            page = page.unwrap_or(1),
+            correlation_id = self.correlation_id,
+            "Listing repository releases"
+        );
 
-        let repos = self.client.repos(owner, repo);
-        let releases = repos.releases();
-        let mut releases_handler = releases.list();
+        let releases_page = self
+            .execute_with_retry("list_releases", || async {
+                let repos = self.client.repos(owner, repo);
+                let releases = repos.releases();
+                let mut releases_handler = releases.list();
 
-        if let Some(per_page) = per_page {
-            releases_handler = releases_handler.per_page(per_page);
-        }
+                if let Some(per_page) = per_page {
+                    releases_handler = releases_handler.per_page(per_page);
+                }
 
-        if let Some(page) = page {
-            releases_handler = releases_handler.page(page);
-        }
+                if let Some(page) = page {
+                    releases_handler = releases_handler.page(page);
+                }
 
-        let result = releases_handler.send().await;
-        match result {
-            Ok(releases_page) => {
-                let releases: Vec<Release> = releases_page
-                    .items
-                    .into_iter()
-                    .map(|release| Release {
-                        id: release.id.0,
-                        tag_name: release.tag_name,
-                        name: release.name,
-                        body: release.body,
-                        draft: release.draft,
-                        prerelease: release.prerelease,
-                        created_at: release.created_at.unwrap_or_else(chrono::Utc::now),
-                        published_at: release.published_at,
-                        target_commitish: release.target_commitish,
-                        author: release
-                            .author
-                            .map(|a| GitUser {
-                                name: a.login.clone(),
-                                email: a.email.unwrap_or_default(),
-                                login: Some(a.login),
-                            })
-                            .unwrap_or_else(|| GitUser {
-                                name: "Unknown".to_string(),
-                                email: "unknown@example.com".to_string(),
-                                login: None,
-                            }),
+                releases_handler.send().await
+            })
+            .await?;
+
+        let releases: Vec<Release> = releases_page
+            .items
+            .into_iter()
+            .map(|release| Release {
+                id: release.id.0,
+                tag_name: release.tag_name,
+                name: release.name,
+                body: release.body,
+                draft: release.draft,
+                prerelease: release.prerelease,
+                created_at: release.created_at.unwrap_or_else(chrono::Utc::now),
+                published_at: release.published_at,
+                target_commitish: release.target_commitish,
+                author: release
+                    .author
+                    .map(|a| GitUser {
+                        name: a.login.clone(),
+                        email: a.email.unwrap_or_default(),
+                        login: Some(a.login),
                     })
-                    .collect();
+                    .unwrap_or_else(|| GitUser {
+                        name: "Unknown".to_string(),
+                        email: "unknown@example.com".to_string(),
+                        login: None,
+                    }),
+            })
+            .collect();
 
-                debug!("Found {} releases for {}/{}", releases.len(), owner, repo);
-                Ok(releases)
-            }
-            Err(e) => {
-                error!("Failed to list releases for {}/{}: {}", owner, repo, e);
-                Err(CoreError::github(crate::Error::from(e)))
-            }
-        }
+        debug!(
+            operation = "list_releases",
+            owner = owner,
+            repo = repo,
+            releases_count = releases.len(),
+            correlation_id = self.correlation_id,
+            "Successfully retrieved releases list"
+        );
+        Ok(releases)
     }
 
     /// List all tags in a repository
@@ -1365,13 +1402,25 @@ impl GitHubOperations for GitHubClient {
     /// - `CoreError::NotSupported` - PR not found or insufficient permissions
     async fn update_pull_request(
         &self,
-        _owner: &str,
-        _repo: &str,
-        _pr_number: u64,
-        _title: Option<String>,
-        _body: Option<String>,
-        _state: Option<String>,
+        owner: &str,
+        repo: &str,
+        pr_number: u64,
+        title: Option<String>,
+        body: Option<String>,
+        state: Option<String>,
     ) -> CoreResult<PullRequest> {
+        debug!(
+            operation = "update_pull_request",
+            owner = owner,
+            repo = repo,
+            pr_number = pr_number,
+            has_title = title.is_some(),
+            has_body = body.is_some(),
+            state = state.as_deref(),
+            correlation_id = self.correlation_id,
+            "Updating pull request (not yet implemented)"
+        );
+
         // TODO: Implement using octocrab pulls API - requires careful field access pattern handling
         Err(CoreError::not_supported(
             "update_pull_request",
@@ -1401,7 +1450,14 @@ impl GitHubOperations for GitHubClient {
         release_id: u64,
         params: UpdateReleaseParams,
     ) -> CoreResult<Release> {
-        debug!("Updating release {} for {}/{}", release_id, owner, repo);
+        debug!(
+            operation = "update_release",
+            owner = owner,
+            repo = repo,
+            release_id = release_id,
+            correlation_id = self.correlation_id,
+            "Updating release"
+        );
 
         let mut update_params = serde_json::Map::new();
 
@@ -1424,57 +1480,51 @@ impl GitHubOperations for GitHubClient {
             );
         }
 
-        let result: Result<octocrab::models::repos::Release, _> = self
-            .client
-            .patch(
-                &format!("/repos/{}/{}/releases/{}", owner, repo, release_id),
-                Some(&serde_json::Value::Object(update_params)),
-            )
-            .await;
+        let release: octocrab::models::repos::Release = self
+            .execute_with_retry("update_release", || async {
+                self.client
+                    .patch(
+                        &format!("/repos/{}/{}/releases/{}", owner, repo, release_id),
+                        Some(&serde_json::Value::Object(update_params.clone())),
+                    )
+                    .await
+            })
+            .await?;
 
-        match result {
-            Ok(release) => {
-                let release = Release {
-                    id: release.id.0,
-                    tag_name: release.tag_name,
-                    name: release.name,
-                    body: release.body,
-                    draft: release.draft,
-                    prerelease: release.prerelease,
-                    created_at: release.created_at.unwrap_or_else(chrono::Utc::now),
-                    published_at: release.published_at,
-                    target_commitish: release.target_commitish,
-                    author: release
-                        .author
-                        .map(|a| GitUser {
-                            name: a.login.clone(),
-                            email: a.email.unwrap_or_default(),
-                            login: Some(a.login),
-                        })
-                        .unwrap_or_else(|| GitUser {
-                            name: "Unknown".to_string(),
-                            email: "unknown@example.com".to_string(),
-                            login: None,
-                        }),
-                };
+        let result = Release {
+            id: release.id.0,
+            tag_name: release.tag_name,
+            name: release.name,
+            body: release.body,
+            draft: release.draft,
+            prerelease: release.prerelease,
+            created_at: release.created_at.unwrap_or_else(chrono::Utc::now),
+            published_at: release.published_at,
+            target_commitish: release.target_commitish,
+            author: release
+                .author
+                .map(|a| GitUser {
+                    name: a.login.clone(),
+                    email: a.email.unwrap_or_default(),
+                    login: Some(a.login),
+                })
+                .unwrap_or_else(|| GitUser {
+                    name: "Unknown".to_string(),
+                    email: "unknown@example.com".to_string(),
+                    login: None,
+                }),
+        };
 
-                debug!(
-                    "Updated release {} '{}' for {}/{}",
-                    release.id,
-                    release.name.as_ref().unwrap_or(&release.tag_name),
-                    owner,
-                    repo
-                );
-                Ok(release)
-            }
-            Err(e) => {
-                error!(
-                    "Failed to update release {} for {}/{}: {}",
-                    release_id, owner, repo, e
-                );
-                Err(CoreError::github(crate::Error::from(e)))
-            }
-        }
+        debug!(
+            operation = "update_release",
+            owner = owner,
+            repo = repo,
+            release_id = result.id,
+            release_name = result.name.as_ref().unwrap_or(&result.tag_name),
+            correlation_id = self.correlation_id,
+            "Successfully updated release"
+        );
+        Ok(result)
     }
 }
 
