@@ -358,9 +358,413 @@ impl GitHubClient {
         self
     }
 
+    // === FACTORY METHODS FOR ENHANCED DEVELOPER EXPERIENCE ===
+
+    /// Creates a new GitHubClient from GitHub App credentials with enhanced configuration.
+    ///
+    /// This is a high-level factory method that creates a fully configured GitHub client
+    /// using GitHub App authentication. It automatically sets up authentication management,
+    /// retry logic, and rate limiting for production use.
+    ///
+    /// # Arguments
+    ///
+    /// * `app_id` - The GitHub App ID
+    /// * `private_key` - The private key for JWT signing
+    /// * `github_base_url` - Optional GitHub Enterprise Server base URL
+    ///
+    /// # Returns
+    ///
+    /// Returns a fully configured `GitHubClient` instance ready for GitHub App operations.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the configuration is invalid, the private key cannot be parsed,
+    /// or the client cannot be created.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use release_regent_github_client::GitHubClient;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let client = GitHubClient::from_github_app(
+    ///         123456,
+    ///         "-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----",
+    ///         None, // Use GitHub.com
+    ///     ).await?;
+    ///
+    ///     let installations = client.list_installations().await?;
+    ///     println!("Found {} installations", installations.len());
+    ///     Ok(())
+    /// }
+    /// ```
+    pub async fn from_github_app(
+        app_id: u64,
+        private_key: impl Into<String>,
+        github_base_url: Option<String>,
+    ) -> GitHubResult<Self> {
+        let config = AuthConfig::new(app_id, private_key, github_base_url)?;
+        let auth_manager = GitHubAuthManager::new(config)?;
+        Self::with_auth_manager(auth_manager).await
+    }
+
+    /// Creates a new GitHubClient from environment variables.
+    ///
+    /// This factory method reads GitHub App credentials from environment variables
+    /// and creates a fully configured client. This is ideal for containerized environments
+    /// and CI/CD pipelines where secrets are managed through environment variables.
+    ///
+    /// Expected environment variables:
+    /// - `GITHUB_APP_ID`: GitHub App ID
+    /// - `GITHUB_PRIVATE_KEY`: Private key content
+    /// - `GITHUB_BASE_URL`: Optional GitHub Enterprise Server URL
+    ///
+    /// # Returns
+    ///
+    /// Returns a fully configured `GitHubClient` instance.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if required environment variables are missing or invalid.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use release_regent_github_client::GitHubClient;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     // Assumes GITHUB_APP_ID and GITHUB_PRIVATE_KEY are set
+    ///     let client = GitHubClient::from_env().await?;
+    ///
+    ///     let installations = client.list_installations().await?;
+    ///     println!("Found {} installations", installations.len());
+    ///     Ok(())
+    /// }
+    /// ```
+    pub async fn from_env() -> GitHubResult<Self> {
+        let config = AuthConfig::from_env()?;
+        let auth_manager = GitHubAuthManager::new(config)?;
+        Self::with_auth_manager(auth_manager).await
+    }
+
+    /// Creates a new GitHubClient using a personal access token.
+    ///
+    /// This factory method creates a client authenticated with a personal access token
+    /// rather than GitHub App authentication. This is useful for user-specific operations
+    /// or when GitHub App setup is not available.
+    ///
+    /// # Arguments
+    ///
+    /// * `token` - The personal access token
+    /// * `github_base_url` - Optional GitHub Enterprise Server base URL
+    ///
+    /// # Returns
+    ///
+    /// Returns a fully configured `GitHubClient` instance authenticated with the token.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the token is invalid or the client cannot be created.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use release_regent_github_client::GitHubClient;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let client = GitHubClient::from_token(
+    ///         "ghp_your_personal_access_token",
+    ///         None, // Use GitHub.com
+    ///     ).await?;
+    ///
+    ///     let user = client.get_repository("owner", "repo").await?;
+    ///     println!("Repository: {}", user.name);
+    ///     Ok(())
+    /// }
+    /// ```
+    pub async fn from_token(
+        token: impl Into<String>,
+        github_base_url: Option<String>,
+    ) -> GitHubResult<Self> {
+        let token = token.into();
+        if token.is_empty() {
+            return Err(Error::invalid_input("token", "Token cannot be empty"));
+        }
+
+        let base_url = github_base_url
+            .map(|url| format!("{}/api/v3", url))
+            .unwrap_or_else(|| "https://api.github.com".to_string());
+
+        let client = octocrab::Octocrab::builder()
+            .base_uri(&base_url)
+            .map_err(|e| {
+                Error::configuration(
+                    "base_uri",
+                    &format!("Failed to configure GitHub client: {}", e),
+                )
+            })?
+            .personal_token(token)
+            .build()
+            .map_err(|e| {
+                Error::configuration(
+                    "client_build",
+                    &format!("Failed to build GitHub client: {}", e),
+                )
+            })?;
+
+        Ok(Self::new(client))
+    }
+
+    /// Creates a GitHub client for a specific installation with enhanced configuration.
+    ///
+    /// This factory method creates a client authenticated for a specific GitHub App installation.
+    /// The client is automatically configured with installation tokens, retry logic, and
+    /// rate limiting for production use.
+    ///
+    /// # Arguments
+    ///
+    /// * `app_id` - The GitHub App ID
+    /// * `private_key` - The private key for JWT signing
+    /// * `installation_id` - The specific installation ID to authenticate for
+    /// * `github_base_url` - Optional GitHub Enterprise Server base URL
+    ///
+    /// # Returns
+    ///
+    /// Returns a `GitHubClient` instance authenticated for the specified installation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the configuration is invalid, the installation token cannot
+    /// be acquired, or the client cannot be created.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use release_regent_github_client::GitHubClient;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let client = GitHubClient::for_installation(
+    ///         123456,
+    ///         "-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----",
+    ///         987654, // Installation ID
+    ///         None,   // Use GitHub.com
+    ///     ).await?;
+    ///
+    ///     let repo = client.get_repository("owner", "repo").await?;
+    ///     println!("Repository: {}", repo.name);
+    ///     Ok(())
+    /// }
+    /// ```
+    pub async fn for_installation(
+        app_id: u64,
+        private_key: impl Into<String>,
+        installation_id: u64,
+        github_base_url: Option<String>,
+    ) -> GitHubResult<Self> {
+        let config = AuthConfig::new(app_id, private_key, github_base_url)?;
+        let auth_manager = GitHubAuthManager::new(config)?;
+        let client = auth_manager
+            .create_installation_client(installation_id)
+            .await?;
+
+        Ok(Self {
+            client,
+            auth_manager: Some(auth_manager),
+            retry_config: RetryConfig::default(),
+            rate_limit_state: Arc::new(Mutex::new(RateLimitState::default())),
+            correlation_id: uuid::Uuid::new_v4().to_string(),
+        })
+    }
+
     /// Get the current correlation ID for request tracking
     pub fn correlation_id(&self) -> &str {
         &self.correlation_id
+    }
+
+    /// Factory method for GitHub App authentication.
+    ///
+    /// Creates a GitHubClient using GitHub App credentials for JWT-based authentication.
+    /// This is suitable for GitHub App installations and accessing app-level operations.
+    ///
+    /// # Arguments
+    /// * `app_id` - The GitHub App ID
+    /// * `private_key` - The GitHub App private key in PEM format
+    ///
+    /// # Returns
+    /// Returns a configured `GitHubClient` instance for GitHub App authentication.
+    ///
+    /// # Examples
+    /// ```rust,no_run
+    /// use release_regent_github_client::GitHubClient;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let client = GitHubClient::from_app(123456, "-----BEGIN RSA PRIVATE KEY-----...").await?;
+    ///     let installations = client.list_installations().await?;
+    ///     Ok(())
+    /// }
+    /// ```
+    pub async fn from_app(app_id: u64, private_key: impl Into<String>) -> GitHubResult<Self> {
+        let config = AuthConfig::new(app_id, private_key, None)?;
+        let auth_manager = GitHubAuthManager::new(config)?;
+        Self::with_auth_manager(auth_manager).await
+    }
+
+
+
+    /// Factory method for installation-specific authentication.
+    ///
+    /// Creates a GitHubClient authenticated for a specific GitHub App installation.
+    /// This is suitable for operations on repositories where the app is installed.
+    ///
+    /// # Arguments
+    /// * `app_id` - The GitHub App ID
+    /// * `private_key` - The GitHub App private key in PEM format
+    /// * `installation_id` - The installation ID for the target organization/user
+    ///
+    /// # Returns
+    /// Returns a configured `GitHubClient` instance for installation authentication.
+    ///
+    /// # Examples
+    /// ```rust,no_run
+    /// use release_regent_github_client::GitHubClient;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let client = GitHubClient::from_installation(123456, "-----BEGIN RSA PRIVATE KEY-----...", 987654).await?;
+    ///     let repo = client.get_repository("org", "repo").await?;
+    ///     Ok(())
+    /// }
+    /// ```
+    pub async fn from_installation(
+        app_id: u64,
+        private_key: impl Into<String>,
+        installation_id: u64,
+    ) -> GitHubResult<Self> {
+        let config = AuthConfig::new(app_id, private_key, None)?;
+        let auth_manager = GitHubAuthManager::new(config)?;
+        let app_client = Self::with_auth_manager(auth_manager).await?;
+        app_client.create_installation_client(installation_id).await
+    }
+
+    // === CONFIGURATION BUILDER METHODS ===
+
+    /// Creates a builder for configuring GitHub App authentication.
+    ///
+    /// This method returns a `GitHubAppBuilder` that provides a fluent API
+    /// for configuring GitHub App authentication with custom settings.
+    ///
+    /// # Arguments
+    ///
+    /// * `app_id` - The GitHub App ID
+    /// * `private_key` - The private key for JWT signing
+    ///
+    /// # Returns
+    ///
+    /// Returns a `GitHubAppBuilder` for configuring the client.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use release_regent_github_client::GitHubClient;
+    /// use std::time::Duration;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let client = GitHubClient::app_builder(
+    ///         123456,
+    ///         "-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----"
+    ///     )
+    ///     .github_enterprise("https://github.enterprise.com")
+    ///     .jwt_expiration(Duration::from_secs(300))
+    ///     .retry_config(|config| config.max_attempts(5).base_delay(Duration::from_millis(200)))
+    ///     .build().await?;
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
+    pub fn app_builder(app_id: u64, private_key: impl Into<String>) -> GitHubAppBuilder {
+        GitHubAppBuilder::new(app_id, private_key.into())
+    }
+
+    /// Creates a builder for configuring personal access token authentication.
+    ///
+    /// This method returns a `TokenBuilder` that provides a fluent API
+    /// for configuring token-based authentication with custom settings.
+    ///
+    /// # Arguments
+    ///
+    /// * `token` - The personal access token
+    ///
+    /// # Returns
+    ///
+    /// Returns a `TokenBuilder` for configuring the client.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use release_regent_github_client::GitHubClient;
+    /// use std::time::Duration;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let client = GitHubClient::token_builder("ghp_your_token")
+    ///         .github_enterprise("https://github.enterprise.com")
+    ///         .retry_config(|config| config.max_attempts(3))
+    ///         .build().await?;
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
+    pub fn token_builder(token: impl Into<String>) -> TokenBuilder {
+        TokenBuilder::new(token.into())
+    }
+
+    /// Creates a builder for configuring installation-specific authentication.
+    ///
+    /// This method returns an `InstallationBuilder` that provides a fluent API
+    /// for configuring installation-specific authentication with custom settings.
+    ///
+    /// # Arguments
+    ///
+    /// * `app_id` - The GitHub App ID
+    /// * `private_key` - The private key for JWT signing
+    /// * `installation_id` - The installation ID to authenticate for
+    ///
+    /// # Returns
+    ///
+    /// Returns an `InstallationBuilder` for configuring the client.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use release_regent_github_client::GitHubClient;
+    /// use std::time::Duration;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let client = GitHubClient::installation_builder(
+    ///         123456,
+    ///         "-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----",
+    ///         987654
+    ///     )
+    ///     .github_enterprise("https://github.enterprise.com")
+    ///     .retry_config(|config| config.max_attempts(5))
+    ///     .build().await?;
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
+    pub fn installation_builder(
+        app_id: u64,
+        private_key: impl Into<String>,
+        installation_id: u64,
+    ) -> InstallationBuilder {
+        InstallationBuilder::new(app_id, private_key.into(), installation_id)
     }
 
     /// Execute a GitHub API operation with retry logic and rate limiting
@@ -1525,6 +1929,369 @@ impl GitHubOperations for GitHubClient {
             "Successfully updated release"
         );
         Ok(result)
+    }
+}
+
+// === BUILDER STRUCTS FOR ENHANCED DEVELOPER EXPERIENCE ===
+
+/// Builder for configuring GitHub App authentication.
+///
+/// This builder provides a fluent API for configuring GitHub App authentication
+/// with custom settings for retry logic, enterprise support, and JWT configuration.
+pub struct GitHubAppBuilder {
+    app_id: u64,
+    private_key: String,
+    github_base_url: Option<String>,
+    jwt_expiration_seconds: Option<u64>,
+    token_refresh_buffer_seconds: Option<u64>,
+    retry_config: Option<RetryConfig>,
+}
+
+impl GitHubAppBuilder {
+    /// Creates a new GitHub App builder.
+    fn new(app_id: u64, private_key: String) -> Self {
+        Self {
+            app_id,
+            private_key,
+            github_base_url: None,
+            jwt_expiration_seconds: None,
+            token_refresh_buffer_seconds: None,
+            retry_config: None,
+        }
+    }
+
+    /// Sets the GitHub Enterprise Server base URL.
+    ///
+    /// # Arguments
+    /// * `base_url` - The base URL for GitHub Enterprise Server
+    pub fn github_enterprise(mut self, base_url: impl Into<String>) -> Self {
+        self.github_base_url = Some(base_url.into());
+        self
+    }
+
+    /// Sets the JWT expiration time.
+    ///
+    /// # Arguments
+    /// * `duration` - The JWT expiration duration (max 10 minutes)
+    pub fn jwt_expiration(mut self, duration: Duration) -> Self {
+        self.jwt_expiration_seconds = Some(duration.as_secs().min(600));
+        self
+    }
+
+    /// Sets the token refresh buffer time.
+    ///
+    /// # Arguments
+    /// * `duration` - The buffer time before token expiration to trigger refresh
+    pub fn token_refresh_buffer(mut self, duration: Duration) -> Self {
+        self.token_refresh_buffer_seconds = Some(duration.as_secs());
+        self
+    }
+
+    /// Configures retry behavior using a configuration function.
+    ///
+    /// # Arguments
+    /// * `config_fn` - Function that takes a RetryConfigBuilder and returns a configured RetryConfig
+    pub fn retry_config<F>(mut self, config_fn: F) -> Self
+    where
+        F: FnOnce(RetryConfigBuilder) -> RetryConfigBuilder,
+    {
+        let builder = RetryConfigBuilder::default();
+        let configured_builder = config_fn(builder);
+        self.retry_config = Some(configured_builder.build());
+        self
+    }
+
+    /// Sets a custom retry configuration directly.
+    ///
+    /// # Arguments
+    /// * `config` - The retry configuration to use
+    pub fn with_retry_config(mut self, config: RetryConfig) -> Self {
+        self.retry_config = Some(config);
+        self
+    }
+
+    /// Builds the configured GitHubClient.
+    ///
+    /// # Returns
+    /// Returns a fully configured `GitHubClient` instance.
+    ///
+    /// # Errors
+    /// Returns an error if the configuration is invalid or the client cannot be created.
+    pub async fn build(self) -> GitHubResult<GitHubClient> {
+        let mut config = AuthConfig::new(self.app_id, self.private_key, self.github_base_url)?;
+
+        if let Some(jwt_expiration) = self.jwt_expiration_seconds {
+            config.jwt_expiration_seconds = jwt_expiration;
+        }
+
+        if let Some(token_refresh_buffer) = self.token_refresh_buffer_seconds {
+            config.token_refresh_buffer_seconds = token_refresh_buffer;
+        }
+
+        let auth_manager = GitHubAuthManager::new(config)?;
+        let mut client = GitHubClient::with_auth_manager(auth_manager).await?;
+
+        if let Some(retry_config) = self.retry_config {
+            client.retry_config = retry_config;
+        }
+
+        Ok(client)
+    }
+}
+
+/// Builder for configuring personal access token authentication.
+///
+/// This builder provides a fluent API for configuring token-based authentication
+/// with custom settings for retry logic and enterprise support.
+pub struct TokenBuilder {
+    token: String,
+    github_base_url: Option<String>,
+    retry_config: Option<RetryConfig>,
+}
+
+impl TokenBuilder {
+    /// Creates a new token builder.
+    fn new(token: String) -> Self {
+        Self {
+            token,
+            github_base_url: None,
+            retry_config: None,
+        }
+    }
+
+    /// Sets the GitHub Enterprise Server base URL.
+    ///
+    /// # Arguments
+    /// * `base_url` - The base URL for GitHub Enterprise Server
+    pub fn github_enterprise(mut self, base_url: impl Into<String>) -> Self {
+        self.github_base_url = Some(base_url.into());
+        self
+    }
+
+    /// Configures retry behavior using a configuration function.
+    ///
+    /// # Arguments
+    /// * `config_fn` - Function that takes a RetryConfigBuilder and returns a configured RetryConfig
+    pub fn retry_config<F>(mut self, config_fn: F) -> Self
+    where
+        F: FnOnce(RetryConfigBuilder) -> RetryConfigBuilder,
+    {
+        let builder = RetryConfigBuilder::default();
+        let configured_builder = config_fn(builder);
+        self.retry_config = Some(configured_builder.build());
+        self
+    }
+
+    /// Sets a custom retry configuration directly.
+    ///
+    /// # Arguments
+    /// * `config` - The retry configuration to use
+    pub fn with_retry_config(mut self, config: RetryConfig) -> Self {
+        self.retry_config = Some(config);
+        self
+    }
+
+    /// Builds the configured GitHubClient.
+    ///
+    /// # Returns
+    /// Returns a fully configured `GitHubClient` instance.
+    ///
+    /// # Errors
+    /// Returns an error if the configuration is invalid or the client cannot be created.
+    pub async fn build(self) -> GitHubResult<GitHubClient> {
+        let mut client = GitHubClient::from_token(self.token, self.github_base_url).await?;
+
+        if let Some(retry_config) = self.retry_config {
+            client.retry_config = retry_config;
+        }
+
+        Ok(client)
+    }
+}
+
+/// Builder for configuring installation-specific authentication.
+///
+/// This builder provides a fluent API for configuring installation-specific authentication
+/// with custom settings for retry logic, enterprise support, and JWT configuration.
+pub struct InstallationBuilder {
+    app_id: u64,
+    private_key: String,
+    installation_id: u64,
+    github_base_url: Option<String>,
+    jwt_expiration_seconds: Option<u64>,
+    token_refresh_buffer_seconds: Option<u64>,
+    retry_config: Option<RetryConfig>,
+}
+
+impl InstallationBuilder {
+    /// Creates a new installation builder.
+    fn new(app_id: u64, private_key: String, installation_id: u64) -> Self {
+        Self {
+            app_id,
+            private_key,
+            installation_id,
+            github_base_url: None,
+            jwt_expiration_seconds: None,
+            token_refresh_buffer_seconds: None,
+            retry_config: None,
+        }
+    }
+
+    /// Sets the GitHub Enterprise Server base URL.
+    ///
+    /// # Arguments
+    /// * `base_url` - The base URL for GitHub Enterprise Server
+    pub fn github_enterprise(mut self, base_url: impl Into<String>) -> Self {
+        self.github_base_url = Some(base_url.into());
+        self
+    }
+
+    /// Sets the JWT expiration time.
+    ///
+    /// # Arguments
+    /// * `duration` - The JWT expiration duration (max 10 minutes)
+    pub fn jwt_expiration(mut self, duration: Duration) -> Self {
+        self.jwt_expiration_seconds = Some(duration.as_secs().min(600));
+        self
+    }
+
+    /// Sets the token refresh buffer time.
+    ///
+    /// # Arguments
+    /// * `duration` - The buffer time before token expiration to trigger refresh
+    pub fn token_refresh_buffer(mut self, duration: Duration) -> Self {
+        self.token_refresh_buffer_seconds = Some(duration.as_secs());
+        self
+    }
+
+    /// Configures retry behavior using a configuration function.
+    ///
+    /// # Arguments
+    /// * `config_fn` - Function that takes a RetryConfigBuilder and returns a configured RetryConfig
+    pub fn retry_config<F>(mut self, config_fn: F) -> Self
+    where
+        F: FnOnce(RetryConfigBuilder) -> RetryConfigBuilder,
+    {
+        let builder = RetryConfigBuilder::default();
+        let configured_builder = config_fn(builder);
+        self.retry_config = Some(configured_builder.build());
+        self
+    }
+
+    /// Sets a custom retry configuration directly.
+    ///
+    /// # Arguments
+    /// * `config` - The retry configuration to use
+    pub fn with_retry_config(mut self, config: RetryConfig) -> Self {
+        self.retry_config = Some(config);
+        self
+    }
+
+    /// Builds the configured GitHubClient.
+    ///
+    /// # Returns
+    /// Returns a fully configured `GitHubClient` instance.
+    ///
+    /// # Errors
+    /// Returns an error if the configuration is invalid or the client cannot be created.
+    pub async fn build(self) -> GitHubResult<GitHubClient> {
+        let mut config = AuthConfig::new(self.app_id, self.private_key, self.github_base_url)?;
+
+        if let Some(jwt_expiration) = self.jwt_expiration_seconds {
+            config.jwt_expiration_seconds = jwt_expiration;
+        }
+
+        if let Some(token_refresh_buffer) = self.token_refresh_buffer_seconds {
+            config.token_refresh_buffer_seconds = token_refresh_buffer;
+        }
+
+        let auth_manager = GitHubAuthManager::new(config)?;
+        let client = auth_manager
+            .create_installation_client(self.installation_id)
+            .await?;
+
+        let github_client = GitHubClient {
+            client,
+            auth_manager: Some(auth_manager),
+            retry_config: self.retry_config.unwrap_or_default(),
+            rate_limit_state: Arc::new(Mutex::new(RateLimitState::default())),
+            correlation_id: uuid::Uuid::new_v4().to_string(),
+        };
+
+        Ok(github_client)
+    }
+}
+
+/// Builder for configuring retry behavior.
+///
+/// This builder provides a fluent API for configuring retry logic with
+/// exponential backoff, maximum delays, and attempt limits.
+pub struct RetryConfigBuilder {
+    max_attempts: u32,
+    base_delay: Duration,
+    max_delay: Duration,
+    backoff_factor: f64,
+}
+
+impl Default for RetryConfigBuilder {
+    fn default() -> Self {
+        Self {
+            max_attempts: 3,
+            base_delay: Duration::from_millis(100),
+            max_delay: Duration::from_secs(30),
+            backoff_factor: 2.0,
+        }
+    }
+}
+
+impl RetryConfigBuilder {
+    /// Sets the maximum number of retry attempts.
+    ///
+    /// # Arguments
+    /// * `attempts` - The maximum number of attempts (including the initial attempt)
+    pub fn max_attempts(mut self, attempts: u32) -> Self {
+        self.max_attempts = attempts;
+        self
+    }
+
+    /// Sets the base delay between retries.
+    ///
+    /// # Arguments
+    /// * `delay` - The initial delay duration
+    pub fn base_delay(mut self, delay: Duration) -> Self {
+        self.base_delay = delay;
+        self
+    }
+
+    /// Sets the maximum delay between retries.
+    ///
+    /// # Arguments
+    /// * `delay` - The maximum delay duration
+    pub fn max_delay(mut self, delay: Duration) -> Self {
+        self.max_delay = delay;
+        self
+    }
+
+    /// Sets the backoff multiplication factor.
+    ///
+    /// # Arguments
+    /// * `factor` - The factor by which delay is multiplied after each retry
+    pub fn backoff_factor(mut self, factor: f64) -> Self {
+        self.backoff_factor = factor;
+        self
+    }
+
+    /// Builds the retry configuration.
+    ///
+    /// # Returns
+    /// Returns a `RetryConfig` with the configured settings.
+    pub fn build(self) -> RetryConfig {
+        RetryConfig {
+            max_attempts: self.max_attempts,
+            base_delay: self.base_delay,
+            max_delay: self.max_delay,
+            backoff_factor: self.backoff_factor,
+        }
     }
 }
 

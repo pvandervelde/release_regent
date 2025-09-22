@@ -2,9 +2,7 @@
 //!
 //! This module handles creating Git tags and GitHub releases.
 
-use crate::{GitHubClient, GitHubResult};
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info};
 
 /// Options for creating a release
 #[derive(Debug, Clone)]

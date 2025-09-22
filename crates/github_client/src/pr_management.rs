@@ -2,9 +2,7 @@
 //!
 //! This module handles creating, updating, and managing release pull requests.
 
-use crate::{GitHubClient, GitHubResult};
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info};
 
 /// Options for creating a pull request
 #[derive(Debug, Clone)]
