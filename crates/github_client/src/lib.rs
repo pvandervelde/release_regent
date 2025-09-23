@@ -343,7 +343,9 @@ impl GitHubClient {
     /// ```rust,no_run
     /// use release_regent_github_client::{GitHubClient, RetryConfig};
     /// use std::time::Duration;
+    /// use octocrab::Octocrab;
     ///
+    /// let octocrab_client = Octocrab::builder().build().unwrap();
     /// let mut client = GitHubClient::new(octocrab_client);
     /// let retry_config = RetryConfig {
     ///     max_attempts: 5,
@@ -480,8 +482,8 @@ impl GitHubClient {
     ///         None, // Use GitHub.com
     ///     ).await?;
     ///
-    ///     let user = client.get_repository("owner", "repo").await?;
-    ///     println!("Repository: {}", user.name);
+    ///     let repo = client.get_repository("owner", "repo").await?;
+    ///     println!("Repository: {}", repo.name());
     ///     Ok(())
     /// }
     /// ```
@@ -555,7 +557,7 @@ impl GitHubClient {
     ///     ).await?;
     ///
     ///     let repo = client.get_repository("owner", "repo").await?;
-    ///     println!("Repository: {}", repo.name);
+    ///     println!("Repository: {}", repo.name());
     ///     Ok(())
     /// }
     /// ```
@@ -613,8 +615,6 @@ impl GitHubClient {
         let auth_manager = GitHubAuthManager::new(config)?;
         Self::with_auth_manager(auth_manager).await
     }
-
-
 
     /// Factory method for installation-specific authentication.
     ///

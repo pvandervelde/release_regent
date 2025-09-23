@@ -402,7 +402,7 @@ impl CoreError {
     }
 
     /// Create a new GitHub error from any error source
-    pub fn github<E>(error: E) -> Self 
+    pub fn github<E>(error: E) -> Self
     where
         E: std::error::Error + Send + Sync + 'static,
     {
@@ -413,7 +413,7 @@ impl CoreError {
     }
 
     /// Create a new GitHub error with context
-    pub fn github_with_context<E>(error: E, context: ErrorContext) -> Self 
+    pub fn github_with_context<E>(error: E, context: ErrorContext) -> Self
     where
         E: std::error::Error + Send + Sync + 'static,
     {

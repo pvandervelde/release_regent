@@ -35,8 +35,8 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 // Re-export core traits for type identity
-pub use release_regent_core::traits::github_operations::GitHubOperations;
 pub use release_regent_core::traits::configuration_provider::ConfigurationProvider;
+pub use release_regent_core::traits::github_operations::GitHubOperations;
 pub use release_regent_core::traits::version_calculator::VersionCalculator;
 
 pub mod configuration_provider;
