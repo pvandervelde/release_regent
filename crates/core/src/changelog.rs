@@ -347,7 +347,7 @@ impl EnhancedChangelogGenerator {
     fn convert_to_git_cliff_commit(
         &self,
         commit: &ConventionalCommit,
-    ) -> crate::errors::CoreResult<GitCliffCommit> {
+    ) -> crate::errors::CoreResult<GitCliffCommit<'_>> {
         let git_cliff_commit = GitCliffCommit::new(commit.sha.clone(), commit.message.clone());
 
         // Set additional fields if available

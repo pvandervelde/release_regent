@@ -69,7 +69,7 @@ pub enum CoreError {
     #[error("GitHub operation failed: {source}")]
     GitHub {
         #[source]
-        source: Box<release_regent_github_client::Error>,
+        source: Box<dyn std::error::Error + Send + Sync>,
         context: Option<ErrorContext>,
     },
 
@@ -401,6 +401,28 @@ impl CoreError {
         }
     }
 
+    /// Create a new GitHub error from any error source
+    pub fn github<E>(error: E) -> Self
+    where
+        E: std::error::Error + Send + Sync + 'static,
+    {
+        Self::GitHub {
+            source: Box::new(error),
+            context: None,
+        }
+    }
+
+    /// Create a new GitHub error with context
+    pub fn github_with_context<E>(error: E, context: ErrorContext) -> Self
+    where
+        E: std::error::Error + Send + Sync + 'static,
+    {
+        Self::GitHub {
+            source: Box::new(error),
+            context: Some(context),
+        }
+    }
+
     /// Get the error context if available
     pub fn context(&self) -> Option<&ErrorContext> {
         match self {
@@ -439,15 +461,6 @@ impl CoreError {
             Self::Network { .. } => Some(1), // Default 1 second for network errors
             Self::Timeout { .. } => Some(2), // Default 2 seconds for timeout errors
             _ => None,
-        }
-    }
-}
-
-impl From<release_regent_github_client::Error> for CoreError {
-    fn from(error: release_regent_github_client::Error) -> Self {
-        Self::GitHub {
-            source: Box::new(error),
-            context: None,
         }
     }
 }

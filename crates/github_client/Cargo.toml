@@ -17,6 +17,7 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+http = "0.2"
 
 # GitHub integration
 octocrab = { workspace = true }
@@ -34,6 +35,8 @@ fastrand = "2.0"
 hmac = "0.12"
 sha2 = "0.10"
 hex = "0.4"
+
+release-regent-core = { path = "../core" }
 
 [dev-dependencies]
 tokio-test = { workspace = true }
