@@ -1,6 +1,131 @@
-//! Version calculation and management for Release Regent
+//! # Version Calculation and Management for Release Regent
 //!
-//! This module handles semantic version calculation using multiple strategies.
+//! This module provides comprehensive semantic version calculation and management capabilities
+//! following the Semantic Versioning 2.0.0 specification. It supports conventional commit
+//! parsing, version bumping, and semantic version validation.
+//!
+//! ## Architecture
+//!
+//! The versioning module is built around several key components:
+//!
+//! - **SemanticVersion**: Core version representation with full semver support
+//! - **VersionCalculator**: Engine for calculating next versions from commit history
+//! - **ConventionalCommit**: Structured representation of conventional commit messages
+//! - **VersionBump**: Type-safe version increment operations
+//!
+//! ## Usage Examples
+//!
+//! ### Basic Version Calculation
+//!
+//! ```rust
+//! use release_regent_core::versioning::{VersionCalculator, ConventionalCommit, SemanticVersion};
+//!
+//! // Start with an existing version
+//! let current = SemanticVersion {
+//!     major: 1, minor: 0, patch: 0,
+//!     prerelease: None, build: None
+//! };
+//!
+//! let calculator = VersionCalculator::new(Some(current));
+//!
+//! // Parse commits since last release
+//! let commits = vec![
+//!     ConventionalCommit {
+//!         commit_type: "feat".to_string(),
+//!         scope: Some("auth".to_string()),
+//!         description: "add OAuth support".to_string(),
+//!         breaking_change: false,
+//!         message: "feat(auth): add OAuth support".to_string(),
+//!         sha: "abc123".to_string(),
+//!     }
+//! ];
+//!
+//! let next_version = calculator.calculate_next_version(&commits)?;
+//! assert_eq!(next_version.to_string(), "1.1.0"); // Minor bump for new feature
+//! # Ok::<(), release_regent_core::CoreError>(())
+//! ```
+//!
+//! ### Parsing Conventional Commits
+//!
+//! ```rust
+//! use release_regent_core::versioning::VersionCalculator;
+//!
+//! let commit_data = vec![
+//!     ("abc123".to_string(), "feat: add user authentication".to_string()),
+//!     ("def456".to_string(), "fix(ui): resolve button alignment".to_string()),
+//!     ("ghi789".to_string(), "feat!: remove deprecated API".to_string()),
+//! ];
+//!
+//! let parsed_commits = VersionCalculator::parse_conventional_commits(&commit_data);
+//!
+//! assert_eq!(parsed_commits[0].commit_type, "feat");
+//! assert!(!parsed_commits[0].breaking_change);
+//!
+//! assert_eq!(parsed_commits[1].commit_type, "fix");
+//! assert_eq!(parsed_commits[1].scope, Some("ui".to_string()));
+//!
+//! assert_eq!(parsed_commits[2].commit_type, "feat");
+//! assert!(parsed_commits[2].breaking_change); // Breaking change from '!'
+//! ```
+//!
+//! ### Semantic Version Parsing
+//!
+//! ```rust
+//! use release_regent_core::versioning::VersionCalculator;
+//!
+//! // Parse various semver formats
+//! let basic = VersionCalculator::parse_version("1.2.3")?;
+//! let with_prefix = VersionCalculator::parse_version("v2.0.0")?;
+//! let prerelease = VersionCalculator::parse_version("1.0.0-alpha.1")?;
+//! let with_build = VersionCalculator::parse_version("1.0.0+20210101.abcd123")?;
+//! let full = VersionCalculator::parse_version("v2.0.0-beta.2+build.123")?;
+//!
+//! assert_eq!(basic.major, 1);
+//! assert!(prerelease.is_prerelease());
+//! assert!(with_build.has_build_metadata());
+//! # Ok::<(), release_regent_core::CoreError>(())
+//! ```
+//!
+//! ## Conventional Commit Support
+//!
+//! The module supports the full [Conventional Commits](https://www.conventionalcommits.org/) specification:
+//!
+//! - **Standard types**: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `chore`
+//! - **Scopes**: Optional component scopes like `feat(auth): ...`
+//! - **Breaking changes**: Both `!` syntax and `BREAKING CHANGE:` footer
+//! - **Fallback parsing**: Non-conventional commits are treated as `chore` type
+//!
+//! ### Version Bump Rules
+//!
+//! | Commit Type | Breaking Change | Version Bump |
+//! |------------|----------------|--------------|
+//! | `feat` | No | Minor |
+//! | `fix` | No | Patch |
+//! | Any | Yes | Major |
+//! | Other types | No | None |
+//!
+//! ## Semantic Versioning Compliance
+//!
+//! This implementation strictly follows [Semantic Versioning 2.0.0](https://semver.org/):
+//!
+//! - **Core version**: `MAJOR.MINOR.PATCH` format
+//! - **Pre-release**: Optional `-alpha.1`, `-beta.2`, etc.
+//! - **Build metadata**: Optional `+build.123`, `+20210101.abcd`
+//! - **Version precedence**: Correct ordering with pre-release handling
+//! - **Validation**: Strict parsing with detailed error messages
+//!
+//! ## Error Handling
+//!
+//! All operations return `CoreResult<T>` for comprehensive error handling:
+//!
+//! ```rust
+//! use release_regent_core::versioning::VersionCalculator;
+//!
+//! // Invalid version formats are caught
+//! assert!(VersionCalculator::parse_version("invalid").is_err());
+//! assert!(VersionCalculator::parse_version("01.2.3").is_err()); // Leading zeros
+//! assert!(VersionCalculator::parse_version("1.2.3-").is_err()); // Empty prerelease
+//! ```
 
 use crate::{CoreError, CoreResult};
 use serde::{Deserialize, Serialize};

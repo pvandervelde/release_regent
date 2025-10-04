@@ -25,11 +25,13 @@
 //! - Test fixtures (for deterministic testing)
 
 pub mod configuration_provider;
+pub mod git_operations;
 pub mod github_operations;
 pub mod version_calculator;
 pub mod webhook_validator;
 
 pub use configuration_provider::ConfigurationProvider;
+pub use git_operations::GitOperations;
 pub use github_operations::GitHubOperations;
 pub use version_calculator::VersionCalculator;
 pub use webhook_validator::WebhookValidator;

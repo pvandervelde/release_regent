@@ -66,6 +66,10 @@ dirs = "5.0"
 walkdir = "2.4"
 jsonschema = "0.18"
 once_cell = "1.19"
+regex = "1.10"
+
+# Version calculation
+git-conventional = "0.12"
 
 # Web framework
 axum = "0.8"
