@@ -34,7 +34,7 @@ reqwest = { workspace = true }
 
 # Webhook payload handling
 http = "1.0"
-bytes = "1.0"
+bytes = "1.11"
 
 # Logging for test debugging
 tracing = { workspace = true }
