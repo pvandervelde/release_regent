@@ -39,7 +39,7 @@ octocrab = "0.38"
 reqwest = { version = "0.11", features = ["json", "rustls-tls"] }
 
 # Crypto and security
-jsonwebtoken = "9.2"
+jsonwebtoken = "10.3"
 secrecy = "0.8"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.6", features = ["v4", "serde"] }
