@@ -5,7 +5,19 @@
 
 use async_trait::async_trait;
 use octocrab::{Octocrab, Result as OctocrabResult};
-use release_regent_core::{traits::github_operations::*, CoreError, CoreResult, GitHubOperations};
+use release_regent_core::{
+    traits::{
+        git_operations::{
+            GetCommitsOptions, GitCommit, GitOperations, GitRepository, GitTag, GitTagType,
+            GitUser as GitOpsUser, ListTagsOptions,
+        },
+        github_operations::{
+            CreatePullRequestParams, CreateReleaseParams, GitHubOperations, GitUser as GitHubUser,
+            PullRequest, Release, Tag, UpdateReleaseParams,
+        },
+    },
+    CoreError, CoreResult,
+};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
@@ -964,110 +976,110 @@ impl GitHubClient {
 }
 
 #[async_trait]
-impl GitHubOperations for GitHubClient {
+impl GitOperations for GitHubClient {
     /// Get commits between two references
-    ///
-    /// # Parameters
-    /// - `owner`: Repository owner name
-    /// - `repo`: Repository name
-    /// - `base`: Base reference (commit SHA, branch, or tag)
-    /// - `head`: Head reference (commit SHA, branch, or tag)
-    /// - `per_page`: Number of commits per page (max 250)
-    /// - `page`: Page number to retrieve (1-based)
-    ///
-    /// # Returns
-    /// List of commits between base and head, ordered chronologically
-    ///
-    /// # Errors
-    /// - `CoreError::GitHub` - API communication failed
-    /// - `CoreError::InvalidInput` - Invalid references or pagination
-    /// - `CoreError::NotSupported` - References not found
-    async fn compare_commits(
+    async fn get_commits_between(
         &self,
         owner: &str,
         repo: &str,
         base: &str,
         head: &str,
-        per_page: Option<u8>,
-        page: Option<u32>,
-    ) -> CoreResult<Vec<Commit>> {
+        options: GetCommitsOptions,
+    ) -> CoreResult<Vec<GitCommit>> {
         debug!(
-            operation = "compare_commits",
+            operation = "get_commits_between",
             owner = owner,
             repo = repo,
             base = base,
             head = head,
-            per_page = per_page.unwrap_or(30),
-            page = page.unwrap_or(1),
+            limit = options.limit,
             correlation_id = self.correlation_id,
-            "Comparing commits between base and head"
+            "Getting commits between base and head"
         );
 
         // For now, implement a simple version that gets commits from head
         // In a full implementation, this would use the GitHub compare API
         let commits_page = self
-            .execute_with_retry("compare_commits", || async {
+            .execute_with_retry("get_commits_between", || async {
                 let repos = self.client.repos(owner, repo);
                 let commits = repos.list_commits();
-                commits.sha(head).send().await
+                let mut query = commits.sha(head);
+
+                if let Some(limit) = options.limit {
+                    query = query.per_page(limit.min(100) as u8);
+                }
+
+                query.send().await
             })
             .await?;
 
-        let commits: Vec<Commit> = commits_page
+        let commits: Vec<GitCommit> = commits_page
             .items
             .into_iter()
-            .take(10) // Limit to avoid too many results
+            .take(options.limit.unwrap_or(100).min(100))
             .map(|commit| {
                 let author = commit
                     .commit
                     .author
                     .as_ref()
-                    .map(|a| GitUser {
+                    .map(|a| GitOpsUser {
                         name: a.user.name.clone(),
                         email: a.user.email.clone(),
-                        login: commit.author.as_ref().map(|u| u.login.clone()),
+                        username: commit.author.as_ref().map(|u| u.login.clone()),
                     })
-                    .unwrap_or_else(|| GitUser {
+                    .unwrap_or_else(|| GitOpsUser {
                         name: "Unknown".to_string(),
                         email: "unknown@example.com".to_string(),
-                        login: None,
+                        username: None,
                     });
 
                 let committer = commit
                     .commit
                     .committer
                     .as_ref()
-                    .map(|c| GitUser {
+                    .map(|c| GitOpsUser {
                         name: c.user.name.clone(),
                         email: c.user.email.clone(),
-                        login: commit.committer.as_ref().map(|u| u.login.clone()),
+                        username: commit.committer.as_ref().map(|u| u.login.clone()),
                     })
-                    .unwrap_or_else(|| GitUser {
+                    .unwrap_or_else(|| GitOpsUser {
                         name: "Unknown".to_string(),
                         email: "unknown@example.com".to_string(),
-                        login: None,
+                        username: None,
                     });
 
                 let parents: Vec<String> =
                     commit.parents.into_iter().filter_map(|p| p.sha).collect();
 
-                Commit {
+                let message = commit.commit.message.clone();
+                let subject = GitCommit::extract_subject(&message);
+                let body = GitCommit::extract_body(&message);
+
+                GitCommit {
                     sha: commit.sha,
-                    message: commit.commit.message,
                     author,
                     committer,
-                    date: commit
+                    author_date: commit
+                        .commit
+                        .author
+                        .and_then(|a| a.date)
+                        .unwrap_or_else(chrono::Utc::now),
+                    commit_date: commit
                         .commit
                         .committer
                         .and_then(|c| c.date)
                         .unwrap_or_else(chrono::Utc::now),
+                    message,
+                    subject,
+                    body,
                     parents,
+                    files: vec![], // TODO: Fetch file changes if needed
                 }
             })
             .collect();
 
         debug!(
-            operation = "compare_commits",
+            operation = "get_commits_between",
             owner = owner,
             repo = repo,
             base = base,
@@ -1079,6 +1091,274 @@ impl GitHubOperations for GitHubClient {
         Ok(commits)
     }
 
+    /// Get specific commit information
+    async fn get_commit(&self, owner: &str, repo: &str, commit_sha: &str) -> CoreResult<GitCommit> {
+        debug!(
+            operation = "get_commit",
+            owner = owner,
+            repo = repo,
+            commit_sha = commit_sha,
+            correlation_id = self.correlation_id,
+            "Getting specific commit"
+        );
+
+        let commit = self
+            .execute_with_retry("get_commit", || async {
+                self.client.commits(owner, repo).get(commit_sha).await
+            })
+            .await?;
+
+        let author = commit
+            .commit
+            .author
+            .as_ref()
+            .map(|a| GitOpsUser {
+                name: a.user.name.clone(),
+                email: a.user.email.clone(),
+                username: commit.author.as_ref().map(|u| u.login.clone()),
+            })
+            .unwrap_or_else(|| GitOpsUser {
+                name: "Unknown".to_string(),
+                email: "unknown@example.com".to_string(),
+                username: None,
+            });
+
+        let committer = commit
+            .commit
+            .committer
+            .as_ref()
+            .map(|c| GitOpsUser {
+                name: c.user.name.clone(),
+                email: c.user.email.clone(),
+                username: commit.committer.as_ref().map(|u| u.login.clone()),
+            })
+            .unwrap_or_else(|| GitOpsUser {
+                name: "Unknown".to_string(),
+                email: "unknown@example.com".to_string(),
+                username: None,
+            });
+
+        let parents: Vec<String> = commit.parents.into_iter().filter_map(|p| p.sha).collect();
+
+        let message = commit.commit.message;
+        let subject = GitCommit::extract_subject(&message);
+        let body = GitCommit::extract_body(&message);
+
+        Ok(GitCommit {
+            sha: commit.sha,
+            author,
+            committer,
+            author_date: commit
+                .commit
+                .author
+                .and_then(|a| a.date)
+                .unwrap_or_else(chrono::Utc::now),
+            commit_date: commit
+                .commit
+                .committer
+                .and_then(|c| c.date)
+                .unwrap_or_else(chrono::Utc::now),
+            message,
+            subject,
+            body,
+            parents,
+            files: vec![], // TODO: Fetch file changes if needed
+        })
+    }
+
+    /// List all tags in the repository
+    async fn list_tags(
+        &self,
+        owner: &str,
+        repo: &str,
+        options: ListTagsOptions,
+    ) -> CoreResult<Vec<GitTag>> {
+        debug!(
+            operation = "list_tags",
+            owner = owner,
+            repo = repo,
+            limit = options.limit,
+            correlation_id = self.correlation_id,
+            "Listing repository tags"
+        );
+
+        let tags_page = self
+            .execute_with_retry("list_tags", || async {
+                let repos = self.client.repos(owner, repo);
+                let mut query = repos.list_tags();
+
+                if let Some(limit) = options.limit {
+                    query = query.per_page(limit.min(100) as u8);
+                }
+
+                query.send().await
+            })
+            .await?;
+
+        let tags: Vec<GitTag> = tags_page
+            .items
+            .into_iter()
+            .map(|tag| GitTag {
+                name: tag.name,
+                target_sha: tag.commit.sha,
+                tag_type: GitTagType::Lightweight, // GitHub API doesn't distinguish easily
+                message: None,
+                tagger: None,
+                created_at: None,
+            })
+            .collect();
+
+        debug!(
+            operation = "list_tags",
+            owner = owner,
+            repo = repo,
+            tag_count = tags.len(),
+            correlation_id = self.correlation_id,
+            "Listed repository tags"
+        );
+
+        Ok(tags)
+    }
+
+    /// Get specific tag information
+    async fn get_tag(&self, owner: &str, repo: &str, tag_name: &str) -> CoreResult<GitTag> {
+        debug!(
+            operation = "get_tag",
+            owner = owner,
+            repo = repo,
+            tag_name = tag_name,
+            correlation_id = self.correlation_id,
+            "Getting specific tag"
+        );
+
+        // First try to get the tag as a Git tag
+        match self
+            .execute_with_retry("get_tag", || async {
+                self.client.repos(owner, repo).get_tag(tag_name).await
+            })
+            .await
+        {
+            Ok(tag) => {
+                let tagger = None; // Octocrab GitTag doesn't provide tagger info for lightweight tags
+
+                Ok(GitTag {
+                    name: tag.tag,
+                    target_sha: tag.sha,
+                    tag_type: GitTagType::Annotated,
+                    message: Some(tag.message),
+                    tagger,
+                    created_at: None, // Creation date not available for lightweight tags
+                })
+            }
+            Err(_) => {
+                // Fallback to ref lookup for lightweight tags
+                // TODO: Implement proper tag reference lookup
+                // For now, return basic tag info
+
+                Ok(GitTag {
+                    name: tag_name.to_string(),
+                    target_sha: String::new(), // TODO: Fix reference.object field access
+                    tag_type: GitTagType::Lightweight,
+                    message: None,
+                    tagger: None,
+                    created_at: None,
+                })
+            }
+        }
+    }
+
+    /// Check if a tag exists
+    async fn tag_exists(&self, owner: &str, repo: &str, tag_name: &str) -> CoreResult<bool> {
+        debug!(
+            operation = "tag_exists",
+            owner = owner,
+            repo = repo,
+            tag_name = tag_name,
+            correlation_id = self.correlation_id,
+            "Checking if tag exists"
+        );
+
+        match self.get_tag(owner, repo, tag_name).await {
+            Ok(_) => Ok(true),
+            Err(CoreError::GitHub { .. }) => Ok(false), // Tag not found
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Get the current HEAD commit
+    async fn get_head_commit(
+        &self,
+        owner: &str,
+        repo: &str,
+        branch: Option<&str>,
+    ) -> CoreResult<GitCommit> {
+        let branch_name = branch.unwrap_or("HEAD");
+
+        debug!(
+            operation = "get_head_commit",
+            owner = owner,
+            repo = repo,
+            branch = branch_name,
+            correlation_id = self.correlation_id,
+            "Getting HEAD commit"
+        );
+
+        // TODO: Implement proper head commit lookup
+        // For now, return a placeholder commit
+        let commits = self
+            .get_commits_between(owner, repo, "", branch_name, GetCommitsOptions::default())
+            .await?;
+        if let Some(latest_commit) = commits.into_iter().last() {
+            Ok(latest_commit)
+        } else {
+            Err(CoreError::GitHub {
+                source: Box::new(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "No commits found",
+                )),
+                context: None,
+            })
+        }
+    }
+
+    /// Get repository information
+    async fn get_repository_info(&self, owner: &str, repo: &str) -> CoreResult<GitRepository> {
+        debug!(
+            operation = "get_repository_info",
+            owner = owner,
+            repo = repo,
+            correlation_id = self.correlation_id,
+            "Getting repository information"
+        );
+
+        let repo_info = self
+            .execute_with_retry("get_repository_info", || async {
+                self.client.repos(owner, repo).get().await
+            })
+            .await?;
+
+        Ok(GitRepository {
+            name: repo_info.name,
+            owner: repo_info.owner.unwrap().login,
+            full_name: repo_info
+                .full_name
+                .unwrap_or_else(|| format!("{}/{}", owner, repo)),
+            default_branch: repo_info
+                .default_branch
+                .unwrap_or_else(|| "main".to_string()),
+            clone_url: repo_info
+                .clone_url
+                .map(|u| u.to_string())
+                .unwrap_or_default(),
+            ssh_url: repo_info.ssh_url.unwrap_or_default(),
+            private: repo_info.private.unwrap_or(false),
+            description: repo_info.description,
+        })
+    }
+}
+
+#[async_trait]
+impl GitHubOperations for GitHubClient {
     /// Create a new pull request
     ///
     /// # Parameters
@@ -1182,12 +1462,12 @@ impl GitHubOperations for GitHubClient {
             target_commitish: release.target_commitish,
             author: release
                 .author
-                .map(|a| GitUser {
+                .map(|a| GitHubUser {
                     name: a.login.clone(),
                     email: a.email.unwrap_or_default(),
                     login: Some(a.login),
                 })
-                .unwrap_or_else(|| GitUser {
+                .unwrap_or_else(|| GitHubUser {
                     name: "Unknown".to_string(),
                     email: "unknown@example.com".to_string(),
                     login: None,
@@ -1226,7 +1506,7 @@ impl GitHubOperations for GitHubClient {
         tag_name: &str,
         commit_sha: &str,
         message: Option<String>,
-        tagger: Option<GitUser>,
+        tagger: Option<GitHubUser>,
     ) -> CoreResult<Tag> {
         debug!(
             operation = "create_tag",
@@ -1275,82 +1555,6 @@ impl GitHubOperations for GitHubClient {
             "Successfully created tag"
         );
         Ok(tag)
-    }
-
-    /// Get specific commit information
-    ///
-    /// # Parameters
-    /// - `owner`: Repository owner name
-    /// - `repo`: Repository name
-    /// - `commit_sha`: Commit SHA to retrieve
-    ///
-    /// # Returns
-    /// Detailed commit information including author, message, and metadata
-    ///
-    /// # Errors
-    /// - `CoreError::GitHub` - API communication failed
-    /// - `CoreError::InvalidInput` - Invalid commit SHA format
-    /// - `CoreError::NotSupported` - Commit not found
-    async fn get_commit(&self, owner: &str, repo: &str, commit_sha: &str) -> CoreResult<Commit> {
-        debug!(
-            operation = "get_commit",
-            owner = owner,
-            repo = repo,
-            commit_sha = commit_sha,
-            correlation_id = self.correlation_id,
-            "Getting commit information"
-        );
-
-        let commit = self
-            .execute_with_retry("get_commit", || async {
-                self.client.commits(owner, repo).get(commit_sha).await
-            })
-            .await?;
-
-        let author = commit
-            .commit
-            .author
-            .as_ref()
-            .map(|a| GitUser {
-                name: a.user.name.clone(),
-                email: a.user.email.clone(),
-                login: commit.author.as_ref().map(|u| u.login.clone()),
-            })
-            .unwrap_or_else(|| GitUser {
-                name: "Unknown".to_string(),
-                email: "unknown@example.com".to_string(),
-                login: None,
-            });
-
-        let committer = commit
-            .commit
-            .committer
-            .as_ref()
-            .map(|c| GitUser {
-                name: c.user.name.clone(),
-                email: c.user.email.clone(),
-                login: commit.committer.as_ref().map(|u| u.login.clone()),
-            })
-            .unwrap_or_else(|| GitUser {
-                name: "Unknown".to_string(),
-                email: "unknown@example.com".to_string(),
-                login: None,
-            });
-
-        let parents: Vec<String> = commit.parents.into_iter().filter_map(|p| p.sha).collect();
-
-        Ok(Commit {
-            sha: commit.sha,
-            message: commit.commit.message,
-            author,
-            committer,
-            date: commit
-                .commit
-                .committer
-                .and_then(|c| c.date)
-                .unwrap_or_else(chrono::Utc::now),
-            parents,
-        })
     }
 
     /// Get the latest release (non-draft, non-prerelease)
@@ -1414,12 +1618,12 @@ impl GitHubOperations for GitHubClient {
             target_commitish: release.target_commitish,
             author: release
                 .author
-                .map(|a| GitUser {
+                .map(|a| GitHubUser {
                     name: a.login.clone(),
                     email: a.email.unwrap_or_default(),
                     login: Some(a.login),
                 })
-                .unwrap_or_else(|| GitUser {
+                .unwrap_or_else(|| GitHubUser {
                     name: "Unknown".to_string(),
                     email: "unknown@example.com".to_string(),
                     login: None,
@@ -1519,12 +1723,12 @@ impl GitHubOperations for GitHubClient {
             target_commitish: release.target_commitish,
             author: release
                 .author
-                .map(|a| GitUser {
+                .map(|a| GitHubUser {
                     name: a.login.clone(),
                     email: a.email.unwrap_or_default(),
                     login: Some(a.login),
                 })
-                .unwrap_or_else(|| GitUser {
+                .unwrap_or_else(|| GitHubUser {
                     name: "Unknown".to_string(),
                     email: "unknown@example.com".to_string(),
                     login: None,
@@ -1541,46 +1745,6 @@ impl GitHubOperations for GitHubClient {
             "Successfully retrieved release by tag"
         );
         Ok(result)
-    }
-
-    /// Retrieve repository information
-    ///
-    /// # Parameters
-    /// - `owner`: Repository owner (user or organization name)
-    /// - `repo`: Repository name
-    ///
-    /// # Returns
-    /// Repository information including metadata and configuration
-    ///
-    /// # Errors
-    /// - `CoreError::GitHub` - API communication failed
-    /// - `CoreError::InvalidInput` - Invalid owner or repo name
-    /// - `CoreError::NotSupported` - Repository not accessible
-    async fn get_repository(&self, owner: &str, repo: &str) -> CoreResult<Repository> {
-        debug!(
-            operation = "get_repository",
-            owner = owner,
-            repo = repo,
-            correlation_id = self.correlation_id,
-            "Getting repository information"
-        );
-
-        self.execute_with_retry("get_repository", || async {
-            self.client.repos(owner, repo).get().await
-        })
-        .await
-        .map(|r| Repository {
-            id: r.id.0,
-            name: r.name,
-            full_name: r.full_name.unwrap_or_else(|| format!("{}/{}", owner, repo)),
-            owner: r.owner.unwrap().login,
-            description: r.description,
-            homepage: r.homepage,
-            private: r.private.unwrap_or(false),
-            default_branch: r.default_branch.unwrap_or_else(|| "main".to_string()),
-            clone_url: r.clone_url.map(|u| u.to_string()).unwrap_or_default(),
-            ssh_url: r.ssh_url.unwrap_or_default(),
-        })
     }
 
     /// List releases in a repository
@@ -1647,12 +1811,12 @@ impl GitHubOperations for GitHubClient {
                 target_commitish: release.target_commitish,
                 author: release
                     .author
-                    .map(|a| GitUser {
+                    .map(|a| GitHubUser {
                         name: a.login.clone(),
                         email: a.email.unwrap_or_default(),
                         login: Some(a.login),
                     })
-                    .unwrap_or_else(|| GitUser {
+                    .unwrap_or_else(|| GitHubUser {
                         name: "Unknown".to_string(),
                         email: "unknown@example.com".to_string(),
                         login: None,
@@ -1669,122 +1833,6 @@ impl GitHubOperations for GitHubClient {
             "Successfully retrieved releases list"
         );
         Ok(releases)
-    }
-
-    /// List all tags in a repository
-    ///
-    /// # Parameters
-    /// - `owner`: Repository owner name
-    /// - `repo`: Repository name
-    /// - `per_page`: Number of tags per page (max 100)
-    /// - `page`: Page number to retrieve (1-based)
-    ///
-    /// # Returns
-    /// List of tags ordered by creation date (newest first)
-    ///
-    /// # Errors
-    /// - `CoreError::GitHub` - API communication failed
-    /// - `CoreError::InvalidInput` - Invalid pagination parameters
-    async fn list_tags(
-        &self,
-        owner: &str,
-        repo: &str,
-        per_page: Option<u8>,
-        page: Option<u32>,
-    ) -> CoreResult<Vec<Tag>> {
-        debug!(
-            operation = "list_tags",
-            owner = owner,
-            repo = repo,
-            per_page = per_page.unwrap_or(30),
-            page = page.unwrap_or(1),
-            correlation_id = self.correlation_id,
-            "Listing repository tags"
-        );
-
-        let tags_page = self
-            .execute_with_retry("list_tags", || async {
-                let repos = self.client.repos(owner, repo);
-                let mut tags_handler = repos.list_tags();
-
-                if let Some(per_page) = per_page {
-                    tags_handler = tags_handler.per_page(per_page);
-                }
-
-                if let Some(page) = page {
-                    tags_handler = tags_handler.page(page);
-                }
-
-                tags_handler.send().await
-            })
-            .await?;
-
-        let tags: Vec<Tag> = tags_page
-            .items
-            .into_iter()
-            .map(|tag| Tag {
-                name: tag.name,
-                commit_sha: tag.commit.sha,
-                created_at: None, // GitHub API doesn't provide creation date for lightweight tags
-                message: None,    // Lightweight tags don't have messages
-                tagger: None,     // Lightweight tags don't have tagger info
-            })
-            .collect();
-
-        debug!(
-            tags_count = tags.len(),
-            correlation_id = self.correlation_id,
-            "Successfully retrieved tags"
-        );
-        Ok(tags)
-    }
-
-    /// Check if a tag exists
-    ///
-    /// # Parameters
-    /// - `owner`: Repository owner name
-    /// - `repo`: Repository name
-    /// - `tag_name`: Tag name to check
-    ///
-    /// # Returns
-    /// True if tag exists, false otherwise
-    ///
-    /// # Errors
-    /// - `CoreError::GitHub` - API communication failed
-    /// - `CoreError::InvalidInput` - Invalid tag name
-    async fn tag_exists(&self, owner: &str, repo: &str, tag_name: &str) -> CoreResult<bool> {
-        debug!(
-            operation = "tag_exists",
-            owner = owner,
-            repo = repo,
-            tag_name = tag_name,
-            correlation_id = self.correlation_id,
-            "Checking if tag exists"
-        );
-
-        // Use list_tags and check if our tag exists in the list
-        match self.list_tags(owner, repo, Some(100), None).await {
-            Ok(tags) => {
-                let exists = tags.iter().any(|tag| tag.name == tag_name);
-                debug!(
-                    operation = "tag_exists",
-                    owner = owner,
-                    repo = repo,
-                    tag_name = tag_name,
-                    exists = exists,
-                    correlation_id = self.correlation_id,
-                    "Tag existence check completed"
-                );
-                Ok(exists)
-            }
-            Err(e) => {
-                error!(
-                    "Failed to check if tag {} exists for {}/{}: {}",
-                    tag_name, owner, repo, e
-                );
-                Err(e)
-            }
-        }
     }
 
     /// Update an existing pull request
@@ -1907,12 +1955,12 @@ impl GitHubOperations for GitHubClient {
             target_commitish: release.target_commitish,
             author: release
                 .author
-                .map(|a| GitUser {
+                .map(|a| GitHubUser {
                     name: a.login.clone(),
                     email: a.email.unwrap_or_default(),
                     login: Some(a.login),
                 })
-                .unwrap_or_else(|| GitUser {
+                .unwrap_or_else(|| GitHubUser {
                     name: "Unknown".to_string(),
                     email: "unknown@example.com".to_string(),
                     login: None,
