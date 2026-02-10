@@ -16,7 +16,9 @@ use crate::{
 };
 use release_regent_core::{
     config::ReleaseRegentConfig,
-    traits::{configuration_provider::*, git_operations::*, github_operations::*, version_calculator::*},
+    traits::{
+        configuration_provider::*, git_operations::*, github_operations::*, version_calculator::*,
+    },
     versioning::SemanticVersion,
 };
 use std::collections::HashMap;
@@ -490,4 +492,3 @@ fn generate_repository_response() -> Repository {
 fn generate_commits_response(count: usize) -> Vec<GitCommit> {
     (0..count).map(|_| CommitBuilder::new().build()).collect()
 }
-
