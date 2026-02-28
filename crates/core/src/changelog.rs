@@ -313,13 +313,15 @@ impl EnhancedChangelogGenerator {
         let mut release = GitCliffRelease::default();
         release.version = Some("Unreleased".to_string());
         release.commits = git_cliff_commits;
-        release.timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
+        release.timestamp = Some(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0),
+        );
 
         // Create changelog
-        let mut changelog = GitCliffChangelog::new(vec![release], &git_cliff_config, None)
+        let mut changelog = GitCliffChangelog::new(vec![release], git_cliff_config, None)
             .map_err(|e| crate::errors::CoreError::changelog_generation(e.to_string()))?;
 
         // Add remote context for link generation if configured
