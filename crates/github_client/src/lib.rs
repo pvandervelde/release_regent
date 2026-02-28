@@ -1,1504 +1,328 @@
-//! Crate for interacting with the GitHub REST API.
+//! GitHub client implementation using github-bot-sdk
 //!
-//! This crate provides a client for making authenticated requests to GitHub,
-//! authenticating as a GitHub App using its ID and private key.
+//! This crate provides implementations of GitOperations and GitHubOperations traits
+//! using the github-bot-sdk library for GitHub API interactions.
 
 use async_trait::async_trait;
-use octocrab::{Octocrab, Result as OctocrabResult};
+use github_bot_sdk::{
+    auth::{AuthenticationProvider, InstallationId},
+    client::{ClientConfig, GitHubClient as SdkClient, InstallationClient},
+};
 use release_regent_core::{
     traits::{
         git_operations::{
             GetCommitsOptions, GitCommit, GitOperations, GitRepository, GitTag, GitTagType,
-            GitUser as GitOpsUser, ListTagsOptions,
+            GitUser as GitOpsUser, ListTagsOptions, TagSortOrder,
         },
         github_operations::{
             CreatePullRequestParams, CreateReleaseParams, GitHubOperations, GitUser as GitHubUser,
-            PullRequest, Release, Tag, UpdateReleaseParams,
+            PullRequest, PullRequestBranch, Release, Repository, Tag, UpdateReleaseParams,
         },
     },
     CoreError, CoreResult,
 };
-use std::sync::Arc;
-use std::time::{Duration, Instant};
-use tokio::sync::Mutex;
-use tracing::{debug, error, info, instrument, warn};
+use std::time::Duration as StdDuration;
+use tracing::{debug, info, instrument};
 
 pub mod errors;
 pub use errors::{Error, GitHubResult};
-// For backward compatibility
-pub use errors::Error as GitHubError;
 
 pub mod auth;
-pub use auth::{
-    authenticate_with_access_token, create_app_client, create_token_client, AuthConfig,
-    GitHubAuthManager,
-};
+pub use auth::{AuthConfig, AzureKeyVaultSecretProvider};
 
-pub mod models;
+// Re-export SDK types for convenience
+pub use github_bot_sdk::auth::{GitHubAppId, InstallationId as SdkInstallationId, PrivateKey};
 
-pub mod pr_management;
-pub mod release;
-
-/// Configuration for retry logic
-#[derive(Debug, Clone)]
-pub struct RetryConfig {
-    /// Maximum number of retry attempts
-    pub max_attempts: u32,
-    /// Base delay between retries (will be exponentially increased)
-    pub base_delay: Duration,
-    /// Maximum delay between retries
-    pub max_delay: Duration,
-    /// Factor by which delay is multiplied after each retry
-    pub backoff_factor: f64,
-}
-
-impl Default for RetryConfig {
-    fn default() -> Self {
-        Self {
-            max_attempts: 3,
-            base_delay: Duration::from_millis(100),
-            max_delay: Duration::from_secs(30),
-            backoff_factor: 2.0,
-        }
-    }
-}
-
-/// Rate limiting state tracker
-#[derive(Debug)]
-struct RateLimitState {
-    /// Remaining requests in current window
-    remaining: Option<u32>,
-    /// Time when rate limit window resets
-    reset_time: Option<Instant>,
-    /// Whether we're currently rate limited
-    is_limited: bool,
-    /// Time when secondary rate limit expires (if any)
-    secondary_reset_time: Option<Instant>,
-}
-
-impl Default for RateLimitState {
-    fn default() -> Self {
-        Self {
-            remaining: None,
-            reset_time: None,
-            is_limited: false,
-            secondary_reset_time: None,
-        }
-    }
-}
-
-/// A client for interacting with the GitHub API, authenticated as a GitHub App.
-///
-/// This struct provides a high-level interface for GitHub API operations using
-/// GitHub App authentication. It wraps an Octocrab client and provides methods
-/// for repository management, installation token retrieval, and organization queries.
-///
-/// # Examples
-///
-/// ```rust,no_run
-/// use release_regent_github_client::{GitHubClient, create_app_client};
-///
-/// #[tokio::main]
-/// async fn main() -> Result<(), Box<dyn std::error::Error>> {
-///     let app_id = 123456;
-///     let private_key = "-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----";
-///
-///     let octocrab_client = create_app_client(app_id, private_key).await?;
-///     let github_client = GitHubClient::new(octocrab_client);
-///
-///     let installations = github_client.list_installations().await?;
-///     println!("Found {} installations", installations.len());
-///
-///     Ok(())
-/// }
-/// ```
-#[derive(Debug)]
+/// GitHub client that implements Release Regent's trait interfaces using github-bot-sdk
+#[derive(Clone)]
 pub struct GitHubClient {
-    /// The underlying Octocrab client used for API requests
-    client: Octocrab,
-    /// Optional authentication manager for advanced token management
-    auth_manager: Option<GitHubAuthManager>,
-    /// Retry configuration for handling transient failures
-    retry_config: RetryConfig,
-    /// Rate limiting state to track API limits
-    rate_limit_state: Arc<Mutex<RateLimitState>>,
-    /// Correlation ID for request tracking
-    correlation_id: String,
+    sdk_client: SdkClient,
+    installation_id: InstallationId,
 }
 
 impl GitHubClient {
-    /// Creates an installation client for the specified installation ID.
-    ///
-    /// This method creates a new GitHubClient instance that is authenticated with
-    /// an installation token for the specified installation ID. If an authentication
-    /// manager is available, it will use token caching for better performance.
-    ///
-    /// # Arguments
-    ///
-    /// * `installation_id` - The GitHub App installation ID
-    ///
-    /// # Returns
-    ///
-    /// Returns a new `GitHubClient` instance authenticated for the installation.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if no authentication manager is available or if the
-    /// installation token cannot be acquired.
-    ///
-    /// # Examples
-    ///
-    /// ```rust,no_run
-    /// use release_regent_github_client::{GitHubClient, AuthConfig, GitHubAuthManager};
-    ///
-    /// #[tokio::main]
-    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    ///     let config = AuthConfig::new(123456, "private_key", None)?;
-    ///     let auth_manager = GitHubAuthManager::new(config)?;
-    ///     let github_client = GitHubClient::with_auth_manager(auth_manager).await?;
-    ///     let installation_client = github_client.create_installation_client(987654).await?;
-    ///
-    ///     Ok(())
-    /// }
-    /// ```
-    pub async fn create_installation_client(&self, installation_id: u64) -> GitHubResult<Self> {
-        let auth_manager = self.auth_manager.as_ref().ok_or_else(|| {
-            Error::configuration("auth_manager", "Authentication manager not available")
-        })?;
+    /// Create a new GitHub client with authentication provider
+    pub fn new(
+        auth_provider: impl AuthenticationProvider + 'static,
+        installation_id: u64,
+    ) -> CoreResult<Self> {
+        let config = ClientConfig::default()
+            .with_user_agent("release-regent/0.1.0")
+            .with_timeout(StdDuration::from_secs(30))
+            .with_max_retries(3);
 
-        let client = auth_manager
-            .create_installation_client(installation_id)
-            .await?;
-        Ok(Self {
-            client,
-            auth_manager: Some(auth_manager.clone()),
-            retry_config: RetryConfig::default(),
-            rate_limit_state: Arc::new(Mutex::new(RateLimitState::default())),
-            correlation_id: uuid::Uuid::new_v4().to_string(),
-        })
-    }
-
-    /// Fetches details for a specific repository.
-    ///
-    /// # Arguments
-    ///
-    /// * `owner` - The owner of the repository (user or organization name).
-    /// * `repo` - The name of the repository.
-    ///
-    /// # Errors
-    /// Returns an `Error::Octocrab` if the API call fails.
-    #[instrument(skip(self), fields(owner = %owner, repo = %repo))]
-    pub async fn get_repository(
-        &self,
-        owner: &str,
-        repo: &str,
-    ) -> Result<models::Repository, Error> {
-        let result = self.client.repos(owner, repo).get().await;
-        match result {
-            Ok(r) => Ok(models::Repository::from(r)),
-            Err(e) => {
-                log_octocrab_error("Failed to get repository", e);
-                return Err(Error::InvalidResponse);
-            }
-        }
-    }
-
-    /// Lists all installations for the authenticated GitHub App.
-    ///
-    /// This method retrieves all installations where the GitHub App is installed,
-    /// which can be used to find the installation ID for a specific organization.
-    ///
-    /// # Returns
-    ///
-    /// A `Result` containing a vector of installation objects, or an error if the
-    /// operation fails.
-    ///
-    /// # Errors
-    ///
-    /// Returns an `Error::InvalidResponse` if the API call fails or the response
-    /// cannot be parsed.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// # use release_regent_github_client::{GitHubClient, create_app_client};
-    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// #     let app_id = 123456;
-    /// #     let private_key = "-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----";
-    /// #     let client_octocrab = create_app_client(app_id, private_key).await?;
-    /// #     let client = GitHubClient::new(client_octocrab);
-    ///
-    ///     let installations = client.list_installations().await?;
-    ///     for installation in installations {
-    ///         println!("Installation ID: {}, Account: {}", installation.id, installation.account.login);
-    ///     }
-    ///
-    /// #     Ok(())
-    /// # }
-    /// ```
-    #[instrument(skip(self))]
-    pub async fn list_installations(&self) -> Result<Vec<models::Installation>, Error> {
-        info!("Listing installations for GitHub App using JWT authentication");
-
-        // Use direct REST API call instead of octocrab's high-level method
-        let result: OctocrabResult<Vec<octocrab::models::Installation>> =
-            self.client.get("/app/installations", None::<&()>).await;
-
-        match result {
-            Ok(installations) => {
-                let converted_installations: Vec<models::Installation> = installations
-                    .into_iter()
-                    .map(models::Installation::from)
-                    .collect();
-
-                info!(
-                    count = converted_installations.len(),
-                    "Successfully retrieved installations for GitHub App"
-                );
-
-                Ok(converted_installations)
-            }
-            Err(e) => {
-                error!(
-                    "Failed to list installations - this likely means JWT authentication failed"
-                );
-                log_octocrab_error("Failed to list installations", e);
-                Err(Error::InvalidResponse)
-            }
-        }
-    }
-
-    /// Creates a new `GitHubClient` instance with the provided Octocrab client.
-    ///
-    /// This constructor wraps an existing Octocrab client that should already be
-    /// configured with appropriate authentication (typically GitHub App JWT).
-    ///
-    /// # Arguments
-    ///
-    /// * `client` - An authenticated Octocrab client instance
-    ///
-    /// # Returns
-    ///
-    /// Returns a new `GitHubClient` instance ready for API operations.
-    ///
-    /// # Examples
-    ///
-    /// ```rust,no_run
-    /// use release_regent_github_client::{GitHubClient, create_app_client};
-    ///
-    /// #[tokio::main]
-    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    ///     let app_id = 123456;
-    ///     let private_key = "-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----";
-    ///
-    ///     let octocrab_client = create_app_client(app_id, private_key).await?;
-    ///     let github_client = GitHubClient::new(octocrab_client);
-    ///
-    ///     Ok(())
-    /// }
-    /// ```
-    pub fn new(client: Octocrab) -> Self {
-        Self {
-            client,
-            auth_manager: None,
-            retry_config: RetryConfig::default(),
-            rate_limit_state: Arc::new(Mutex::new(RateLimitState::default())),
-            correlation_id: uuid::Uuid::new_v4().to_string(),
-        }
-    }
-
-    /// Creates a new `GitHubClient` instance with the provided authentication manager.
-    ///
-    /// This constructor creates a GitHubClient with an integrated authentication manager
-    /// that provides advanced token management features including caching, rate limiting,
-    /// and automatic token refresh.
-    ///
-    /// # Arguments
-    ///
-    /// * `auth_manager` - A GitHubAuthManager instance configured with GitHub App credentials
-    ///
-    /// # Returns
-    ///
-    /// Returns a new `GitHubClient` instance with integrated authentication management.
-    ///
-    /// # Examples
-    ///
-    /// ```rust,no_run
-    /// use release_regent_github_client::{GitHubClient, AuthConfig, GitHubAuthManager};
-    ///
-    /// #[tokio::main]
-    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    ///     let config = AuthConfig::new(123456, "private_key", None)?;
-    ///     let auth_manager = GitHubAuthManager::new(config)?;
-    ///     let github_client = GitHubClient::with_auth_manager(auth_manager).await?;
-    ///
-    ///     Ok(())
-    /// }
-    /// ```
-    pub async fn with_auth_manager(auth_manager: GitHubAuthManager) -> GitHubResult<Self> {
-        let client = auth_manager.create_app_client().await?;
-        Ok(Self {
-            client,
-            auth_manager: Some(auth_manager),
-            retry_config: RetryConfig::default(),
-            rate_limit_state: Arc::new(Mutex::new(RateLimitState::default())),
-            correlation_id: uuid::Uuid::new_v4().to_string(),
-        })
-    }
-
-    /// Configure retry behavior for API requests
-    ///
-    /// # Arguments
-    /// * `retry_config` - Configuration for retry logic including max attempts and backoff settings
-    ///
-    /// # Examples
-    /// ```rust,no_run
-    /// use release_regent_github_client::{GitHubClient, RetryConfig};
-    /// use std::time::Duration;
-    /// use octocrab::Octocrab;
-    ///
-    /// let octocrab_client = Octocrab::builder().build().unwrap();
-    /// let mut client = GitHubClient::new(octocrab_client);
-    /// let retry_config = RetryConfig {
-    ///     max_attempts: 5,
-    ///     base_delay: Duration::from_millis(200),
-    ///     max_delay: Duration::from_secs(60),
-    ///     backoff_factor: 2.5,
-    /// };
-    /// client.with_retry_config(retry_config);
-    /// ```
-    pub fn with_retry_config(mut self, retry_config: RetryConfig) -> Self {
-        self.retry_config = retry_config;
-        self
-    }
-
-    // === FACTORY METHODS FOR ENHANCED DEVELOPER EXPERIENCE ===
-
-    /// Creates a new GitHubClient from GitHub App credentials with enhanced configuration.
-    ///
-    /// This is a high-level factory method that creates a fully configured GitHub client
-    /// using GitHub App authentication. It automatically sets up authentication management,
-    /// retry logic, and rate limiting for production use.
-    ///
-    /// # Arguments
-    ///
-    /// * `app_id` - The GitHub App ID
-    /// * `private_key` - The private key for JWT signing
-    /// * `github_base_url` - Optional GitHub Enterprise Server base URL
-    ///
-    /// # Returns
-    ///
-    /// Returns a fully configured `GitHubClient` instance ready for GitHub App operations.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the configuration is invalid, the private key cannot be parsed,
-    /// or the client cannot be created.
-    ///
-    /// # Examples
-    ///
-    /// ```rust,no_run
-    /// use release_regent_github_client::GitHubClient;
-    ///
-    /// #[tokio::main]
-    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    ///     let client = GitHubClient::from_github_app(
-    ///         123456,
-    ///         "-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----",
-    ///         None, // Use GitHub.com
-    ///     ).await?;
-    ///
-    ///     let installations = client.list_installations().await?;
-    ///     println!("Found {} installations", installations.len());
-    ///     Ok(())
-    /// }
-    /// ```
-    pub async fn from_github_app(
-        app_id: u64,
-        private_key: impl Into<String>,
-        github_base_url: Option<String>,
-    ) -> GitHubResult<Self> {
-        let config = AuthConfig::new(app_id, private_key, github_base_url)?;
-        let auth_manager = GitHubAuthManager::new(config)?;
-        Self::with_auth_manager(auth_manager).await
-    }
-
-    /// Creates a new GitHubClient from environment variables.
-    ///
-    /// This factory method reads GitHub App credentials from environment variables
-    /// and creates a fully configured client. This is ideal for containerized environments
-    /// and CI/CD pipelines where secrets are managed through environment variables.
-    ///
-    /// Expected environment variables:
-    /// - `GITHUB_APP_ID`: GitHub App ID
-    /// - `GITHUB_PRIVATE_KEY`: Private key content
-    /// - `GITHUB_BASE_URL`: Optional GitHub Enterprise Server URL
-    ///
-    /// # Returns
-    ///
-    /// Returns a fully configured `GitHubClient` instance.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if required environment variables are missing or invalid.
-    ///
-    /// # Examples
-    ///
-    /// ```rust,no_run
-    /// use release_regent_github_client::GitHubClient;
-    ///
-    /// #[tokio::main]
-    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    ///     // Assumes GITHUB_APP_ID and GITHUB_PRIVATE_KEY are set
-    ///     let client = GitHubClient::from_env().await?;
-    ///
-    ///     let installations = client.list_installations().await?;
-    ///     println!("Found {} installations", installations.len());
-    ///     Ok(())
-    /// }
-    /// ```
-    pub async fn from_env() -> GitHubResult<Self> {
-        let config = AuthConfig::from_env()?;
-        let auth_manager = GitHubAuthManager::new(config)?;
-        Self::with_auth_manager(auth_manager).await
-    }
-
-    /// Creates a new GitHubClient using a personal access token.
-    ///
-    /// This factory method creates a client authenticated with a personal access token
-    /// rather than GitHub App authentication. This is useful for user-specific operations
-    /// or when GitHub App setup is not available.
-    ///
-    /// # Arguments
-    ///
-    /// * `token` - The personal access token
-    /// * `github_base_url` - Optional GitHub Enterprise Server base URL
-    ///
-    /// # Returns
-    ///
-    /// Returns a fully configured `GitHubClient` instance authenticated with the token.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the token is invalid or the client cannot be created.
-    ///
-    /// # Examples
-    ///
-    /// ```rust,no_run
-    /// use release_regent_github_client::GitHubClient;
-    ///
-    /// #[tokio::main]
-    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    ///     let client = GitHubClient::from_token(
-    ///         "ghp_your_personal_access_token",
-    ///         None, // Use GitHub.com
-    ///     ).await?;
-    ///
-    ///     let repo = client.get_repository("owner", "repo").await?;
-    ///     println!("Repository: {}", repo.name());
-    ///     Ok(())
-    /// }
-    /// ```
-    pub async fn from_token(
-        token: impl Into<String>,
-        github_base_url: Option<String>,
-    ) -> GitHubResult<Self> {
-        let token = token.into();
-        if token.is_empty() {
-            return Err(Error::invalid_input("token", "Token cannot be empty"));
-        }
-
-        let base_url = github_base_url
-            .map(|url| format!("{}/api/v3", url))
-            .unwrap_or_else(|| "https://api.github.com".to_string());
-
-        let client = octocrab::Octocrab::builder()
-            .base_uri(&base_url)
-            .map_err(|e| {
-                Error::configuration(
-                    "base_uri",
-                    &format!("Failed to configure GitHub client: {}", e),
-                )
-            })?
-            .personal_token(token)
+        let sdk_client = SdkClient::builder(auth_provider)
+            .config(config)
             .build()
-            .map_err(|e| {
-                Error::configuration(
-                    "client_build",
-                    &format!("Failed to build GitHub client: {}", e),
-                )
+            .map_err(|e| CoreError::GitHub {
+                source: Box::new(e),
+                context: None,
             })?;
 
-        Ok(Self::new(client))
-    }
-
-    /// Creates a GitHub client for a specific installation with enhanced configuration.
-    ///
-    /// This factory method creates a client authenticated for a specific GitHub App installation.
-    /// The client is automatically configured with installation tokens, retry logic, and
-    /// rate limiting for production use.
-    ///
-    /// # Arguments
-    ///
-    /// * `app_id` - The GitHub App ID
-    /// * `private_key` - The private key for JWT signing
-    /// * `installation_id` - The specific installation ID to authenticate for
-    /// * `github_base_url` - Optional GitHub Enterprise Server base URL
-    ///
-    /// # Returns
-    ///
-    /// Returns a `GitHubClient` instance authenticated for the specified installation.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the configuration is invalid, the installation token cannot
-    /// be acquired, or the client cannot be created.
-    ///
-    /// # Examples
-    ///
-    /// ```rust,no_run
-    /// use release_regent_github_client::GitHubClient;
-    ///
-    /// #[tokio::main]
-    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    ///     let client = GitHubClient::for_installation(
-    ///         123456,
-    ///         "-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----",
-    ///         987654, // Installation ID
-    ///         None,   // Use GitHub.com
-    ///     ).await?;
-    ///
-    ///     let repo = client.get_repository("owner", "repo").await?;
-    ///     println!("Repository: {}", repo.name());
-    ///     Ok(())
-    /// }
-    /// ```
-    pub async fn for_installation(
-        app_id: u64,
-        private_key: impl Into<String>,
-        installation_id: u64,
-        github_base_url: Option<String>,
-    ) -> GitHubResult<Self> {
-        let config = AuthConfig::new(app_id, private_key, github_base_url)?;
-        let auth_manager = GitHubAuthManager::new(config)?;
-        let client = auth_manager
-            .create_installation_client(installation_id)
-            .await?;
-
         Ok(Self {
-            client,
-            auth_manager: Some(auth_manager),
-            retry_config: RetryConfig::default(),
-            rate_limit_state: Arc::new(Mutex::new(RateLimitState::default())),
-            correlation_id: uuid::Uuid::new_v4().to_string(),
+            sdk_client,
+            installation_id: InstallationId::new(installation_id),
         })
     }
 
-    /// Get the current correlation ID for request tracking
-    pub fn correlation_id(&self) -> &str {
-        &self.correlation_id
+    /// Get the SDK client for direct access if needed
+    pub fn sdk_client(&self) -> &SdkClient {
+        &self.sdk_client
     }
 
-    /// Factory method for GitHub App authentication.
-    ///
-    /// Creates a GitHubClient using GitHub App credentials for JWT-based authentication.
-    /// This is suitable for GitHub App installations and accessing app-level operations.
-    ///
-    /// # Arguments
-    /// * `app_id` - The GitHub App ID
-    /// * `private_key` - The GitHub App private key in PEM format
-    ///
-    /// # Returns
-    /// Returns a configured `GitHubClient` instance for GitHub App authentication.
-    ///
-    /// # Examples
-    /// ```rust,no_run
-    /// use release_regent_github_client::GitHubClient;
-    ///
-    /// #[tokio::main]
-    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    ///     let client = GitHubClient::from_app(123456, "-----BEGIN RSA PRIVATE KEY-----...").await?;
-    ///     let installations = client.list_installations().await?;
-    ///     Ok(())
-    /// }
-    /// ```
-    pub async fn from_app(app_id: u64, private_key: impl Into<String>) -> GitHubResult<Self> {
-        let config = AuthConfig::new(app_id, private_key, None)?;
-        let auth_manager = GitHubAuthManager::new(config)?;
-        Self::with_auth_manager(auth_manager).await
-    }
-
-    /// Factory method for installation-specific authentication.
-    ///
-    /// Creates a GitHubClient authenticated for a specific GitHub App installation.
-    /// This is suitable for operations on repositories where the app is installed.
-    ///
-    /// # Arguments
-    /// * `app_id` - The GitHub App ID
-    /// * `private_key` - The GitHub App private key in PEM format
-    /// * `installation_id` - The installation ID for the target organization/user
-    ///
-    /// # Returns
-    /// Returns a configured `GitHubClient` instance for installation authentication.
-    ///
-    /// # Examples
-    /// ```rust,no_run
-    /// use release_regent_github_client::GitHubClient;
-    ///
-    /// #[tokio::main]
-    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    ///     let client = GitHubClient::from_installation(123456, "-----BEGIN RSA PRIVATE KEY-----...", 987654).await?;
-    ///     let repo = client.get_repository("org", "repo").await?;
-    ///     Ok(())
-    /// }
-    /// ```
-    pub async fn from_installation(
-        app_id: u64,
-        private_key: impl Into<String>,
-        installation_id: u64,
-    ) -> GitHubResult<Self> {
-        let config = AuthConfig::new(app_id, private_key, None)?;
-        let auth_manager = GitHubAuthManager::new(config)?;
-        let app_client = Self::with_auth_manager(auth_manager).await?;
-        app_client.create_installation_client(installation_id).await
-    }
-
-    // === CONFIGURATION BUILDER METHODS ===
-
-    /// Creates a builder for configuring GitHub App authentication.
-    ///
-    /// This method returns a `GitHubAppBuilder` that provides a fluent API
-    /// for configuring GitHub App authentication with custom settings.
-    ///
-    /// # Arguments
-    ///
-    /// * `app_id` - The GitHub App ID
-    /// * `private_key` - The private key for JWT signing
-    ///
-    /// # Returns
-    ///
-    /// Returns a `GitHubAppBuilder` for configuring the client.
-    ///
-    /// # Examples
-    ///
-    /// ```rust,no_run
-    /// use release_regent_github_client::GitHubClient;
-    /// use std::time::Duration;
-    ///
-    /// #[tokio::main]
-    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    ///     let client = GitHubClient::app_builder(
-    ///         123456,
-    ///         "-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----"
-    ///     )
-    ///     .github_enterprise("https://github.enterprise.com")
-    ///     .jwt_expiration(Duration::from_secs(300))
-    ///     .retry_config(|config| config.max_attempts(5).base_delay(Duration::from_millis(200)))
-    ///     .build().await?;
-    ///
-    ///     Ok(())
-    /// }
-    /// ```
-    pub fn app_builder(app_id: u64, private_key: impl Into<String>) -> GitHubAppBuilder {
-        GitHubAppBuilder::new(app_id, private_key.into())
-    }
-
-    /// Creates a builder for configuring personal access token authentication.
-    ///
-    /// This method returns a `TokenBuilder` that provides a fluent API
-    /// for configuring token-based authentication with custom settings.
-    ///
-    /// # Arguments
-    ///
-    /// * `token` - The personal access token
-    ///
-    /// # Returns
-    ///
-    /// Returns a `TokenBuilder` for configuring the client.
-    ///
-    /// # Examples
-    ///
-    /// ```rust,no_run
-    /// use release_regent_github_client::GitHubClient;
-    /// use std::time::Duration;
-    ///
-    /// #[tokio::main]
-    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    ///     let client = GitHubClient::token_builder("ghp_your_token")
-    ///         .github_enterprise("https://github.enterprise.com")
-    ///         .retry_config(|config| config.max_attempts(3))
-    ///         .build().await?;
-    ///
-    ///     Ok(())
-    /// }
-    /// ```
-    pub fn token_builder(token: impl Into<String>) -> TokenBuilder {
-        TokenBuilder::new(token.into())
-    }
-
-    /// Creates a builder for configuring installation-specific authentication.
-    ///
-    /// This method returns an `InstallationBuilder` that provides a fluent API
-    /// for configuring installation-specific authentication with custom settings.
-    ///
-    /// # Arguments
-    ///
-    /// * `app_id` - The GitHub App ID
-    /// * `private_key` - The private key for JWT signing
-    /// * `installation_id` - The installation ID to authenticate for
-    ///
-    /// # Returns
-    ///
-    /// Returns an `InstallationBuilder` for configuring the client.
-    ///
-    /// # Examples
-    ///
-    /// ```rust,no_run
-    /// use release_regent_github_client::GitHubClient;
-    /// use std::time::Duration;
-    ///
-    /// #[tokio::main]
-    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    ///     let client = GitHubClient::installation_builder(
-    ///         123456,
-    ///         "-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----",
-    ///         987654
-    ///     )
-    ///     .github_enterprise("https://github.enterprise.com")
-    ///     .retry_config(|config| config.max_attempts(5))
-    ///     .build().await?;
-    ///
-    ///     Ok(())
-    /// }
-    /// ```
-    pub fn installation_builder(
-        app_id: u64,
-        private_key: impl Into<String>,
-        installation_id: u64,
-    ) -> InstallationBuilder {
-        InstallationBuilder::new(app_id, private_key.into(), installation_id)
-    }
-
-    /// Execute a GitHub API operation with retry logic and rate limiting
-    async fn execute_with_retry<F, T, Fut>(
-        &self,
-        operation_name: &str,
-        operation: F,
-    ) -> CoreResult<T>
-    where
-        F: Fn() -> Fut,
-        Fut: std::future::Future<Output = Result<T, octocrab::Error>>,
-    {
-        let mut attempt = 0;
-        let mut delay = self.retry_config.base_delay;
-
-        loop {
-            attempt += 1;
-
-            // Check and wait for rate limits before making the request
-            self.check_rate_limits().await?;
-
-            let start_time = Instant::now();
-
-            info!(
-                operation = operation_name,
-                attempt = attempt,
-                correlation_id = self.correlation_id,
-                "Executing GitHub API operation"
-            );
-
-            match operation().await {
-                Ok(result) => {
-                    let duration = start_time.elapsed();
-                    info!(
-                        operation = operation_name,
-                        attempt = attempt,
-                        duration_ms = duration.as_millis(),
-                        correlation_id = self.correlation_id,
-                        "GitHub API operation completed successfully"
-                    );
-                    return Ok(result);
-                }
-                Err(error) => {
-                    let duration = start_time.elapsed();
-
-                    // Update rate limit state from error headers if available
-                    self.update_rate_limit_from_error(&error).await;
-
-                    // Check if this is a retryable error
-                    if !self.is_retryable_error(&error) || attempt >= self.retry_config.max_attempts
-                    {
-                        error!(
-                            operation = operation_name,
-                            attempt = attempt,
-                            duration_ms = duration.as_millis(),
-                            error = %error,
-                            correlation_id = self.correlation_id,
-                            "GitHub API operation failed permanently"
-                        );
-                        return Err(CoreError::github(crate::Error::from(error)));
-                    }
-
-                    warn!(
-                        operation = operation_name,
-                        attempt = attempt,
-                        duration_ms = duration.as_millis(),
-                        error = %error,
-                        next_delay_ms = delay.as_millis(),
-                        correlation_id = self.correlation_id,
-                        "GitHub API operation failed, retrying"
-                    );
-
-                    // Wait before retrying
-                    tokio::time::sleep(delay).await;
-
-                    // Calculate next delay with exponential backoff
-                    delay = Duration::from_millis(std::cmp::min(
-                        (delay.as_millis() as f64 * self.retry_config.backoff_factor) as u64,
-                        self.retry_config.max_delay.as_millis() as u64,
-                    ));
-                }
-            }
-        }
-    }
-
-    /// Check if we need to wait for rate limits
-    async fn check_rate_limits(&self) -> CoreResult<()> {
-        let mut state = self.rate_limit_state.lock().await;
-        let now = Instant::now();
-
-        // Check secondary rate limit first (abuse detection)
-        if let Some(secondary_reset) = state.secondary_reset_time {
-            if now < secondary_reset {
-                let wait_time = secondary_reset.duration_since(now);
-                warn!(
-                    wait_time_ms = wait_time.as_millis(),
-                    correlation_id = self.correlation_id,
-                    "Waiting for secondary rate limit to reset"
-                );
-                drop(state); // Release lock before sleeping
-                tokio::time::sleep(wait_time).await;
-                return Ok(());
-            } else {
-                // Secondary rate limit has expired
-                let mut state = self.rate_limit_state.lock().await;
-                state.secondary_reset_time = None;
-            }
-        }
-
-        // Check primary rate limit
-        if state.is_limited {
-            if let Some(reset_time) = state.reset_time {
-                if now < reset_time {
-                    let wait_time = reset_time.duration_since(now);
-                    warn!(
-                        wait_time_ms = wait_time.as_millis(),
-                        remaining = state.remaining,
-                        correlation_id = self.correlation_id,
-                        "Waiting for primary rate limit to reset"
-                    );
-                    drop(state); // Release lock before sleeping
-                    tokio::time::sleep(wait_time).await;
-                    return Ok(());
-                } else {
-                    // Rate limit has reset
-                    state.is_limited = false;
-                    state.reset_time = None;
-                    state.remaining = None;
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Update rate limit state from GitHub API error
-    async fn update_rate_limit_from_error(&self, error: &octocrab::Error) {
-        if let octocrab::Error::GitHub { source, .. } = error {
-            let mut state = self.rate_limit_state.lock().await;
-
-            // Check for rate limit exceeded (status 403)
-            if source.status_code == 403 {
-                // Primary rate limit exceeded
-                if source.message.contains("rate limit exceeded") {
-                    state.is_limited = true;
-                    // GitHub typically resets every hour, but we'll be conservative
-                    state.reset_time = Some(Instant::now() + Duration::from_secs(3600));
-                    warn!(
-                        error_message = source.message,
-                        correlation_id = self.correlation_id,
-                        "Primary rate limit exceeded"
-                    );
-                }
-                // Secondary rate limit (abuse detection)
-                else if source.message.contains("abuse") || source.status_code == 403 {
-                    state.secondary_reset_time = Some(Instant::now() + Duration::from_secs(60));
-                    warn!(
-                        error_message = source.message,
-                        correlation_id = self.correlation_id,
-                        "Secondary rate limit (abuse detection) triggered"
-                    );
-                }
-            }
-        }
-    }
-
-    /// Check if an error is retryable
-    fn is_retryable_error(&self, error: &octocrab::Error) -> bool {
-        match error {
-            octocrab::Error::GitHub { source, .. } => {
-                match source.status_code.as_u16() {
-                    // Rate limiting - retryable after waiting
-                    403 if source.message.contains("rate limit") => true,
-                    // Secondary rate limiting - retryable after waiting
-                    403 if source.message.contains("abuse") => true,
-                    // Server errors - retryable
-                    500..=599 => true,
-                    // Request timeout - retryable
-                    408 => true,
-                    // Too many requests - retryable
-                    429 => true,
-                    // Client errors are generally not retryable
-                    400..=499 => false,
-                    // Other status codes - not retryable
-                    _ => false,
-                }
-            }
-            // Network/connection errors - retryable
-            octocrab::Error::InvalidHeaderValue { .. } => false,
-            octocrab::Error::Uri { .. } => false,
-            octocrab::Error::UriParse { .. } => false,
-            octocrab::Error::InvalidUtf8 { .. } => false,
-            // Default to retryable for unknown error types
-            _ => true,
-        }
+    /// Get an installation client for API operations
+    async fn installation(&self) -> CoreResult<InstallationClient> {
+        self.sdk_client
+            .installation_by_id(self.installation_id)
+            .await
+            .map_err(|e| CoreError::GitHub {
+                source: Box::new(e),
+                context: None,
+            })
     }
 }
 
 #[async_trait]
 impl GitOperations for GitHubClient {
-    /// Get commits between two references
+    #[instrument(skip(self))]
     async fn get_commits_between(
         &self,
         owner: &str,
         repo: &str,
         base: &str,
         head: &str,
-        options: GetCommitsOptions,
+        _options: GetCommitsOptions,
     ) -> CoreResult<Vec<GitCommit>> {
-        debug!(
-            operation = "get_commits_between",
-            owner = owner,
-            repo = repo,
-            base = base,
-            head = head,
-            limit = options.limit,
-            correlation_id = self.correlation_id,
-            "Getting commits between base and head"
+        info!(
+            "Getting commits between {} and {} for {}/{}",
+            base, head, owner, repo
         );
 
-        // For now, implement a simple version that gets commits from head
-        // In a full implementation, this would use the GitHub compare API
-        let commits_page = self
-            .execute_with_retry("get_commits_between", || async {
-                let repos = self.client.repos(owner, repo);
-                let commits = repos.list_commits();
-                let mut query = commits.sha(head);
+        let installation = self.installation().await?;
+        let comparison = installation
+            .compare_commits(owner, repo, base, head)
+            .await
+            .map_err(map_sdk_error)?;
 
-                if let Some(limit) = options.limit {
-                    query = query.per_page(limit.min(100) as u8);
-                }
-
-                query.send().await
-            })
-            .await?;
-
-        let commits: Vec<GitCommit> = commits_page
-            .items
+        Ok(comparison
+            .commits
             .into_iter()
-            .take(options.limit.unwrap_or(100).min(100))
-            .map(|commit| {
-                let author = commit
-                    .commit
-                    .author
-                    .as_ref()
-                    .map(|a| GitOpsUser {
-                        name: a.user.name.clone(),
-                        email: a.user.email.clone(),
-                        username: commit.author.as_ref().map(|u| u.login.clone()),
-                    })
-                    .unwrap_or_else(|| GitOpsUser {
-                        name: "Unknown".to_string(),
-                        email: "unknown@example.com".to_string(),
-                        username: None,
-                    });
-
-                let committer = commit
-                    .commit
-                    .committer
-                    .as_ref()
-                    .map(|c| GitOpsUser {
-                        name: c.user.name.clone(),
-                        email: c.user.email.clone(),
-                        username: commit.committer.as_ref().map(|u| u.login.clone()),
-                    })
-                    .unwrap_or_else(|| GitOpsUser {
-                        name: "Unknown".to_string(),
-                        email: "unknown@example.com".to_string(),
-                        username: None,
-                    });
-
-                let parents: Vec<String> =
-                    commit.parents.into_iter().filter_map(|p| p.sha).collect();
-
-                let message = commit.commit.message.clone();
-                let subject = GitCommit::extract_subject(&message);
-                let body = GitCommit::extract_body(&message);
-
-                GitCommit {
-                    sha: commit.sha,
-                    author,
-                    committer,
-                    author_date: commit
-                        .commit
-                        .author
-                        .and_then(|a| a.date)
-                        .unwrap_or_else(chrono::Utc::now),
-                    commit_date: commit
-                        .commit
-                        .committer
-                        .and_then(|c| c.date)
-                        .unwrap_or_else(chrono::Utc::now),
-                    message,
-                    subject,
-                    body,
-                    parents,
-                    files: vec![], // TODO: Fetch file changes if needed
-                }
-            })
-            .collect();
-
-        debug!(
-            operation = "get_commits_between",
-            owner = owner,
-            repo = repo,
-            base = base,
-            head = head,
-            commit_count = commits.len(),
-            correlation_id = self.correlation_id,
-            "Found commits for comparison"
-        );
-        Ok(commits)
+            .map(convert_sdk_commit_to_git_commit)
+            .collect())
     }
 
-    /// Get specific commit information
+    #[instrument(skip(self))]
     async fn get_commit(&self, owner: &str, repo: &str, commit_sha: &str) -> CoreResult<GitCommit> {
-        debug!(
-            operation = "get_commit",
-            owner = owner,
-            repo = repo,
-            commit_sha = commit_sha,
-            correlation_id = self.correlation_id,
-            "Getting specific commit"
-        );
+        info!("Getting commit {} for {}/{}", commit_sha, owner, repo);
 
-        let commit = self
-            .execute_with_retry("get_commit", || async {
-                self.client.commits(owner, repo).get(commit_sha).await
-            })
-            .await?;
+        let installation = self.installation().await?;
+        let sdk_commit = installation
+            .get_commit(owner, repo, commit_sha)
+            .await
+            .map_err(map_sdk_error)?;
 
-        let author = commit
-            .commit
-            .author
-            .as_ref()
-            .map(|a| GitOpsUser {
-                name: a.user.name.clone(),
-                email: a.user.email.clone(),
-                username: commit.author.as_ref().map(|u| u.login.clone()),
-            })
-            .unwrap_or_else(|| GitOpsUser {
-                name: "Unknown".to_string(),
-                email: "unknown@example.com".to_string(),
-                username: None,
-            });
-
-        let committer = commit
-            .commit
-            .committer
-            .as_ref()
-            .map(|c| GitOpsUser {
-                name: c.user.name.clone(),
-                email: c.user.email.clone(),
-                username: commit.committer.as_ref().map(|u| u.login.clone()),
-            })
-            .unwrap_or_else(|| GitOpsUser {
-                name: "Unknown".to_string(),
-                email: "unknown@example.com".to_string(),
-                username: None,
-            });
-
-        let parents: Vec<String> = commit.parents.into_iter().filter_map(|p| p.sha).collect();
-
-        let message = commit.commit.message;
-        let subject = GitCommit::extract_subject(&message);
-        let body = GitCommit::extract_body(&message);
-
-        Ok(GitCommit {
-            sha: commit.sha,
-            author,
-            committer,
-            author_date: commit
-                .commit
-                .author
-                .and_then(|a| a.date)
-                .unwrap_or_else(chrono::Utc::now),
-            commit_date: commit
-                .commit
-                .committer
-                .and_then(|c| c.date)
-                .unwrap_or_else(chrono::Utc::now),
-            message,
-            subject,
-            body,
-            parents,
-            files: vec![], // TODO: Fetch file changes if needed
-        })
+        Ok(convert_sdk_commit_to_git_commit(sdk_commit))
     }
 
-    /// List all tags in the repository
+    #[instrument(skip(self))]
     async fn list_tags(
         &self,
         owner: &str,
         repo: &str,
         options: ListTagsOptions,
     ) -> CoreResult<Vec<GitTag>> {
-        debug!(
-            operation = "list_tags",
-            owner = owner,
-            repo = repo,
-            limit = options.limit,
-            correlation_id = self.correlation_id,
-            "Listing repository tags"
-        );
+        info!("Listing tags for {}/{}", owner, repo);
 
-        let tags_page = self
-            .execute_with_retry("list_tags", || async {
-                let repos = self.client.repos(owner, repo);
-                let mut query = repos.list_tags();
+        let installation = self.installation().await?;
+        let sdk_tags = installation
+            .list_tags(owner, repo)
+            .await
+            .map_err(map_sdk_error)?;
 
-                if let Some(limit) = options.limit {
-                    query = query.per_page(limit.min(100) as u8);
-                }
-
-                query.send().await
-            })
-            .await?;
-
-        let tags: Vec<GitTag> = tags_page
-            .items
+        let mut tags: Vec<GitTag> = sdk_tags
             .into_iter()
-            .map(|tag| GitTag {
-                name: tag.name,
-                target_sha: tag.commit.sha,
-                tag_type: GitTagType::Lightweight, // GitHub API doesn't distinguish easily
-                message: None,
-                tagger: None,
-                created_at: None,
-            })
+            .map(convert_sdk_tag_to_git_tag)
             .collect();
 
-        debug!(
-            operation = "list_tags",
-            owner = owner,
-            repo = repo,
-            tag_count = tags.len(),
-            correlation_id = self.correlation_id,
-            "Listed repository tags"
-        );
+        // Apply sorting if specified
+        apply_tag_sorting(&mut tags, options.sort);
+
+        // Apply pagination
+        if let Some(offset) = options.offset {
+            tags = tags.into_iter().skip(offset).collect();
+        }
+        if let Some(limit) = options.limit {
+            tags.truncate(limit);
+        }
 
         Ok(tags)
     }
 
-    /// Get specific tag information
+    #[instrument(skip(self))]
     async fn get_tag(&self, owner: &str, repo: &str, tag_name: &str) -> CoreResult<GitTag> {
-        debug!(
-            operation = "get_tag",
-            owner = owner,
-            repo = repo,
-            tag_name = tag_name,
-            correlation_id = self.correlation_id,
-            "Getting specific tag"
-        );
+        info!("Getting tag {} for {}/{}", tag_name, owner, repo);
 
-        // First try to get the tag as a Git tag
-        match self
-            .execute_with_retry("get_tag", || async {
-                self.client.repos(owner, repo).get_tag(tag_name).await
-            })
+        // SDK doesn't have get_tag, so we list all tags and find the one we need
+        let installation = self.installation().await?;
+        let sdk_tags = installation
+            .list_tags(owner, repo)
             .await
-        {
-            Ok(tag) => {
-                let tagger = None; // Octocrab GitTag doesn't provide tagger info for lightweight tags
+            .map_err(map_sdk_error)?;
 
-                Ok(GitTag {
-                    name: tag.tag,
-                    target_sha: tag.sha,
-                    tag_type: GitTagType::Annotated,
-                    message: Some(tag.message),
-                    tagger,
-                    created_at: None, // Creation date not available for lightweight tags
-                })
-            }
-            Err(_) => {
-                // Fallback to ref lookup for lightweight tags
-                // TODO: Implement proper tag reference lookup
-                // For now, return basic tag info
-
-                Ok(GitTag {
-                    name: tag_name.to_string(),
-                    target_sha: String::new(), // TODO: Fix reference.object field access
-                    tag_type: GitTagType::Lightweight,
-                    message: None,
-                    tagger: None,
-                    created_at: None,
-                })
-            }
-        }
+        sdk_tags
+            .into_iter()
+            .find(|t| t.name == tag_name)
+            .map(convert_sdk_tag_to_git_tag)
+            .ok_or_else(|| CoreError::GitHub {
+                source: Box::new(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "Tag not found",
+                )),
+                context: None,
+            })
     }
 
-    /// Check if a tag exists
+    #[instrument(skip(self))]
     async fn tag_exists(&self, owner: &str, repo: &str, tag_name: &str) -> CoreResult<bool> {
-        debug!(
-            operation = "tag_exists",
-            owner = owner,
-            repo = repo,
-            tag_name = tag_name,
-            correlation_id = self.correlation_id,
-            "Checking if tag exists"
-        );
+        debug!("Checking if tag {} exists for {}/{}", tag_name, owner, repo);
 
         match self.get_tag(owner, repo, tag_name).await {
             Ok(_) => Ok(true),
-            Err(CoreError::GitHub { .. }) => Ok(false), // Tag not found
-            Err(e) => Err(e),
+            Err(_) => Ok(false), // Assume any error means tag doesn't exist
         }
     }
 
-    /// Get the current HEAD commit
+    #[instrument(skip(self))]
     async fn get_head_commit(
         &self,
         owner: &str,
         repo: &str,
         branch: Option<&str>,
     ) -> CoreResult<GitCommit> {
-        let branch_name = branch.unwrap_or("HEAD");
-
-        debug!(
-            operation = "get_head_commit",
-            owner = owner,
-            repo = repo,
-            branch = branch_name,
-            correlation_id = self.correlation_id,
-            "Getting HEAD commit"
+        info!(
+            "Getting HEAD commit for {}/{} (branch: {:?})",
+            owner, repo, branch
         );
 
-        // TODO: Implement proper head commit lookup
-        // For now, return a placeholder commit
-        let commits = self
-            .get_commits_between(owner, repo, "", branch_name, GetCommitsOptions::default())
-            .await?;
-        if let Some(latest_commit) = commits.into_iter().last() {
-            Ok(latest_commit)
+        let installation = self.installation().await?;
+
+        // Get repository to find default branch if not specified
+        let branch_name = if let Some(b) = branch {
+            b.to_string()
         } else {
-            Err(CoreError::GitHub {
-                source: Box::new(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    "No commits found",
-                )),
-                context: None,
-            })
-        }
+            let repo_info = installation
+                .get_repository(owner, repo)
+                .await
+                .map_err(map_sdk_error)?;
+            repo_info.default_branch
+        };
+
+        // Get the branch to find its commit SHA
+        let branch_info = installation
+            .get_branch(owner, repo, &branch_name)
+            .await
+            .map_err(map_sdk_error)?;
+
+        let sdk_commit = installation
+            .get_commit(owner, repo, &branch_info.commit.sha)
+            .await
+            .map_err(map_sdk_error)?;
+
+        Ok(convert_sdk_commit_to_git_commit(sdk_commit))
     }
 
-    /// Get repository information
+    #[instrument(skip(self))]
     async fn get_repository_info(&self, owner: &str, repo: &str) -> CoreResult<GitRepository> {
-        debug!(
-            operation = "get_repository_info",
-            owner = owner,
-            repo = repo,
-            correlation_id = self.correlation_id,
-            "Getting repository information"
-        );
+        info!("Getting repository info for {}/{}", owner, repo);
 
-        let repo_info = self
-            .execute_with_retry("get_repository_info", || async {
-                self.client.repos(owner, repo).get().await
-            })
-            .await?;
+        let installation = self.installation().await?;
+        let sdk_repo = installation
+            .get_repository(owner, repo)
+            .await
+            .map_err(map_sdk_error)?;
 
         Ok(GitRepository {
-            name: repo_info.name,
-            owner: repo_info.owner.unwrap().login,
-            full_name: repo_info
-                .full_name
-                .unwrap_or_else(|| format!("{}/{}", owner, repo)),
-            default_branch: repo_info
-                .default_branch
-                .unwrap_or_else(|| "main".to_string()),
-            clone_url: repo_info
-                .clone_url
-                .map(|u| u.to_string())
-                .unwrap_or_default(),
-            ssh_url: repo_info.ssh_url.unwrap_or_default(),
-            private: repo_info.private.unwrap_or(false),
-            description: repo_info.description,
+            name: sdk_repo.name.clone(),
+            owner: owner.to_string(),
+            full_name: sdk_repo.full_name.clone(),
+            default_branch: sdk_repo.default_branch.clone(),
+            clone_url: sdk_repo.clone_url.clone(),
+            ssh_url: sdk_repo.ssh_url.clone(),
+            private: sdk_repo.private,
+            description: sdk_repo.description.clone(),
         })
     }
 }
 
 #[async_trait]
 impl GitHubOperations for GitHubClient {
-    /// Create a new pull request
-    ///
-    /// # Parameters
-    /// - `owner`: Repository owner name
-    /// - `repo`: Repository name
-    /// - `params`: Pull request creation parameters
-    ///
-    /// # Returns
-    /// Created pull request information
-    ///
-    /// # Errors
-    /// - `CoreError::GitHub` - API communication failed
-    /// - `CoreError::InvalidInput` - Invalid branch names or parameters
-    /// - `CoreError::NotSupported` - Insufficient permissions
+    #[instrument(skip(self, params))]
     async fn create_pull_request(
         &self,
         owner: &str,
         repo: &str,
         params: CreatePullRequestParams,
     ) -> CoreResult<PullRequest> {
-        debug!(
-            operation = "create_pull_request",
-            owner = owner,
-            repo = repo,
-            head = params.head,
-            base = params.base,
-            title = params.title,
-            correlation_id = self.correlation_id,
-            "Creating pull request (not yet implemented)"
+        info!(
+            "Creating pull request in {}/{}: {}",
+            owner, repo, params.title
         );
 
-        // TODO: Implement using octocrab pulls API - requires careful field access pattern handling
-        Err(CoreError::not_supported(
-            "create_pull_request",
-            "Complex octocrab field access patterns - will be implemented in Phase 3",
-        ))
+        let installation = self.installation().await?;
+
+        use github_bot_sdk::client::CreatePullRequestRequest;
+        let request = CreatePullRequestRequest {
+            title: params.title,
+            head: params.head,
+            base: params.base,
+            body: params.body,
+            draft: Some(params.draft),
+            maintainer_can_modify: Some(params.maintainer_can_modify),
+            milestone: None,
+        };
+
+        let sdk_pr = installation
+            .create_pull_request(owner, repo, request)
+            .await
+            .map_err(map_sdk_error)?;
+
+        convert_sdk_pr_to_release_regent_pr(sdk_pr)
     }
 
-    /// Create a new release
-    ///
-    /// # Parameters
-    /// - `owner`: Repository owner name
-    /// - `repo`: Repository name
-    /// - `params`: Release creation parameters
-    ///
-    /// # Returns
-    /// Created release information
-    ///
-    /// # Errors
-    /// - `CoreError::GitHub` - API communication failed
-    /// - `CoreError::InvalidInput` - Invalid tag name or parameters
-    /// - `CoreError::NotSupported` - Tag already exists or insufficient permissions
+    #[instrument(skip(self, params))]
     async fn create_release(
         &self,
         owner: &str,
         repo: &str,
         params: CreateReleaseParams,
     ) -> CoreResult<Release> {
-        debug!(
-            operation = "create_release",
-            owner = owner,
-            repo = repo,
-            tag_name = params.tag_name,
-            name = params.name.as_ref().unwrap_or(&params.tag_name),
-            draft = params.draft,
-            prerelease = params.prerelease,
-            correlation_id = self.correlation_id,
-            "Creating new release"
+        info!(
+            "Creating release in {}/{}: {}",
+            owner, repo, params.tag_name
         );
 
-        let release_create_params = serde_json::json!({
-            "tag_name": params.tag_name,
-            "target_commitish": params.target_commitish,
-            "name": params.name,
-            "body": params.body,
-            "draft": params.draft,
-            "prerelease": params.prerelease,
-            "generate_release_notes": params.generate_release_notes
-        });
+        let installation = self.installation().await?;
 
-        let release: octocrab::models::repos::Release = self
-            .execute_with_retry("create_release", || async {
-                self.client
-                    .post(
-                        &format!("/repos/{}/{}/releases", owner, repo),
-                        Some(&release_create_params),
-                    )
-                    .await
-            })
-            .await?;
-
-        let result = Release {
-            id: release.id.0,
-            tag_name: release.tag_name,
-            name: release.name,
-            body: release.body,
-            draft: release.draft,
-            prerelease: release.prerelease,
-            created_at: release.created_at.unwrap_or_else(chrono::Utc::now),
-            published_at: release.published_at,
-            target_commitish: release.target_commitish,
-            author: release
-                .author
-                .map(|a| GitHubUser {
-                    name: a.login.clone(),
-                    email: a.email.unwrap_or_default(),
-                    login: Some(a.login),
-                })
-                .unwrap_or_else(|| GitHubUser {
-                    name: "Unknown".to_string(),
-                    email: "unknown@example.com".to_string(),
-                    login: None,
-                }),
+        use github_bot_sdk::client::CreateReleaseRequest;
+        let request = CreateReleaseRequest {
+            tag_name: params.tag_name,
+            target_commitish: params.target_commitish,
+            name: params.name,
+            body: params.body,
+            draft: Some(params.draft),
+            prerelease: Some(params.prerelease),
+            generate_release_notes: Some(params.generate_release_notes),
         };
 
-        debug!(
-            release_id = result.id,
-            correlation_id = self.correlation_id,
-            "Successfully created release"
-        );
-        Ok(result)
+        let sdk_release = installation
+            .create_release(owner, repo, request)
+            .await
+            .map_err(map_sdk_error)?;
+
+        Ok(convert_sdk_release_to_release_regent_release(sdk_release))
     }
 
-    /// Create a new tag
-    ///
-    /// # Parameters
-    /// - `owner`: Repository owner name
-    /// - `repo`: Repository name
-    /// - `tag_name`: Name of the tag to create
-    /// - `commit_sha`: Commit SHA to tag
-    /// - `message`: Tag message for annotated tags (optional)
-    /// - `tagger`: Tagger information (optional, defaults to authenticated user)
-    ///
-    /// # Returns
-    /// Created tag information
-    ///
-    /// # Errors
-    /// - `CoreError::GitHub` - API communication failed
-    /// - `CoreError::InvalidInput` - Invalid tag name or commit SHA
-    /// - `CoreError::NotSupported` - Tag already exists or insufficient permissions
+    #[instrument(skip(self))]
     async fn create_tag(
         &self,
         owner: &str,
@@ -1508,350 +332,97 @@ impl GitHubOperations for GitHubClient {
         message: Option<String>,
         tagger: Option<GitHubUser>,
     ) -> CoreResult<Tag> {
-        debug!(
-            operation = "create_tag",
-            owner = owner,
-            repo = repo,
-            tag_name = tag_name,
-            commit_sha = commit_sha,
-            correlation_id = self.correlation_id,
-            "Creating tag for commit"
+        info!(
+            "Creating tag {} at {} for {}/{}",
+            tag_name, commit_sha, owner, repo
         );
 
-        // For lightweight tags, we create a reference directly
-        let tag_ref = format!("refs/tags/{}", tag_name);
+        let installation = self.installation().await?;
 
-        let tag_create_params = serde_json::json!({
-            "ref": tag_ref,
-            "sha": commit_sha
-        });
+        // Use the SDK's create_tag method
+        let _sdk_tag = installation
+            .create_tag(owner, repo, tag_name, commit_sha)
+            .await
+            .map_err(map_sdk_error)?;
 
-        let _result: serde_json::Value = self
-            .execute_with_retry("create_tag", || async {
-                self.client
-                    .post(
-                        &format!("/repos/{}/{}/git/refs", owner, repo),
-                        Some(&tag_create_params),
-                    )
-                    .await
-            })
-            .await?;
-
-        let tag = Tag {
+        Ok(Tag {
             name: tag_name.to_string(),
             commit_sha: commit_sha.to_string(),
-            created_at: Some(chrono::Utc::now()),
             message,
             tagger,
-        };
-
-        debug!(
-            operation = "create_tag",
-            owner = owner,
-            repo = repo,
-            tag_name = tag_name,
-            commit_sha = commit_sha,
-            correlation_id = self.correlation_id,
-            "Successfully created tag"
-        );
-        Ok(tag)
+            created_at: None,
+        })
     }
 
-    /// Get the latest release (non-draft, non-prerelease)
-    ///
-    /// # Parameters
-    /// - `owner`: Repository owner name
-    /// - `repo`: Repository name
-    ///
-    /// # Returns
-    /// Latest stable release information, or None if no releases exist
-    ///
-    /// # Errors
-    /// - `CoreError::GitHub` - API communication failed
-    /// - `CoreError::InvalidInput` - Invalid repository parameters
+    #[instrument(skip(self))]
     async fn get_latest_release(&self, owner: &str, repo: &str) -> CoreResult<Option<Release>> {
-        debug!(
-            operation = "get_latest_release",
-            owner = owner,
-            repo = repo,
-            correlation_id = self.correlation_id,
-            "Getting latest release"
-        );
+        info!("Getting latest release for {}/{}", owner, repo);
 
-        let release_result = self
-            .execute_with_retry("get_latest_release", || async {
-                self.client.repos(owner, repo).releases().get_latest().await
-            })
-            .await;
+        let installation = self.installation().await?;
 
-        let release = match release_result {
-            Ok(release) => release,
-            Err(CoreError::GitHub { source, .. }) => {
-                // Check if this is a 404 (no releases found)
-                if source.to_string().contains("404") {
-                    debug!(
-                        operation = "get_latest_release",
-                        owner = owner,
-                        repo = repo,
-                        correlation_id = self.correlation_id,
-                        "No releases found"
-                    );
-                    return Ok(None);
-                }
-                return Err(CoreError::GitHub {
-                    source,
-                    context: None,
-                });
-            }
-            Err(e) => return Err(e),
-        };
-
-        let release = Release {
-            id: release.id.0,
-            tag_name: release.tag_name,
-            name: release.name,
-            body: release.body,
-            draft: release.draft,
-            prerelease: release.prerelease,
-            created_at: release.created_at.unwrap_or_else(chrono::Utc::now),
-            published_at: release.published_at,
-            target_commitish: release.target_commitish,
-            author: release
-                .author
-                .map(|a| GitHubUser {
-                    name: a.login.clone(),
-                    email: a.email.unwrap_or_default(),
-                    login: Some(a.login),
-                })
-                .unwrap_or_else(|| GitHubUser {
-                    name: "Unknown".to_string(),
-                    email: "unknown@example.com".to_string(),
-                    login: None,
-                }),
-        };
-
-        debug!(
-            operation = "get_latest_release",
-            owner = owner,
-            repo = repo,
-            tag_name = release.tag_name.as_str(),
-            correlation_id = self.correlation_id,
-            "Found latest release"
-        );
-        Ok(Some(release))
+        match installation.get_latest_release(owner, repo).await {
+            Ok(sdk_release) => Ok(Some(convert_sdk_release_to_release_regent_release(
+                sdk_release,
+            ))),
+            Err(e) if is_not_found_error(&e) => Ok(None),
+            Err(e) => Err(map_sdk_error(e)),
+        }
     }
 
-    /// Get pull request information
-    ///
-    /// # Parameters
-    /// - `owner`: Repository owner name
-    /// - `repo`: Repository name
-    /// - `pr_number`: Pull request number
-    ///
-    /// # Returns
-    /// Pull request information including status and metadata
-    ///
-    /// # Errors
-    /// - `CoreError::GitHub` - API communication failed
-    /// - `CoreError::InvalidInput` - Invalid PR number
-    /// - `CoreError::NotSupported` - PR not found
+    #[instrument(skip(self))]
     async fn get_pull_request(
         &self,
         owner: &str,
         repo: &str,
         pr_number: u64,
     ) -> CoreResult<PullRequest> {
-        debug!(
-            operation = "get_pull_request",
-            owner = owner,
-            repo = repo,
-            pr_number = pr_number,
-            correlation_id = self.correlation_id,
-            "Getting pull request (not yet implemented)"
-        );
+        info!("Getting pull request #{} for {}/{}", pr_number, owner, repo);
 
-        // TODO: Implement using octocrab pulls API - requires careful field access pattern handling
-        Err(CoreError::not_supported(
-            "get_pull_request",
-            "Complex octocrab field access patterns - will be implemented in Phase 3",
-        ))
+        let installation = self.installation().await?;
+        let sdk_pr = installation
+            .get_pull_request(owner, repo, pr_number)
+            .await
+            .map_err(map_sdk_error)?;
+
+        convert_sdk_pr_to_release_regent_pr(sdk_pr)
     }
 
-    /// Get release information by tag name
-    ///
-    /// # Parameters
-    /// - `owner`: Repository owner name
-    /// - `repo`: Repository name
-    /// - `tag`: Tag name to find release for
-    ///
-    /// # Returns
-    /// Release information if found
-    ///
-    /// # Errors
-    /// - `CoreError::GitHub` - API communication failed
-    /// - `CoreError::InvalidInput` - Invalid tag name
-    /// - `CoreError::NotSupported` - Release not found
+    #[instrument(skip(self))]
     async fn get_release_by_tag(&self, owner: &str, repo: &str, tag: &str) -> CoreResult<Release> {
-        debug!(
-            operation = "get_release_by_tag",
-            owner = owner,
-            repo = repo,
-            tag = tag,
-            correlation_id = self.correlation_id,
-            "Getting release by tag"
-        );
+        info!("Getting release by tag {} for {}/{}", tag, owner, repo);
 
-        let release = self
-            .execute_with_retry("get_release_by_tag", || async {
-                self.client
-                    .repos(owner, repo)
-                    .releases()
-                    .get_by_tag(tag)
-                    .await
-            })
-            .await?;
+        let installation = self.installation().await?;
+        let sdk_release = installation
+            .get_release_by_tag(owner, repo, tag)
+            .await
+            .map_err(map_sdk_error)?;
 
-        let result = Release {
-            id: release.id.0,
-            tag_name: release.tag_name,
-            name: release.name,
-            body: release.body,
-            draft: release.draft,
-            prerelease: release.prerelease,
-            created_at: release.created_at.unwrap_or_else(chrono::Utc::now),
-            published_at: release.published_at,
-            target_commitish: release.target_commitish,
-            author: release
-                .author
-                .map(|a| GitHubUser {
-                    name: a.login.clone(),
-                    email: a.email.unwrap_or_default(),
-                    login: Some(a.login),
-                })
-                .unwrap_or_else(|| GitHubUser {
-                    name: "Unknown".to_string(),
-                    email: "unknown@example.com".to_string(),
-                    login: None,
-                }),
-        };
-
-        debug!(
-            operation = "get_release_by_tag",
-            owner = owner,
-            repo = repo,
-            tag = tag,
-            release_name = result.name.as_ref().unwrap_or(&result.tag_name),
-            correlation_id = self.correlation_id,
-            "Successfully retrieved release by tag"
-        );
-        Ok(result)
+        Ok(convert_sdk_release_to_release_regent_release(sdk_release))
     }
 
-    /// List releases in a repository
-    ///
-    /// # Parameters
-    /// - `owner`: Repository owner name
-    /// - `repo`: Repository name
-    /// - `per_page`: Number of releases per page (max 100)
-    /// - `page`: Page number to retrieve (1-based)
-    ///
-    /// # Returns
-    /// List of releases ordered by creation date (newest first)
-    ///
-    /// # Errors
-    /// - `CoreError::GitHub` - API communication failed
-    /// - `CoreError::InvalidInput` - Invalid pagination parameters
+    #[instrument(skip(self))]
     async fn list_releases(
         &self,
         owner: &str,
         repo: &str,
-        per_page: Option<u8>,
-        page: Option<u32>,
+        _per_page: Option<u8>,
+        _page: Option<u32>,
     ) -> CoreResult<Vec<Release>> {
-        debug!(
-            operation = "list_releases",
-            owner = owner,
-            repo = repo,
-            per_page = per_page.unwrap_or(30),
-            page = page.unwrap_or(1),
-            correlation_id = self.correlation_id,
-            "Listing repository releases"
-        );
+        info!("Listing releases for {}/{}", owner, repo);
 
-        let releases_page = self
-            .execute_with_retry("list_releases", || async {
-                let repos = self.client.repos(owner, repo);
-                let releases = repos.releases();
-                let mut releases_handler = releases.list();
+        let installation = self.installation().await?;
+        let sdk_releases = installation
+            .list_releases(owner, repo)
+            .await
+            .map_err(map_sdk_error)?;
 
-                if let Some(per_page) = per_page {
-                    releases_handler = releases_handler.per_page(per_page);
-                }
-
-                if let Some(page) = page {
-                    releases_handler = releases_handler.page(page);
-                }
-
-                releases_handler.send().await
-            })
-            .await?;
-
-        let releases: Vec<Release> = releases_page
-            .items
+        Ok(sdk_releases
             .into_iter()
-            .map(|release| Release {
-                id: release.id.0,
-                tag_name: release.tag_name,
-                name: release.name,
-                body: release.body,
-                draft: release.draft,
-                prerelease: release.prerelease,
-                created_at: release.created_at.unwrap_or_else(chrono::Utc::now),
-                published_at: release.published_at,
-                target_commitish: release.target_commitish,
-                author: release
-                    .author
-                    .map(|a| GitHubUser {
-                        name: a.login.clone(),
-                        email: a.email.unwrap_or_default(),
-                        login: Some(a.login),
-                    })
-                    .unwrap_or_else(|| GitHubUser {
-                        name: "Unknown".to_string(),
-                        email: "unknown@example.com".to_string(),
-                        login: None,
-                    }),
-            })
-            .collect();
-
-        debug!(
-            operation = "list_releases",
-            owner = owner,
-            repo = repo,
-            releases_count = releases.len(),
-            correlation_id = self.correlation_id,
-            "Successfully retrieved releases list"
-        );
-        Ok(releases)
+            .map(convert_sdk_release_to_release_regent_release)
+            .collect())
     }
 
-    /// Update an existing pull request
-    ///
-    /// # Parameters
-    /// - `owner`: Repository owner name
-    /// - `repo`: Repository name
-    /// - `pr_number`: Pull request number
-    /// - `title`: New PR title (optional)
-    /// - `body`: New PR body (optional)
-    /// - `state`: New PR state ("open" or "closed") (optional)
-    ///
-    /// # Returns
-    /// Updated pull request information
-    ///
-    /// # Errors
-    /// - `CoreError::GitHub` - API communication failed
-    /// - `CoreError::InvalidInput` - Invalid parameters
-    /// - `CoreError::NotSupported` - PR not found or insufficient permissions
+    #[instrument(skip(self))]
     async fn update_pull_request(
         &self,
         owner: &str,
@@ -1861,40 +432,31 @@ impl GitHubOperations for GitHubClient {
         body: Option<String>,
         state: Option<String>,
     ) -> CoreResult<PullRequest> {
-        debug!(
-            operation = "update_pull_request",
-            owner = owner,
-            repo = repo,
-            pr_number = pr_number,
-            has_title = title.is_some(),
-            has_body = body.is_some(),
-            state = state.as_deref(),
-            correlation_id = self.correlation_id,
-            "Updating pull request (not yet implemented)"
+        info!(
+            "Updating pull request #{} for {}/{}",
+            pr_number, owner, repo
         );
 
-        // TODO: Implement using octocrab pulls API - requires careful field access pattern handling
-        Err(CoreError::not_supported(
-            "update_pull_request",
-            "Complex octocrab field access patterns - will be implemented in Phase 3",
-        ))
+        let installation = self.installation().await?;
+
+        use github_bot_sdk::client::UpdatePullRequestRequest;
+        let request = UpdatePullRequestRequest {
+            title,
+            body,
+            state,
+            base: None,
+            milestone: None,
+        };
+
+        let sdk_pr = installation
+            .update_pull_request(owner, repo, pr_number, request)
+            .await
+            .map_err(map_sdk_error)?;
+
+        convert_sdk_pr_to_release_regent_pr(sdk_pr)
     }
 
-    /// Update an existing release
-    ///
-    /// # Parameters
-    /// - `owner`: Repository owner name
-    /// - `repo`: Repository name
-    /// - `release_id`: Release ID to update
-    /// - `params`: Release update parameters
-    ///
-    /// # Returns
-    /// Updated release information
-    ///
-    /// # Errors
-    /// - `CoreError::GitHub` - API communication failed
-    /// - `CoreError::InvalidInput` - Invalid release ID or parameters
-    /// - `CoreError::NotSupported` - Release not found or insufficient permissions
+    #[instrument(skip(self, params))]
     async fn update_release(
         &self,
         owner: &str,
@@ -1902,493 +464,214 @@ impl GitHubOperations for GitHubClient {
         release_id: u64,
         params: UpdateReleaseParams,
     ) -> CoreResult<Release> {
-        debug!(
-            operation = "update_release",
-            owner = owner,
-            repo = repo,
-            release_id = release_id,
-            correlation_id = self.correlation_id,
-            "Updating release"
-        );
+        info!("Updating release {} for {}/{}", release_id, owner, repo);
 
-        let mut update_params = serde_json::Map::new();
+        let installation = self.installation().await?;
 
-        if let Some(name) = params.name {
-            update_params.insert("name".to_string(), serde_json::Value::String(name));
-        }
-
-        if let Some(body) = params.body {
-            update_params.insert("body".to_string(), serde_json::Value::String(body));
-        }
-
-        if let Some(draft) = params.draft {
-            update_params.insert("draft".to_string(), serde_json::Value::Bool(draft));
-        }
-
-        if let Some(prerelease) = params.prerelease {
-            update_params.insert(
-                "prerelease".to_string(),
-                serde_json::Value::Bool(prerelease),
-            );
-        }
-
-        let release: octocrab::models::repos::Release = self
-            .execute_with_retry("update_release", || async {
-                self.client
-                    .patch(
-                        &format!("/repos/{}/{}/releases/{}", owner, repo, release_id),
-                        Some(&serde_json::Value::Object(update_params.clone())),
-                    )
-                    .await
-            })
-            .await?;
-
-        let result = Release {
-            id: release.id.0,
-            tag_name: release.tag_name,
-            name: release.name,
-            body: release.body,
-            draft: release.draft,
-            prerelease: release.prerelease,
-            created_at: release.created_at.unwrap_or_else(chrono::Utc::now),
-            published_at: release.published_at,
-            target_commitish: release.target_commitish,
-            author: release
-                .author
-                .map(|a| GitHubUser {
-                    name: a.login.clone(),
-                    email: a.email.unwrap_or_default(),
-                    login: Some(a.login),
-                })
-                .unwrap_or_else(|| GitHubUser {
-                    name: "Unknown".to_string(),
-                    email: "unknown@example.com".to_string(),
-                    login: None,
-                }),
+        use github_bot_sdk::client::UpdateReleaseRequest;
+        let request = UpdateReleaseRequest {
+            tag_name: None,
+            target_commitish: None,
+            name: params.name,
+            body: params.body,
+            draft: params.draft,
+            prerelease: params.prerelease,
         };
 
-        debug!(
-            operation = "update_release",
-            owner = owner,
-            repo = repo,
-            release_id = result.id,
-            release_name = result.name.as_ref().unwrap_or(&result.tag_name),
-            correlation_id = self.correlation_id,
-            "Successfully updated release"
-        );
-        Ok(result)
+        let sdk_release = installation
+            .update_release(owner, repo, release_id, request)
+            .await
+            .map_err(map_sdk_error)?;
+
+        Ok(convert_sdk_release_to_release_regent_release(sdk_release))
     }
 }
 
-// === BUILDER STRUCTS FOR ENHANCED DEVELOPER EXPERIENCE ===
+// ============================================================================
+// Type conversion utilities
+// ============================================================================
 
-/// Builder for configuring GitHub App authentication.
-///
-/// This builder provides a fluent API for configuring GitHub App authentication
-/// with custom settings for retry logic, enterprise support, and JWT configuration.
-pub struct GitHubAppBuilder {
-    app_id: u64,
-    private_key: String,
-    github_base_url: Option<String>,
-    jwt_expiration_seconds: Option<u64>,
-    token_refresh_buffer_seconds: Option<u64>,
-    retry_config: Option<RetryConfig>,
-}
-
-impl GitHubAppBuilder {
-    /// Creates a new GitHub App builder.
-    fn new(app_id: u64, private_key: String) -> Self {
-        Self {
-            app_id,
-            private_key,
-            github_base_url: None,
-            jwt_expiration_seconds: None,
-            token_refresh_buffer_seconds: None,
-            retry_config: None,
+// Note: Placeholder for when SDK has commit support
+// Currently SDK's Tag type only has { sha, url } not full commit details
+#[allow(dead_code)]
+fn convert_sdk_commit_to_git_commit(commit: github_bot_sdk::client::FullCommit) -> GitCommit {
+    let message = commit.commit.message.clone();
+    let subject = message.lines().next().unwrap_or("").to_string();
+    // Body is everything after the subject line and optional blank line
+    let body_start: String = message.lines().skip(1).collect::<Vec<&str>>().join("\n");
+    let body = {
+        let trimmed = body_start.trim_start_matches('\n');
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
         }
-    }
-
-    /// Sets the GitHub Enterprise Server base URL.
-    ///
-    /// # Arguments
-    /// * `base_url` - The base URL for GitHub Enterprise Server
-    pub fn github_enterprise(mut self, base_url: impl Into<String>) -> Self {
-        self.github_base_url = Some(base_url.into());
-        self
-    }
-
-    /// Sets the JWT expiration time.
-    ///
-    /// # Arguments
-    /// * `duration` - The JWT expiration duration (max 10 minutes)
-    pub fn jwt_expiration(mut self, duration: Duration) -> Self {
-        self.jwt_expiration_seconds = Some(duration.as_secs().min(600));
-        self
-    }
-
-    /// Sets the token refresh buffer time.
-    ///
-    /// # Arguments
-    /// * `duration` - The buffer time before token expiration to trigger refresh
-    pub fn token_refresh_buffer(mut self, duration: Duration) -> Self {
-        self.token_refresh_buffer_seconds = Some(duration.as_secs());
-        self
-    }
-
-    /// Configures retry behavior using a configuration function.
-    ///
-    /// # Arguments
-    /// * `config_fn` - Function that takes a RetryConfigBuilder and returns a configured RetryConfig
-    pub fn retry_config<F>(mut self, config_fn: F) -> Self
-    where
-        F: FnOnce(RetryConfigBuilder) -> RetryConfigBuilder,
-    {
-        let builder = RetryConfigBuilder::default();
-        let configured_builder = config_fn(builder);
-        self.retry_config = Some(configured_builder.build());
-        self
-    }
-
-    /// Sets a custom retry configuration directly.
-    ///
-    /// # Arguments
-    /// * `config` - The retry configuration to use
-    pub fn with_retry_config(mut self, config: RetryConfig) -> Self {
-        self.retry_config = Some(config);
-        self
-    }
-
-    /// Builds the configured GitHubClient.
-    ///
-    /// # Returns
-    /// Returns a fully configured `GitHubClient` instance.
-    ///
-    /// # Errors
-    /// Returns an error if the configuration is invalid or the client cannot be created.
-    pub async fn build(self) -> GitHubResult<GitHubClient> {
-        let mut config = AuthConfig::new(self.app_id, self.private_key, self.github_base_url)?;
-
-        if let Some(jwt_expiration) = self.jwt_expiration_seconds {
-            config.jwt_expiration_seconds = jwt_expiration;
-        }
-
-        if let Some(token_refresh_buffer) = self.token_refresh_buffer_seconds {
-            config.token_refresh_buffer_seconds = token_refresh_buffer;
-        }
-
-        let auth_manager = GitHubAuthManager::new(config)?;
-        let mut client = GitHubClient::with_auth_manager(auth_manager).await?;
-
-        if let Some(retry_config) = self.retry_config {
-            client.retry_config = retry_config;
-        }
-
-        Ok(client)
-    }
-}
-
-/// Builder for configuring personal access token authentication.
-///
-/// This builder provides a fluent API for configuring token-based authentication
-/// with custom settings for retry logic and enterprise support.
-pub struct TokenBuilder {
-    token: String,
-    github_base_url: Option<String>,
-    retry_config: Option<RetryConfig>,
-}
-
-impl TokenBuilder {
-    /// Creates a new token builder.
-    fn new(token: String) -> Self {
-        Self {
-            token,
-            github_base_url: None,
-            retry_config: None,
-        }
-    }
-
-    /// Sets the GitHub Enterprise Server base URL.
-    ///
-    /// # Arguments
-    /// * `base_url` - The base URL for GitHub Enterprise Server
-    pub fn github_enterprise(mut self, base_url: impl Into<String>) -> Self {
-        self.github_base_url = Some(base_url.into());
-        self
-    }
-
-    /// Configures retry behavior using a configuration function.
-    ///
-    /// # Arguments
-    /// * `config_fn` - Function that takes a RetryConfigBuilder and returns a configured RetryConfig
-    pub fn retry_config<F>(mut self, config_fn: F) -> Self
-    where
-        F: FnOnce(RetryConfigBuilder) -> RetryConfigBuilder,
-    {
-        let builder = RetryConfigBuilder::default();
-        let configured_builder = config_fn(builder);
-        self.retry_config = Some(configured_builder.build());
-        self
-    }
-
-    /// Sets a custom retry configuration directly.
-    ///
-    /// # Arguments
-    /// * `config` - The retry configuration to use
-    pub fn with_retry_config(mut self, config: RetryConfig) -> Self {
-        self.retry_config = Some(config);
-        self
-    }
-
-    /// Builds the configured GitHubClient.
-    ///
-    /// # Returns
-    /// Returns a fully configured `GitHubClient` instance.
-    ///
-    /// # Errors
-    /// Returns an error if the configuration is invalid or the client cannot be created.
-    pub async fn build(self) -> GitHubResult<GitHubClient> {
-        let mut client = GitHubClient::from_token(self.token, self.github_base_url).await?;
-
-        if let Some(retry_config) = self.retry_config {
-            client.retry_config = retry_config;
-        }
-
-        Ok(client)
-    }
-}
-
-/// Builder for configuring installation-specific authentication.
-///
-/// This builder provides a fluent API for configuring installation-specific authentication
-/// with custom settings for retry logic, enterprise support, and JWT configuration.
-pub struct InstallationBuilder {
-    app_id: u64,
-    private_key: String,
-    installation_id: u64,
-    github_base_url: Option<String>,
-    jwt_expiration_seconds: Option<u64>,
-    token_refresh_buffer_seconds: Option<u64>,
-    retry_config: Option<RetryConfig>,
-}
-
-impl InstallationBuilder {
-    /// Creates a new installation builder.
-    fn new(app_id: u64, private_key: String, installation_id: u64) -> Self {
-        Self {
-            app_id,
-            private_key,
-            installation_id,
-            github_base_url: None,
-            jwt_expiration_seconds: None,
-            token_refresh_buffer_seconds: None,
-            retry_config: None,
-        }
-    }
-
-    /// Sets the GitHub Enterprise Server base URL.
-    ///
-    /// # Arguments
-    /// * `base_url` - The base URL for GitHub Enterprise Server
-    pub fn github_enterprise(mut self, base_url: impl Into<String>) -> Self {
-        self.github_base_url = Some(base_url.into());
-        self
-    }
-
-    /// Sets the JWT expiration time.
-    ///
-    /// # Arguments
-    /// * `duration` - The JWT expiration duration (max 10 minutes)
-    pub fn jwt_expiration(mut self, duration: Duration) -> Self {
-        self.jwt_expiration_seconds = Some(duration.as_secs().min(600));
-        self
-    }
-
-    /// Sets the token refresh buffer time.
-    ///
-    /// # Arguments
-    /// * `duration` - The buffer time before token expiration to trigger refresh
-    pub fn token_refresh_buffer(mut self, duration: Duration) -> Self {
-        self.token_refresh_buffer_seconds = Some(duration.as_secs());
-        self
-    }
-
-    /// Configures retry behavior using a configuration function.
-    ///
-    /// # Arguments
-    /// * `config_fn` - Function that takes a RetryConfigBuilder and returns a configured RetryConfig
-    pub fn retry_config<F>(mut self, config_fn: F) -> Self
-    where
-        F: FnOnce(RetryConfigBuilder) -> RetryConfigBuilder,
-    {
-        let builder = RetryConfigBuilder::default();
-        let configured_builder = config_fn(builder);
-        self.retry_config = Some(configured_builder.build());
-        self
-    }
-
-    /// Sets a custom retry configuration directly.
-    ///
-    /// # Arguments
-    /// * `config` - The retry configuration to use
-    pub fn with_retry_config(mut self, config: RetryConfig) -> Self {
-        self.retry_config = Some(config);
-        self
-    }
-
-    /// Builds the configured GitHubClient.
-    ///
-    /// # Returns
-    /// Returns a fully configured `GitHubClient` instance.
-    ///
-    /// # Errors
-    /// Returns an error if the configuration is invalid or the client cannot be created.
-    pub async fn build(self) -> GitHubResult<GitHubClient> {
-        let mut config = AuthConfig::new(self.app_id, self.private_key, self.github_base_url)?;
-
-        if let Some(jwt_expiration) = self.jwt_expiration_seconds {
-            config.jwt_expiration_seconds = jwt_expiration;
-        }
-
-        if let Some(token_refresh_buffer) = self.token_refresh_buffer_seconds {
-            config.token_refresh_buffer_seconds = token_refresh_buffer;
-        }
-
-        let auth_manager = GitHubAuthManager::new(config)?;
-        let client = auth_manager
-            .create_installation_client(self.installation_id)
-            .await?;
-
-        let github_client = GitHubClient {
-            client,
-            auth_manager: Some(auth_manager),
-            retry_config: self.retry_config.unwrap_or_default(),
-            rate_limit_state: Arc::new(Mutex::new(RateLimitState::default())),
-            correlation_id: uuid::Uuid::new_v4().to_string(),
-        };
-
-        Ok(github_client)
-    }
-}
-
-/// Builder for configuring retry behavior.
-///
-/// This builder provides a fluent API for configuring retry logic with
-/// exponential backoff, maximum delays, and attempt limits.
-pub struct RetryConfigBuilder {
-    max_attempts: u32,
-    base_delay: Duration,
-    max_delay: Duration,
-    backoff_factor: f64,
-}
-
-impl Default for RetryConfigBuilder {
-    fn default() -> Self {
-        Self {
-            max_attempts: 3,
-            base_delay: Duration::from_millis(100),
-            max_delay: Duration::from_secs(30),
-            backoff_factor: 2.0,
-        }
-    }
-}
-
-impl RetryConfigBuilder {
-    /// Sets the maximum number of retry attempts.
-    ///
-    /// # Arguments
-    /// * `attempts` - The maximum number of attempts (including the initial attempt)
-    pub fn max_attempts(mut self, attempts: u32) -> Self {
-        self.max_attempts = attempts;
-        self
-    }
-
-    /// Sets the base delay between retries.
-    ///
-    /// # Arguments
-    /// * `delay` - The initial delay duration
-    pub fn base_delay(mut self, delay: Duration) -> Self {
-        self.base_delay = delay;
-        self
-    }
-
-    /// Sets the maximum delay between retries.
-    ///
-    /// # Arguments
-    /// * `delay` - The maximum delay duration
-    pub fn max_delay(mut self, delay: Duration) -> Self {
-        self.max_delay = delay;
-        self
-    }
-
-    /// Sets the backoff multiplication factor.
-    ///
-    /// # Arguments
-    /// * `factor` - The factor by which delay is multiplied after each retry
-    pub fn backoff_factor(mut self, factor: f64) -> Self {
-        self.backoff_factor = factor;
-        self
-    }
-
-    /// Builds the retry configuration.
-    ///
-    /// # Returns
-    /// Returns a `RetryConfig` with the configured settings.
-    pub fn build(self) -> RetryConfig {
-        RetryConfig {
-            max_attempts: self.max_attempts,
-            base_delay: self.base_delay,
-            max_delay: self.max_delay,
-            backoff_factor: self.backoff_factor,
-        }
-    }
-}
-
-/// Helper function to log Octocrab errors with appropriate detail.
-///
-/// This function examines the type of Octocrab error and logs relevant
-/// information for debugging purposes. It handles different error types
-/// with appropriate context and formatting.
-fn log_octocrab_error(message: &str, e: octocrab::Error) {
-    match e {
-        octocrab::Error::GitHub { source, backtrace } => {
-            let err = source;
-            error!(
-                error_message = err.message,
-                backtrace = backtrace.to_string(),
-                "{}. Received an error from GitHub",
-                message
-            )
-        }
-        octocrab::Error::UriParse { source, backtrace } => error!(
-            error_message = source.to_string(),
-            backtrace = backtrace.to_string(),
-            "{}. Failed to parse URI.",
-            message
-        ),
-
-        octocrab::Error::Uri { source, backtrace } => error!(
-            error_message = source.to_string(),
-            backtrace = backtrace.to_string(),
-            "{}, Failed to parse URI.",
-            message
-        ),
-        octocrab::Error::InvalidHeaderValue { source, backtrace } => error!(
-            error_message = source.to_string(),
-            backtrace = backtrace.to_string(),
-            "{}. One of the header values was invalid.",
-            message
-        ),
-        octocrab::Error::InvalidUtf8 { source, backtrace } => error!(
-            error_message = source.to_string(),
-            backtrace = backtrace.to_string(),
-            "{}. The message wasn't valid UTF-8.",
-            message,
-        ),
-        _ => error!(error_message = e.to_string(), message),
     };
+
+    GitCommit {
+        sha: commit.sha,
+        author: GitOpsUser {
+            name: commit.commit.author.name,
+            email: commit.commit.author.email,
+            username: commit.author.map(|u| u.login),
+        },
+        committer: GitOpsUser {
+            name: commit.commit.committer.name,
+            email: commit.commit.committer.email,
+            username: commit.committer.map(|u| u.login),
+        },
+        author_date: commit.commit.author.date,
+        commit_date: commit.commit.committer.date,
+        message,
+        subject,
+        body,
+        parents: commit.parents.into_iter().map(|p| p.sha).collect(),
+        files: vec![], // FullCommit doesn't include file-level diff; use compare_commits if needed
+    }
 }
 
-// Reference the tests module in the separate file
+fn convert_sdk_tag_to_git_tag(tag: github_bot_sdk::client::Tag) -> GitTag {
+    GitTag {
+        name: tag.name,
+        target_sha: tag.commit.sha,
+        tag_type: GitTagType::Lightweight, // SDK doesn't distinguish
+        message: None,
+        tagger: None,
+        created_at: None,
+    }
+}
+
+fn convert_sdk_release_to_release_regent_release(
+    release: github_bot_sdk::client::Release,
+) -> Release {
+    Release {
+        id: release.id,
+        tag_name: release.tag_name,
+        target_commitish: release.target_commitish,
+        name: release.name,
+        body: release.body,
+        draft: release.draft,
+        prerelease: release.prerelease,
+        created_at: release.created_at,
+        published_at: release.published_at,
+        author: GitHubUser {
+            name: release.author.login.clone(),
+            email: format!("{}@users.noreply.github.com", release.author.login),
+            login: Some(release.author.login.clone()),
+        },
+    }
+}
+
+fn convert_sdk_pr_to_release_regent_pr(
+    pr: github_bot_sdk::client::PullRequest,
+) -> CoreResult<PullRequest> {
+    // Extract owner from full_name since PullRequestRepo doesn't have owner field
+    let head_owner = pr
+        .head
+        .repo
+        .full_name
+        .split('/')
+        .next()
+        .unwrap_or("unknown")
+        .to_string();
+    let base_owner = pr
+        .base
+        .repo
+        .full_name
+        .split('/')
+        .next()
+        .unwrap_or("unknown")
+        .to_string();
+
+    Ok(PullRequest {
+        number: pr.number,
+        title: pr.title,
+        body: pr.body,
+        state: pr.state,
+        draft: pr.draft,
+        created_at: pr.created_at,
+        updated_at: pr.updated_at,
+        merged_at: pr.merged_at,
+        user: GitHubUser {
+            name: pr.user.login.clone(),
+            email: format!("{}@users.noreply.github.com", pr.user.login),
+            login: Some(pr.user.login.clone()),
+        },
+        head: PullRequestBranch {
+            ref_name: pr.head.branch_ref.clone(),
+            sha: pr.head.sha.clone(),
+            repo: Repository {
+                id: pr.head.repo.id,
+                name: pr.head.repo.name.clone(),
+                full_name: pr.head.repo.full_name.clone(),
+                owner: head_owner,
+                description: None,
+                private: false,
+                default_branch: String::new(),
+                clone_url: String::new(),
+                ssh_url: String::new(),
+                homepage: None,
+            },
+        },
+        base: PullRequestBranch {
+            ref_name: pr.base.branch_ref.clone(),
+            sha: pr.base.sha.clone(),
+            repo: Repository {
+                id: pr.base.repo.id,
+                name: pr.base.repo.name.clone(),
+                full_name: pr.base.repo.full_name.clone(),
+                owner: base_owner,
+                description: None,
+                private: false,
+                default_branch: String::new(),
+                clone_url: String::new(),
+                ssh_url: String::new(),
+                homepage: None,
+            },
+        },
+    })
+}
+
+fn apply_tag_sorting(tags: &mut Vec<GitTag>, sort: TagSortOrder) {
+    match sort {
+        TagSortOrder::NameAsc => tags.sort_by(|a, b| a.name.cmp(&b.name)),
+        TagSortOrder::NameDesc => tags.sort_by(|a, b| b.name.cmp(&a.name)),
+        TagSortOrder::CreationDateAsc => tags.sort_by(|a, b| a.created_at.cmp(&b.created_at)),
+        TagSortOrder::CreationDateDesc => tags.sort_by(|a, b| b.created_at.cmp(&a.created_at)),
+        TagSortOrder::SemanticVersionAsc | TagSortOrder::SemanticVersionDesc => {
+            // Semantic version sorting would require parsing
+            // For now, fall back to name sorting
+            tags.sort_by(|a, b| a.name.cmp(&b.name));
+            if matches!(sort, TagSortOrder::SemanticVersionDesc) {
+                tags.reverse();
+            }
+        }
+    }
+}
+
+fn map_sdk_error(error: github_bot_sdk::error::ApiError) -> CoreError {
+    CoreError::GitHub {
+        source: Box::new(error),
+        context: None,
+    }
+}
+
+fn is_not_found_error(error: &github_bot_sdk::error::ApiError) -> bool {
+    matches!(error, github_bot_sdk::error::ApiError::NotFound { .. })
+}
+
 #[cfg(test)]
 #[path = "lib_tests.rs"]
-mod tests;
+mod lib_tests;
+
+#[cfg(test)]
+#[path = "models_tests.rs"]
+mod models_tests;
+
+#[cfg(test)]
+#[path = "release_tests.rs"]
+mod release_tests;
+
+#[cfg(test)]
+#[path = "pr_management_tests.rs"]
+mod pr_management_tests;
