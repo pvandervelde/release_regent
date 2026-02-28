@@ -1,129 +1,137 @@
 use super::*;
 
 #[test]
-fn test_api_request_error_creation() {
-    let error = Error::api_request(404, "Repository not found");
+fn test_error_api_variant() {
+    let error = Error::Api {
+        message: "Repository not found".to_string(),
+        source: None,
+    };
 
-    match error {
-        Error::ApiRequest {
-            status,
-            ref message,
-        } => {
-            assert_eq!(status, 404);
-            assert_eq!(message, "Repository not found");
-        }
-        _ => panic!("Expected ApiRequest error"),
-    }
+    assert_eq!(error.to_string(), "GitHub API error: Repository not found");
+}
+
+#[test]
+fn test_error_auth_variant() {
+    let error = Error::Auth {
+        message: "Invalid credentials".to_string(),
+        source: None,
+    };
 
     assert_eq!(
         error.to_string(),
-        "GitHub API request failed: 404 - Repository not found"
+        "Authentication error: Invalid credentials"
     );
 }
 
 #[test]
-fn test_authentication_error_creation() {
-    let error = Error::authentication("Invalid token");
+fn test_error_network_variant() {
+    let error = Error::Network {
+        message: "Connection timeout".to_string(),
+        source: None,
+    };
 
-    match error {
-        Error::Authentication { ref message } => {
-            assert_eq!(message, "Invalid token");
-        }
-        _ => panic!("Expected Authentication error"),
-    }
+    assert_eq!(error.to_string(), "Network error: Connection timeout");
+}
+
+#[test]
+fn test_error_not_found_variant() {
+    let error = Error::NotFound {
+        resource: "release:v1.0.0".to_string(),
+    };
+
+    assert_eq!(error.to_string(), "Resource not found: release:v1.0.0");
+}
+
+#[test]
+fn test_error_invalid_input_variant() {
+    let error = Error::InvalidInput {
+        message: "Tag name cannot be empty".to_string(),
+    };
+
+    assert_eq!(error.to_string(), "Invalid input: Tag name cannot be empty");
+}
+
+#[test]
+fn test_error_rate_limit_variant() {
+    let error = Error::RateLimit;
+    assert_eq!(error.to_string(), "Rate limit exceeded");
+}
+
+#[test]
+fn test_error_other_variant() {
+    let error = Error::Other {
+        message: "Unknown error occurred".to_string(),
+        source: None,
+    };
 
     assert_eq!(
         error.to_string(),
-        "GitHub authentication failed: Invalid token"
+        "GitHub client error: Unknown error occurred"
     );
 }
 
 #[test]
-fn test_error_from_conversion() {
-    let json_error = serde_json::from_str::<serde_json::Value>("invalid json").unwrap_err();
-    let github_error = Error::from(json_error);
+fn test_error_to_core_error_api() {
+    let error = Error::Api {
+        message: "API error".to_string(),
+        source: None,
+    };
 
-    match github_error {
-        Error::Parsing { .. } => {
-            // Expected
-        }
-        _ => panic!("Expected Parsing error from serde_json::Error"),
+    let core_error: release_regent_core::CoreError = error.into();
+    match core_error {
+        release_regent_core::CoreError::GitHub { .. } => {}
+        _ => panic!("Expected GitHub CoreError variant"),
     }
 }
 
 #[test]
-fn test_invalid_input_error_creation() {
-    let error = Error::invalid_input("version", "Invalid semantic version format");
+fn test_error_to_core_error_auth() {
+    let error = Error::Auth {
+        message: "Auth error".to_string(),
+        source: None,
+    };
 
-    match error {
-        Error::InvalidInput {
-            ref field,
-            ref message,
-        } => {
-            assert_eq!(field, "version");
-            assert_eq!(message, "Invalid semantic version format");
-        }
-        _ => panic!("Expected InvalidInput error"),
+    let core_error: release_regent_core::CoreError = error.into();
+    match core_error {
+        release_regent_core::CoreError::GitHub { .. } => {}
+        _ => panic!("Expected GitHub CoreError variant"),
     }
-
-    assert_eq!(
-        error.to_string(),
-        "Invalid input for GitHub API: version - Invalid semantic version format"
-    );
 }
 
 #[test]
-fn test_not_found_error_creation() {
-    let error = Error::not_found("Pull Request", "123");
+fn test_error_to_core_error_network() {
+    let error = Error::Network {
+        message: "Network error".to_string(),
+        source: None,
+    };
 
-    match error {
-        Error::NotFound {
-            ref resource_type,
-            ref resource_id,
-        } => {
-            assert_eq!(resource_type, "Pull Request");
-            assert_eq!(resource_id, "123");
-        }
-        _ => panic!("Expected NotFound error"),
+    let core_error: release_regent_core::CoreError = error.into();
+    match core_error {
+        release_regent_core::CoreError::Network { .. } => {}
+        _ => panic!("Expected Network CoreError variant"),
     }
-
-    assert_eq!(
-        error.to_string(),
-        "GitHub resource not found: Pull Request '123'"
-    );
 }
 
 #[test]
-fn test_permission_denied_error_creation() {
-    let error = Error::permission_denied("create release");
+fn test_error_to_core_error_not_found() {
+    let error = Error::NotFound {
+        resource: "test".to_string(),
+    };
 
-    match error {
-        Error::PermissionDenied { ref operation } => {
-            assert_eq!(operation, "create release");
-        }
-        _ => panic!("Expected PermissionDenied error"),
+    let core_error: release_regent_core::CoreError = error.into();
+    match core_error {
+        release_regent_core::CoreError::GitHub { .. } => {}
+        _ => panic!("Expected GitHub CoreError variant"),
     }
-
-    assert_eq!(
-        error.to_string(),
-        "Insufficient permissions for GitHub operation: create release"
-    );
 }
 
 #[test]
-fn test_rate_limit_error_creation() {
-    let reset_time = "2025-06-26T12:00:00Z";
-    let error = Error::rate_limit(reset_time);
+fn test_error_to_core_error_rate_limit() {
+    let error = Error::RateLimit;
 
-    match error {
-        Error::RateLimit { reset_time: ref rt } => {
-            assert_eq!(rt, reset_time);
-        }
-        _ => panic!("Expected RateLimit error"),
+    let core_error: release_regent_core::CoreError = error.into();
+    match core_error {
+        release_regent_core::CoreError::RateLimit { .. } => {}
+        _ => panic!("Expected RateLimit CoreError variant"),
     }
-
-    assert_eq!(
-        error.to_string(),
-        "GitHub API rate limit exceeded. Reset at: 2025-06-26T12:00:00Z"
-    );
 }
