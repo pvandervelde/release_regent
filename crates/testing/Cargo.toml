@@ -1,10 +1,13 @@
 [package]
 name = "release_regent_testing"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
 description = "Testing infrastructure and mock implementations for Release Regent"
-license = "MIT"
-repository = "https://github.com/pvandervelde/release_regent"
 readme = "README.md"
 
 [dependencies]
@@ -18,7 +21,7 @@ uuid = { workspace = true }
 
 # Testing framework dependencies
 tokio = { workspace = true }
-tempfile = "3.0"
+tempfile = { workspace = true }
 
 # Mock data generation
 fake = { version = "2.9", features = [
@@ -26,15 +29,15 @@ fake = { version = "2.9", features = [
     "chrono",
     "uuid",
 ], optional = true }
-rand = "0.8"
+rand = { workspace = true }
 
 # HTTP mocking for GitHub API simulation
-wiremock = "0.6"
+wiremock = { workspace = true }
 reqwest = { workspace = true }
 
 # Webhook payload handling
-http = "1.0"
-bytes = "1.0"
+http = { workspace = true }
+bytes = { workspace = true }
 
 # Logging for test debugging
 tracing = { workspace = true }
@@ -42,8 +45,8 @@ tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
 # Additional testing utilities
-pretty_assertions = "=1.4.1"
-serial_test = "=3.2.0"
+pretty_assertions = { workspace = true }
+serial_test = { workspace = true }
 
 [features]
 default = []
