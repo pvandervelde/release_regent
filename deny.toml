@@ -71,13 +71,18 @@ feature-depth = 1
 #db-path = "$CARGO_HOME/advisory-dbs"
 # The url(s) of the advisory databases to use
 #db-urls = ["https://github.com/rustsec/advisory-db"]
+# Only flag unmaintained advisories for crates that are direct workspace dependencies,
+# not transitive dependencies (bincode via git-cliff-core, proc-macro-error via rust-embed,
+# rustls-pemfile via reqwest 0.11).
+unmaintained = "workspace"
 # A list of advisory IDs to ignore. Note that ignored advisories will still
 # output a note when they are encountered.
 ignore = [
-    #"RUSTSEC-0000-0000",
-    #{ id = "RUSTSEC-0000-0000", reason = "you can specify a reason the advisory is ignored" },
-    #"a-crate-that-is-yanked@0.1.1", # you can also ignore yanked crate versions if you wish
-    #{ crate = "a-crate-that-is-yanked@0.1.1", reason = "you can specify why you are ignoring the yanked crate" },
+    # RUSTSEC-2023-0071: rsa 0.9.x Marvin Attack timing side-channel.
+    # This is a transitive dependency through github-bot-sdk (used for GitHub App JWT signing).
+    # No fixed version of rsa is available upstream. Mitigated by the fact that private key
+    # operations happen in a controlled server environment, not exposed to timing oracles.
+    { id = "RUSTSEC-2023-0071", reason = "Transitive via github-bot-sdk; no fixed rsa version exists. Mitigated by server-side-only key usage." },
 ]
 
 # If this is true, then cargo deny will use the git executable to fetch advisory database.
@@ -268,7 +273,10 @@ allow-git = []
 
 [sources.allow-org]
 # 1 or more github.com organizations to allow git sources for
-github = []
+github = [
+    # github-bot-sdk is an internal dependency consumed via git until published to crates.io
+    "pvandervelde",
+]
 # 1 or more gitlab.com organizations to allow git sources for
 gitlab = []
 # 1 or more bitbucket.org organizations to allow git sources for
