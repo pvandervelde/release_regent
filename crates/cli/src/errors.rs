@@ -18,7 +18,7 @@ pub enum CliError {
     /// GitHub client errors
     #[error("GitHub operation failed: {source}")]
     GitHub {
-        source: Box<release_regent_github_client::GitHubError>,
+        source: Box<release_regent_github_client::Error>,
     },
 
     /// Configuration file errors
@@ -86,8 +86,8 @@ impl CliError {
     }
 }
 
-impl From<release_regent_github_client::GitHubError> for CliError {
-    fn from(error: release_regent_github_client::GitHubError) -> Self {
+impl From<release_regent_github_client::Error> for CliError {
+    fn from(error: release_regent_github_client::Error) -> Self {
         Self::GitHub {
             source: Box::new(error),
         }

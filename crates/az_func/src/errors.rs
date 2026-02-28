@@ -35,7 +35,7 @@ pub enum Error {
     #[error("GitHub operation failed: {source}")]
     GitHub {
         #[from]
-        source: release_regent_github_client::GitHubError,
+        source: release_regent_github_client::Error,
     },
 
     /// HTTP request processing errors

@@ -1,7 +1,213 @@
-//! Core business logic for Release Regent
+//! # Release Regent Core
 //!
-//! This crate contains the main business logic for Release Regent, including configuration
-//! management, versioning strategies, and webhook processing.
+//! This crate contains the core business logic and architecture for Release Regent, providing
+//! automated release management through webhook-driven workflows.
+//!
+//! ## Architecture Overview
+//!
+//! Release Regent follows a modular, trait-based architecture that enables comprehensive testing
+//! and flexible deployment strategies:
+//!
+//! ```text
+//! ┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
+//! │   Webhook       │    │  Configuration   │    │   GitHub API    │
+//! │   Processing    │────│  Management      │────│   Operations    │
+//! └─────────────────┘    └──────────────────┘    └─────────────────┘
+//!          │                       │                       │
+//!          └───────────────────────┼───────────────────────┘
+//!                                  │
+//!                        ┌─────────▼─────────┐
+//!                        │ Release Regent    │
+//!                        │ Processor         │
+//!                        └─────────┬─────────┘
+//!                                  │
+//!          ┌───────────────────────┼───────────────────────┐
+//!          │                       │                       │
+//! ┌────────▼────────┐    ┌─────────▼─────────┐    ┌────────▼────────┐
+//! │   Versioning    │    │    Changelog      │    │   Validation    │
+//! │   Calculation   │    │   Generation      │    │   & Errors      │
+//! └─────────────────┘    └───────────────────┘    └─────────────────┘
+//! ```
+//!
+//! ## Core Components
+//!
+//! ### 1. **Dependency Injection Architecture**
+//!
+//! The [`ReleaseRegentProcessor`] uses dependency injection for all external services,
+//! enabling comprehensive testing and flexible deployment:
+//!
+//! ```rust,ignore
+//! use release_regent_core::ReleaseRegentProcessor;
+//! use release_regent_testing::{MockGitHubOperations, MockConfigurationProvider,
+//!                             MockVersionCalculator, MockWebhookValidator};
+//!
+//! let processor = ReleaseRegentProcessor::new(
+//!     MockGitHubOperations::new(),     // GitHub API operations
+//!     MockConfigurationProvider::new(), // Configuration loading
+//!     MockVersionCalculator::new(),     // Version calculation
+//!     MockWebhookValidator::new(),      // Webhook validation
+//! );
+//! ```
+//!
+//! ### 2. **Webhook Processing Pipeline**
+//!
+//! The [`webhook`] module handles GitHub webhook events with validation and processing:
+//!
+//! - **Event Validation**: Signature verification and payload validation
+//! - **Event Parsing**: Extract repository and pull request information
+//! - **Business Logic Routing**: Route to appropriate handlers based on event type
+//!
+//! ### 3. **Version Calculation Engine**
+//!
+//! The [`versioning`] module provides semantic version calculation:
+//!
+//! - **Conventional Commits**: Parse commit messages following conventional commit spec
+//! - **Semantic Versioning**: Full semver 2.0.0 compliance with validation
+//! - **Version Strategies**: Multiple approaches to version calculation
+//!
+//! ### 4. **Configuration Management**
+//!
+//! The [`config`] module handles repository-specific and global configuration:
+//!
+//! - **Repository Settings**: Per-repo versioning and release configuration
+//! - **Template Support**: Configurable PR titles, bodies, and branch naming
+//! - **Validation**: Schema validation and environment-specific overrides
+//!
+//! ### 5. **Changelog Generation**
+//!
+//! The [`changelog`] module creates structured release notes:
+//!
+//! - **Commit Grouping**: Organize commits by type (features, fixes, etc.)
+//! - **Template Rendering**: Customizable changelog formats
+//! - **Metadata Integration**: Include issue numbers, authors, and breaking changes
+//!
+//! ## Workflow Orchestration
+//!
+//! ### Pull Request Merge Processing
+//!
+//! When a regular pull request is merged:
+//!
+//! 1. **Webhook Receipt**: Validate and parse GitHub webhook payload
+//! 2. **Configuration Loading**: Load repository-specific settings
+//! 3. **Commit Analysis**: Fetch and parse commits since last release
+//! 4. **Version Calculation**: Determine next semantic version using conventional commits
+//! 5. **Release PR Management**: Create or update release pull request
+//! 6. **Changelog Generation**: Generate release notes from commit history
+//!
+//! ### Release PR Merge Processing
+//!
+//! When a release pull request is merged:
+//!
+//! 1. **Release Detection**: Identify merged release PR by branch pattern
+//! 2. **Version Extraction**: Parse version from PR branch or title
+//! 3. **GitHub Release Creation**: Create tag and GitHub release
+//! 4. **Branch Cleanup**: Remove release branch after successful release
+//!
+//! ## Error Handling Strategy
+//!
+//! The crate uses a comprehensive error handling approach:
+//!
+//! - **Typed Errors**: [`CoreError`] enum covers all failure modes
+//! - **Error Context**: Rich error messages with correlation IDs
+//! - **Graceful Degradation**: Continue processing when possible
+//! - **Retry Logic**: Exponential backoff for transient failures
+//!
+//! ## Testing Architecture
+//!
+//! Release Regent supports multiple testing levels:
+//!
+//! - **Unit Tests**: Individual component testing with mocks
+//! - **Integration Tests**: End-to-end workflow testing
+//! - **Contract Tests**: API integration validation
+//! - **Behavioral Tests**: Specification compliance verification
+//!
+//! ## Usage Examples
+//!
+//! ### Basic Processor Setup
+//!
+//! ```rust,ignore
+//! use release_regent_core::{ReleaseRegentProcessor, webhook::WebhookEvent};
+//! use release_regent_github_client::GitHubClient;
+//! use release_regent_config_provider::FileConfigurationProvider;
+//!
+//! #[tokio::main]
+//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//!     let github_client = GitHubClient::new("github_token".to_string())?;
+//!     let config_provider = FileConfigurationProvider::new("./config")?;
+//!     let version_calculator = MyVersionCalculator::new();
+//!     let webhook_validator = MyWebhookValidator::new("webhook_secret");
+//!
+//!     let processor = ReleaseRegentProcessor::new(
+//!         github_client,
+//!         config_provider,
+//!         version_calculator,
+//!         webhook_validator,
+//!     );
+//!
+//!     // Process incoming webhook
+//!     let webhook_event = WebhookEvent::from_json(&payload_json)?;
+//!     processor.process_webhook(webhook_event).await?;
+//!
+//!     Ok(())
+//! }
+//! ```
+//!
+//! ### Version Calculation
+//!
+//! ```rust
+//! use release_regent_core::versioning::{VersionCalculator, SemanticVersion};
+//!
+//! let current_version = SemanticVersion {
+//!     major: 1, minor: 0, patch: 0,
+//!     prerelease: None, build: None
+//! };
+//!
+//! let calculator = VersionCalculator::new(Some(current_version));
+//!
+//! // Parse commit messages from repository
+//! let commits = vec![
+//!     ("abc123".to_string(), "feat: add new user interface".to_string()),
+//!     ("def456".to_string(), "fix: resolve authentication bug".to_string()),
+//! ];
+//!
+//! let parsed_commits = VersionCalculator::parse_conventional_commits(&commits);
+//! let next_version = calculator.calculate_next_version(&parsed_commits)?;
+//!
+//! println!("Next version: {}", next_version); // "1.1.0"
+//! # Ok::<(), release_regent_core::CoreError>(())
+//! ```
+//!
+//! ### Configuration Loading
+//!
+//! ```rust,ignore
+//! use release_regent_core::{config::ReleaseRegentConfig, traits::ConfigurationProvider};
+//!
+//! let config = ReleaseRegentConfig::builder()
+//!     .repository_owner("myorg")
+//!     .repository_name("myrepo")
+//!     .default_branch("main")
+//!     .build()?;
+//!
+//! // Configure release PR templates
+//! let pr_config = config.release_pr.unwrap_or_default();
+//! println!("PR title template: {}", pr_config.title_template);
+//! ```
+//!
+//! ## Performance Characteristics
+//!
+//! Release Regent is designed for high-throughput webhook processing:
+//!
+//! - **Async Processing**: Full async/await support with Tokio runtime
+//! - **Concurrent Operations**: Parallel GitHub API calls where possible
+//! - **Efficient Parsing**: Optimized commit message parsing with caching
+//! - **Rate Limit Handling**: Automatic GitHub API rate limit management
+//!
+//! ## Security Features
+//!
+//! - **Webhook Validation**: HMAC signature verification for all incoming webhooks
+//! - **Token Management**: Secure GitHub App token handling with automatic refresh
+//! - **Input Sanitization**: Comprehensive validation of all external inputs
+//! - **Audit Logging**: Structured logging with correlation IDs for security monitoring
 
 pub mod changelog;
 pub mod config;
@@ -11,7 +217,9 @@ pub mod versioning;
 pub mod webhook;
 
 pub use errors::{CoreError, CoreResult};
-pub use traits::{ConfigurationProvider, GitHubOperations, VersionCalculator, WebhookValidator};
+pub use traits::{
+    ConfigurationProvider, GitHubOperations, GitOperations, VersionCalculator, WebhookValidator,
+};
 
 /// Release Regent core engine
 ///
@@ -273,7 +481,7 @@ where
             repo_config.is_some()
         );
 
-        // Get commits since last release using GitHub operations
+        // Get commits since last release using Git operations
         // For now, we'll compare from the base branch to the merge commit
         let base_ref = repository.default_branch.clone();
         let head_ref = pull_request
@@ -283,18 +491,17 @@ where
 
         let commits = self
             .github_operations
-            .compare_commits(
+            .get_commits_between(
                 &repository.owner,
                 &repository.name,
                 &base_ref,
                 &head_ref,
-                None, // per_page
-                None, // page
+                crate::traits::git_operations::GetCommitsOptions::default(),
             )
             .await
             .map_err(|e| {
                 tracing::error!(
-                    "Failed to compare commits from {} to {}: {}",
+                    "Failed to get commits between {} and {}: {}",
                     base_ref,
                     head_ref,
                     e

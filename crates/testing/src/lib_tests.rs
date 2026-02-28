@@ -16,7 +16,9 @@ use crate::{
 };
 use release_regent_core::{
     config::ReleaseRegentConfig,
-    traits::{configuration_provider::*, github_operations::*, version_calculator::*},
+    traits::{
+        configuration_provider::*, git_operations::*, github_operations::*, version_calculator::*,
+    },
     versioning::SemanticVersion,
 };
 use std::collections::HashMap;
@@ -33,7 +35,7 @@ mod mock_tests {
             .with_default_branch("main");
 
         // Test repository retrieval
-        let result = mock.get_repository("test", "repo").await;
+        let result = mock.get_repository_info("test", "repo").await;
         assert!(result.is_ok());
 
         let repository = result.unwrap();
@@ -58,7 +60,7 @@ mod mock_tests {
 
         let mock = TestMockGitHubOperations::with_config(config);
 
-        let result = mock.get_repository("test", "repo").await;
+        let result = mock.get_repository_info("test", "repo").await;
         assert!(result.is_err());
 
         // Verify call was recorded as error
@@ -78,11 +80,11 @@ mod mock_tests {
         let mock = TestMockGitHubOperations::with_config(config).with_repository_exists(true);
 
         // First two calls should succeed (using the configured repository)
-        assert!(mock.get_repository("test", "repo").await.is_ok());
-        assert!(mock.get_repository("test", "repo").await.is_ok());
+        assert!(mock.get_repository_info("test", "repo").await.is_ok());
+        assert!(mock.get_repository_info("test", "repo").await.is_ok());
 
         // Third call should fail due to quota
-        let result = mock.get_repository("test", "repo").await;
+        let result = mock.get_repository_info("test", "repo").await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("quota exceeded"));
     }
@@ -167,7 +169,7 @@ mod mock_tests {
         let mock = TestMockGitHubOperations::with_config(config).with_repository_exists(true);
 
         let start = std::time::Instant::now();
-        let _ = mock.get_repository("test", "repo").await;
+        let _ = mock.get_repository_info("test", "repo").await;
         let elapsed = start.elapsed();
 
         // Should take at least 100ms due to simulated latency
@@ -389,7 +391,7 @@ mod integration_tests {
         });
 
         // Simulate a complete release workflow
-        let repository = github_mock.get_repository("test", "repo").await;
+        let repository = github_mock.get_repository_info("test", "repo").await;
         assert!(repository.is_ok());
 
         let config = config_mock.load_global_config(LoadOptions::default()).await;
@@ -456,8 +458,8 @@ mod integration_tests {
         let mock2 = TestMockGitHubOperations::with_config(config).with_repository_exists(true);
 
         // Perform identical operations on both mocks
-        let repo1 = mock1.get_repository("test", "repo").await;
-        let repo2 = mock2.get_repository("test", "repo").await;
+        let repo1 = mock1.get_repository_info("test", "repo").await;
+        let repo2 = mock2.get_repository_info("test", "repo").await;
 
         // Both should succeed and return identical results
         assert!(repo1.is_ok());
@@ -487,6 +489,6 @@ fn generate_repository_response() -> Repository {
     RepositoryBuilder::new().build()
 }
 
-fn generate_commits_response(count: usize) -> Vec<Commit> {
+fn generate_commits_response(count: usize) -> Vec<GitCommit> {
     (0..count).map(|_| CommitBuilder::new().build()).collect()
 }

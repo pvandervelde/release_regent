@@ -161,12 +161,14 @@ See **[Configuration Reference](docs/configuration-reference.md)** for complete 
 
 Release Regent is in **active development** implementing the complete automation workflow:
 
-### ✅ Completed (v0.2)
+### ✅ Completed (v0.2-0.3)
 
 - Core version calculation with conventional commits
 - CLI tool with basic workflows
-- GitHub API client with authentication
+- GitHub API client migrated to github-bot-sdk
+- Trait-based architecture with GitOperations and GitHubOperations
 - Configuration system foundation
+- Azure Key Vault integration for secrets
 
 ### 🔄 In Progress (v0.3-0.4)
 

@@ -71,13 +71,18 @@ feature-depth = 1
 #db-path = "$CARGO_HOME/advisory-dbs"
 # The url(s) of the advisory databases to use
 #db-urls = ["https://github.com/rustsec/advisory-db"]
+# Only flag unmaintained advisories for crates that are direct workspace dependencies,
+# not transitive dependencies (bincode via git-cliff-core, proc-macro-error via rust-embed,
+# rustls-pemfile via reqwest 0.11).
+unmaintained = "workspace"
 # A list of advisory IDs to ignore. Note that ignored advisories will still
 # output a note when they are encountered.
 ignore = [
-    #"RUSTSEC-0000-0000",
-    #{ id = "RUSTSEC-0000-0000", reason = "you can specify a reason the advisory is ignored" },
-    #"a-crate-that-is-yanked@0.1.1", # you can also ignore yanked crate versions if you wish
-    #{ crate = "a-crate-that-is-yanked@0.1.1", reason = "you can specify why you are ignoring the yanked crate" },
+    # RUSTSEC-2023-0071: rsa 0.9.x Marvin Attack timing side-channel.
+    # This is a transitive dependency through github-bot-sdk (used for GitHub App JWT signing).
+    # No fixed version of rsa is available upstream. Mitigated by the fact that private key
+    # operations happen in a controlled server environment, not exposed to timing oracles.
+    { id = "RUSTSEC-2023-0071", reason = "Transitive via github-bot-sdk; no fixed rsa version exists. Mitigated by server-side-only key usage." },
 ]
 
 # If this is true, then cargo deny will use the git executable to fetch advisory database.
@@ -99,9 +104,14 @@ allow = [
     "BSD-2-Clause",
     "BSD-3-Clause",
     "BSL-1.0",
+    # CDLA-Permissive-2.0: Community Data License Agreement Permissive 2.0, used by
+    # webpki-root-certs (transitive via github-bot-sdk -> reqwest 0.13 -> rustls-platform-verifier)
+    "CDLA-Permissive-2.0",
     "ISC",
     "MIT",
     "MPL-2.0",
+    # OpenSSL: used by aws-lc-sys (transitive via github-bot-sdk -> reqwest 0.13 -> rustls -> aws-lc-rs)
+    "OpenSSL",
     "Unicode-3.0",
     "Unlicense",
     "Zlib",
@@ -236,7 +246,6 @@ skip = [
     { crate = "reqwest@0.11.27", reason = "ecosystem transition from 0.11 to 0.12 in progress" },
     { crate = "rustls@0.21.12", reason = "ecosystem transition from 0.21 to 0.23 in progress" },
     { crate = "sync_wrapper@0.1.2", reason = "legacy version required by some dependencies" },
-    { crate = "tower@0.4.13", reason = "ecosystem transition from 0.4 to 0.5 in progress" },
     # Windows crates often have multiple versions due to different feature requirements
     { crate = "windows-sys@0.48.0", reason = "different windows-sys versions for different feature sets" },
     { crate = "windows-targets@0.48.5", reason = "windows ecosystem version differences" },
@@ -268,7 +277,10 @@ allow-git = []
 
 [sources.allow-org]
 # 1 or more github.com organizations to allow git sources for
-github = []
+github = [
+    # github-bot-sdk is an internal dependency consumed via git until published to crates.io
+    "pvandervelde",
+]
 # 1 or more gitlab.com organizations to allow git sources for
 gitlab = []
 # 1 or more bitbucket.org organizations to allow git sources for

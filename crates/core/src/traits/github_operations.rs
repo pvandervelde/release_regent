@@ -1,17 +1,32 @@
 //! GitHub API operations trait
 //!
 //! This trait defines the contract for all GitHub API interactions required
-//! by Release Regent. It abstracts the underlying GitHub client implementation
-//! to enable testing and provide a stable interface.
+//! by Release Regent. It extends the core GitOperations trait with GitHub-specific
+//! functionality like pull requests, releases, and GitHub-specific metadata.
 
+use super::git_operations::GitOperations;
 use crate::CoreResult;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 /// GitHub API operations contract
 ///
-/// This trait defines all GitHub API operations required by Release Regent.
-/// Implementations must handle authentication, rate limiting, and error handling.
+/// This trait extends GitOperations with GitHub-specific functionality including
+/// pull requests, releases, and GitHub's enhanced metadata and collaboration features.
+///
+/// It composes the core Git operations to provide a complete GitHub API interface
+/// while maintaining clear separation between Git operations and platform features.
+///
+/// # Architecture
+///
+/// ```text
+/// GitHubOperations
+///       ↓ extends
+/// GitOperations (core Git functionality)
+/// ```
+///
+/// Version calculators should depend on GitOperations for commit access,
+/// while release management depends on GitHubOperations for PR and release creation.
 ///
 /// # Error Handling
 ///
@@ -33,34 +48,7 @@ use serde::{Deserialize, Serialize};
 /// This trait assumes proper authentication has been established.
 /// The authentication mechanism is implementation-specific.
 #[async_trait]
-pub trait GitHubOperations: Send + Sync {
-    /// Get commits between two references
-    ///
-    /// # Parameters
-    /// - `owner`: Repository owner name
-    /// - `repo`: Repository name
-    /// - `base`: Base reference (commit SHA, branch, or tag)
-    /// - `head`: Head reference (commit SHA, branch, or tag)
-    /// - `per_page`: Number of commits per page (max 250)
-    /// - `page`: Page number to retrieve (1-based)
-    ///
-    /// # Returns
-    /// List of commits between base and head, ordered chronologically
-    ///
-    /// # Errors
-    /// - `CoreError::GitHub` - API communication failed
-    /// - `CoreError::InvalidInput` - Invalid references or pagination
-    /// - `CoreError::NotSupported` - References not found
-    async fn compare_commits(
-        &self,
-        owner: &str,
-        repo: &str,
-        base: &str,
-        head: &str,
-        per_page: Option<u8>,
-        page: Option<u32>,
-    ) -> CoreResult<Vec<Commit>>;
-
+pub trait GitHubOperations: GitOperations + Send + Sync {
     /// Create a new pull request
     ///
     /// # Parameters
@@ -130,22 +118,6 @@ pub trait GitHubOperations: Send + Sync {
         tagger: Option<GitUser>,
     ) -> CoreResult<Tag>;
 
-    /// Get specific commit information
-    ///
-    /// # Parameters
-    /// - `owner`: Repository owner name
-    /// - `repo`: Repository name
-    /// - `commit_sha`: Commit SHA to retrieve
-    ///
-    /// # Returns
-    /// Detailed commit information including author, message, and metadata
-    ///
-    /// # Errors
-    /// - `CoreError::GitHub` - API communication failed
-    /// - `CoreError::InvalidInput` - Invalid commit SHA format
-    /// - `CoreError::NotSupported` - Commit not found
-    async fn get_commit(&self, owner: &str, repo: &str, commit_sha: &str) -> CoreResult<Commit>;
-
     /// Get the latest release (non-draft, non-prerelease)
     ///
     /// # Parameters
@@ -197,21 +169,6 @@ pub trait GitHubOperations: Send + Sync {
     /// - `CoreError::NotSupported` - Release not found
     async fn get_release_by_tag(&self, owner: &str, repo: &str, tag: &str) -> CoreResult<Release>;
 
-    /// Retrieve repository information
-    ///
-    /// # Parameters
-    /// - `owner`: Repository owner (user or organization name)
-    /// - `repo`: Repository name
-    ///
-    /// # Returns
-    /// Repository information including metadata and configuration
-    ///
-    /// # Errors
-    /// - `CoreError::GitHub` - API communication failed
-    /// - `CoreError::InvalidInput` - Invalid owner or repo name
-    /// - `CoreError::NotSupported` - Repository not accessible
-    async fn get_repository(&self, owner: &str, repo: &str) -> CoreResult<Repository>;
-
     /// List releases in a repository
     ///
     /// # Parameters
@@ -233,43 +190,6 @@ pub trait GitHubOperations: Send + Sync {
         per_page: Option<u8>,
         page: Option<u32>,
     ) -> CoreResult<Vec<Release>>;
-
-    /// List all tags in a repository
-    ///
-    /// # Parameters
-    /// - `owner`: Repository owner name
-    /// - `repo`: Repository name
-    /// - `per_page`: Number of tags per page (max 100)
-    /// - `page`: Page number to retrieve (1-based)
-    ///
-    /// # Returns
-    /// List of tags ordered by creation date (newest first)
-    ///
-    /// # Errors
-    /// - `CoreError::GitHub` - API communication failed
-    /// - `CoreError::InvalidInput` - Invalid pagination parameters
-    async fn list_tags(
-        &self,
-        owner: &str,
-        repo: &str,
-        per_page: Option<u8>,
-        page: Option<u32>,
-    ) -> CoreResult<Vec<Tag>>;
-
-    /// Check if a tag exists
-    ///
-    /// # Parameters
-    /// - `owner`: Repository owner name
-    /// - `repo`: Repository name
-    /// - `tag_name`: Tag name to check
-    ///
-    /// # Returns
-    /// True if tag exists, false otherwise
-    ///
-    /// # Errors
-    /// - `CoreError::GitHub` - API communication failed
-    /// - `CoreError::InvalidInput` - Invalid tag name
-    async fn tag_exists(&self, owner: &str, repo: &str, tag_name: &str) -> CoreResult<bool>;
 
     /// Update an existing pull request
     ///
@@ -322,22 +242,8 @@ pub trait GitHubOperations: Send + Sync {
     ) -> CoreResult<Release>;
 }
 
-/// Git commit information
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Commit {
-    /// Commit author
-    pub author: GitUser,
-    /// Commit committer
-    pub committer: GitUser,
-    /// Commit date
-    pub date: chrono::DateTime<chrono::Utc>,
-    /// Commit message
-    pub message: String,
-    /// Parent commit SHAs
-    pub parents: Vec<String>,
-    /// Commit SHA
-    pub sha: String,
-}
+// Note: Git commit information is now provided by GitOperations trait
+// Use super::git_operations::GitCommit for commit data
 
 /// Parameters for creating a new pull request
 #[derive(Debug, Clone, Serialize, Deserialize)]
