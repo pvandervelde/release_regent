@@ -215,7 +215,34 @@ impl VersionCalculatorTrait for DefaultVersionCalculator {
         strategy: VersioningStrategy,
         _options: CalculationOptions,
     ) -> CoreResult<VersionCalculationResult> {
-        todo!("implement calculate_version using local git log")
+        debug!(
+            "Calculating version for {}/{} ({:?}..{})",
+            context.owner, context.repo, context.base_ref, context.head_ref
+        );
+
+        let raw_commits =
+            Self::fetch_git_commits(context.base_ref.as_deref(), &context.head_ref).await?;
+
+        let conventional = ConventionalCalculator::parse_conventional_commits(&raw_commits);
+
+        let analyses: Vec<CommitAnalysis> = conventional
+            .into_iter()
+            .map(Self::to_commit_analysis)
+            .collect();
+
+        let bump = Self::highest_bump(&analyses);
+
+        let current = context.current_version.clone().unwrap_or(SemanticVersion {
+            major: 0,
+            minor: 1,
+            patch: 0,
+            prerelease: None,
+            build: None,
+        });
+
+        let next_version = self.apply_version_bump(current, bump.clone(), None, None)?;
+
+        Ok(Self::build_result(&context, strategy, analyses, next_version, bump))
     }
 
     /// Analyse individual commits identified by their SHAs.
@@ -223,19 +250,55 @@ impl VersionCalculatorTrait for DefaultVersionCalculator {
         &self,
         _context: VersionContext,
         _strategy: VersioningStrategy,
-        _commit_shas: Vec<String>,
+        commit_shas: Vec<String>,
     ) -> CoreResult<Vec<CommitAnalysis>> {
-        todo!("implement analyze_commits using git show")
+        use std::process::Command;
+
+        let mut analyses = Vec::with_capacity(commit_shas.len());
+
+        for sha in &commit_shas {
+            let output = Command::new("git")
+                .arg("log")
+                .arg("-1")
+                .arg("--format=%H %s")
+                .arg(sha)
+                .output()
+                .map_err(|e| {
+                    CoreError::versioning(format!("Failed to run git log for {}: {}", sha, e))
+                })?;
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(CoreError::versioning(format!(
+                    "git log failed for {}: {}",
+                    sha, stderr
+                )));
+            }
+
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let line = stdout.trim();
+            if let Some((commit_sha, subject)) = line.split_once(' ') {
+                let raw = vec![(commit_sha.to_string(), subject.to_string())];
+                let parsed = ConventionalCalculator::parse_conventional_commits(&raw);
+                for c in parsed {
+                    analyses.push(Self::to_commit_analysis(c));
+                }
+            }
+        }
+
+        Ok(analyses)
     }
 
-    /// Validate a proposed version (always `true` for CLI use).
+    /// Validate a proposed version.  Always returns `true` for CLI use.
     async fn validate_version(
         &self,
         _context: VersionContext,
         _proposed_version: SemanticVersion,
         _rules: ValidationRules,
     ) -> CoreResult<bool> {
-        todo!("implement validate_version")
+        // Semantic validation is enforced at parse time by SemanticVersion.
+        // For the CLI we accept any parsed version as valid.
+        Ok(true)
     }
 
     /// Return the highest version bump implied by the provided analyses.
@@ -245,7 +308,7 @@ impl VersionCalculatorTrait for DefaultVersionCalculator {
         _strategy: VersioningStrategy,
         commit_analyses: Vec<CommitAnalysis>,
     ) -> CoreResult<TraitVersionBump> {
-        todo!("implement get_version_bump")
+        Ok(Self::highest_bump(&commit_analyses))
     }
 
     /// Generate changelog entries from commit analyses.
@@ -256,17 +319,35 @@ impl VersionCalculatorTrait for DefaultVersionCalculator {
         commit_analyses: Vec<CommitAnalysis>,
         _version: SemanticVersion,
     ) -> CoreResult<Vec<ChangelogEntry>> {
-        todo!("implement generate_changelog_entries")
+        let entries = commit_analyses
+            .into_iter()
+            .filter(|a| a.version_bump != TraitVersionBump::None || a.is_breaking)
+            .map(|a| ChangelogEntry {
+                commit_sha: a.sha.clone(),
+                description: a.message.clone(),
+                entry_type: a
+                    .commit_type
+                    .clone()
+                    .unwrap_or_else(|| "chore".to_string()),
+                is_breaking: a.is_breaking,
+                issues: Vec::new(),
+                pr_number: None,
+                scope: a.scope.clone(),
+            })
+            .collect();
+        Ok(entries)
     }
 
-    /// Perform a dry-run calculation without side effects.
+    /// Perform a dry-run calculation — delegates to `calculate_version`.
     async fn preview_calculation(
         &self,
         context: VersionContext,
         strategy: VersioningStrategy,
         options: CalculationOptions,
     ) -> CoreResult<VersionCalculationResult> {
-        todo!("implement preview_calculation")
+        // Dry-run has no side effects in this implementation, so we can
+        // safely call the full calculation.
+        self.calculate_version(context, strategy, options).await
     }
 
     /// Return the set of versioning strategies this calculator supports.
@@ -288,11 +369,32 @@ impl VersionCalculatorTrait for DefaultVersionCalculator {
     }
 
     /// Parse a single commit message into a [`CommitAnalysis`].
+    ///
+    /// Returns `None` when the message does not follow the conventional commit
+    /// specification (i.e. it lacks a recognised `<type>:` prefix).
     fn parse_conventional_commit(
         &self,
         commit_message: &str,
     ) -> CoreResult<Option<CommitAnalysis>> {
-        todo!("implement parse_conventional_commit")
+        // Lightweight check: does the first line begin with a conventional type?
+        let known_types = [
+            "feat", "fix", "chore", "docs", "style", "refactor",
+            "perf", "test", "build", "ci", "revert",
+        ];
+        let first_line = commit_message.lines().next().unwrap_or("");
+        let is_conventional = known_types.iter().any(|t| {
+            first_line.starts_with(&format!("{}(", t))
+                || first_line.starts_with(&format!("{}!", t))
+                || first_line.starts_with(&format!("{}: ", t))
+        });
+
+        if !is_conventional {
+            return Ok(None);
+        }
+
+        let raw = vec![("unknown".to_string(), commit_message.to_string())];
+        let parsed = ConventionalCalculator::parse_conventional_commits(&raw);
+        Ok(parsed.into_iter().next().map(Self::to_commit_analysis))
     }
 
     /// Apply a version bump to an existing version.
@@ -303,6 +405,32 @@ impl VersionCalculatorTrait for DefaultVersionCalculator {
         prerelease: Option<String>,
         build: Option<String>,
     ) -> CoreResult<SemanticVersion> {
-        todo!("implement apply_version_bump")
+        let mut next = match bump_type {
+            TraitVersionBump::Major => SemanticVersion {
+                major: current_version.major + 1,
+                minor: 0,
+                patch: 0,
+                prerelease: None,
+                build: None,
+            },
+            TraitVersionBump::Minor => SemanticVersion {
+                major: current_version.major,
+                minor: current_version.minor + 1,
+                patch: 0,
+                prerelease: None,
+                build: None,
+            },
+            TraitVersionBump::Patch => SemanticVersion {
+                major: current_version.major,
+                minor: current_version.minor,
+                patch: current_version.patch + 1,
+                prerelease: None,
+                build: None,
+            },
+            TraitVersionBump::None => current_version,
+        };
+        next.prerelease = prerelease;
+        next.build = build;
+        Ok(next)
     }
 }
