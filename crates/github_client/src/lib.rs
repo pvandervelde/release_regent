@@ -91,8 +91,13 @@ impl GitHubClient {
         let token_cache = InMemoryTokenCache::default();
         let auth_config_sdk = github_bot_sdk::auth::tokens::AuthConfig::default();
 
-        let auth_provider =
-            GitHubAppAuth::new(secret_provider, jwt_signer, api_client, token_cache, auth_config_sdk);
+        let auth_provider = GitHubAppAuth::new(
+            secret_provider,
+            jwt_signer,
+            api_client,
+            token_cache,
+            auth_config_sdk,
+        );
 
         Self::new(auth_provider, installation_id)
     }

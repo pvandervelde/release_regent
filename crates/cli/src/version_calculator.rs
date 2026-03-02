@@ -242,7 +242,13 @@ impl VersionCalculatorTrait for DefaultVersionCalculator {
 
         let next_version = self.apply_version_bump(current, bump.clone(), None, None)?;
 
-        Ok(Self::build_result(&context, strategy, analyses, next_version, bump))
+        Ok(Self::build_result(
+            &context,
+            strategy,
+            analyses,
+            next_version,
+            bump,
+        ))
     }
 
     /// Analyse individual commits identified by their SHAs.
@@ -325,10 +331,7 @@ impl VersionCalculatorTrait for DefaultVersionCalculator {
             .map(|a| ChangelogEntry {
                 commit_sha: a.sha.clone(),
                 description: a.message.clone(),
-                entry_type: a
-                    .commit_type
-                    .clone()
-                    .unwrap_or_else(|| "chore".to_string()),
+                entry_type: a.commit_type.clone().unwrap_or_else(|| "chore".to_string()),
                 is_breaking: a.is_breaking,
                 issues: Vec::new(),
                 pr_number: None,
@@ -378,8 +381,8 @@ impl VersionCalculatorTrait for DefaultVersionCalculator {
     ) -> CoreResult<Option<CommitAnalysis>> {
         // Lightweight check: does the first line begin with a conventional type?
         let known_types = [
-            "feat", "fix", "chore", "docs", "style", "refactor",
-            "perf", "test", "build", "ci", "revert",
+            "feat", "fix", "chore", "docs", "style", "refactor", "perf", "test", "build", "ci",
+            "revert",
         ];
         let first_line = commit_message.lines().next().unwrap_or("");
         let is_conventional = known_types.iter().any(|t| {

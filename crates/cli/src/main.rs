@@ -206,15 +206,11 @@ async fn execute_run(args: RunArgs) -> CliResult<()> {
     let event_json = tokio::fs::read_to_string(&args.event_file).await?;
     info!("Loaded webhook event from: {}", args.event_file.display());
 
-    let payload: serde_json::Value = serde_json::from_str(&event_json).map_err(|e| {
-        CliError::invalid_argument("--event-file", format!("Invalid JSON: {}", e))
-    })?;
+    let payload: serde_json::Value = serde_json::from_str(&event_json)
+        .map_err(|e| CliError::invalid_argument("--event-file", format!("Invalid JSON: {}", e)))?;
 
     // "action" lives at the top of every GitHub webhook payload.
-    let action = payload["action"]
-        .as_str()
-        .unwrap_or("unknown")
-        .to_string();
+    let action = payload["action"].as_str().unwrap_or("unknown").to_string();
 
     let event = release_regent_core::webhook::WebhookEvent::new(
         args.event_type.clone(),

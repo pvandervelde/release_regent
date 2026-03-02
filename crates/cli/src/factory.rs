@@ -138,25 +138,20 @@ pub async fn create_production_processor() -> CliResult<ProductionProcessor> {
             CliError::invalid_argument("GITHUB_APP_ID", format!("Must be a number: {}", e))
         })?;
 
-    let private_key = std::env::var("GITHUB_PRIVATE_KEY")
-        .map_err(|_| CliError::missing_dependency("GITHUB_PRIVATE_KEY", "environment variable not set"))?;
+    let private_key = std::env::var("GITHUB_PRIVATE_KEY").map_err(|_| {
+        CliError::missing_dependency("GITHUB_PRIVATE_KEY", "environment variable not set")
+    })?;
 
     // Webhook secret is optional — an empty string disables signature validation.
     let webhook_secret = std::env::var("GITHUB_WEBHOOK_SECRET").unwrap_or_default();
 
     let installation_id: u64 = std::env::var("GITHUB_INSTALLATION_ID")
         .map_err(|_| {
-            CliError::missing_dependency(
-                "GITHUB_INSTALLATION_ID",
-                "environment variable not set",
-            )
+            CliError::missing_dependency("GITHUB_INSTALLATION_ID", "environment variable not set")
         })?
         .parse::<u64>()
         .map_err(|e| {
-            CliError::invalid_argument(
-                "GITHUB_INSTALLATION_ID",
-                format!("Must be a number: {}", e),
-            )
+            CliError::invalid_argument("GITHUB_INSTALLATION_ID", format!("Must be a number: {}", e))
         })?;
 
     let auth_config = release_regent_github_client::AuthConfig {
