@@ -92,3 +92,24 @@ fn test_missing_dependency_error_creation() {
         "Missing dependency: git - Git command not found in PATH"
     );
 }
+
+#[test]
+fn test_config_provider_error_conversion() {
+    // `ConfigProviderError::Builder` is a simple variant with no file path.
+    let provider_error = release_regent_config_provider::ConfigProviderError::Builder {
+        message: "missing base directory".to_string(),
+    };
+
+    let cli_error = CliError::from(provider_error);
+
+    match cli_error {
+        CliError::ConfigProvider { .. } => {
+            // Expected — the From impl should forward the variant.
+        }
+        _ => panic!("Expected ConfigProvider error"),
+    }
+
+    assert!(cli_error
+        .to_string()
+        .contains("Configuration provider error"));
+}

@@ -65,6 +65,43 @@ impl GitHubClient {
         })
     }
 
+    /// Create a new GitHub client directly from [`AuthConfig`].
+    ///
+    /// This convenience constructor wires together all required SDK components:
+    /// - [`auth::AzureKeyVaultSecretProvider`] for secret retrieval
+    /// - [`auth::DefaultJwtSigner`] for RS256 JWT signing
+    /// - [`auth::DefaultGitHubApiClient`] for installation token exchange
+    /// - An in-memory token cache
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the private key in `auth_config` is malformed or
+    /// if the underlying SDK client cannot be initialised.
+    pub fn from_config(auth_config: AuthConfig, installation_id: u64) -> CoreResult<Self> {
+        use github_bot_sdk::auth::{cache::InMemoryTokenCache, tokens::GitHubAppAuth};
+
+        let secret_provider =
+            auth::AzureKeyVaultSecretProvider::new(auth_config).map_err(|e| CoreError::GitHub {
+                source: Box::new(e),
+                context: None,
+            })?;
+
+        let jwt_signer = auth::DefaultJwtSigner::new();
+        let api_client = auth::DefaultGitHubApiClient::new();
+        let token_cache = InMemoryTokenCache::default();
+        let auth_config_sdk = github_bot_sdk::auth::tokens::AuthConfig::default();
+
+        let auth_provider = GitHubAppAuth::new(
+            secret_provider,
+            jwt_signer,
+            api_client,
+            token_cache,
+            auth_config_sdk,
+        );
+
+        Self::new(auth_provider, installation_id)
+    }
+
     /// Get the SDK client for direct access if needed
     pub fn sdk_client(&self) -> &SdkClient {
         &self.sdk_client

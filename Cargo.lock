@@ -2972,9 +2972,13 @@ dependencies = [
 name = "release-regent-cli"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "chrono",
  "clap",
  "release-regent-core",
  "release-regent-github-client",
+ "release_regent_config_provider",
+ "release_regent_testing",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -3011,6 +3015,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "github-bot-sdk",
+ "jsonwebtoken",
  "mockall",
  "release-regent-core",
  "reqwest 0.11.27",

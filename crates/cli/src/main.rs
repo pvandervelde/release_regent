@@ -8,6 +8,8 @@ use tracing::{debug, info};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod errors;
+mod factory;
+mod version_calculator;
 
 use errors::{CliError, CliResult};
 
@@ -48,6 +50,8 @@ enum Commands {
     Run(RunArgs),
     /// Test parsing and changelog generation from Git history
     Test(TestArgs),
+    /// Generate test data files for development workflows
+    Generate(GenerateArgs),
 }
 
 #[derive(Args, Debug)]
@@ -71,9 +75,17 @@ struct RunArgs {
     #[arg(short, long)]
     event_file: PathBuf,
 
+    /// GitHub event type (e.g. pull_request, push).  Defaults to pull_request.
+    #[arg(long, default_value = "pull_request")]
+    event_type: String,
+
     /// Dry run mode (no actual operations)
     #[arg(short, long)]
     dry_run: bool,
+
+    /// Use mock dependencies instead of real GitHub API credentials
+    #[arg(long)]
+    mock: bool,
 
     /// Configuration file path
     #[arg(short, long)]
@@ -82,7 +94,7 @@ struct RunArgs {
 
 #[derive(Args, Debug)]
 struct TestArgs {
-    /// Number of commits to analyze from current HEAD
+    /// Number of commits to analyse from current HEAD
     #[arg(short = 'n', long, default_value = "10")]
     commits: usize,
 
@@ -97,6 +109,21 @@ struct TestArgs {
     /// Current version to calculate next version from
     #[arg(long)]
     current_version: Option<String>,
+}
+
+#[derive(Args, Debug)]
+struct GenerateArgs {
+    /// Output directory for generated files
+    #[arg(short, long, default_value = ".")]
+    output_dir: PathBuf,
+
+    /// Type of test data to generate: webhook, config, or all
+    #[arg(short, long, default_value = "all")]
+    kind: String,
+
+    /// Overwrite existing files
+    #[arg(long)]
+    overwrite: bool,
 }
 
 /// Execute the init command
@@ -149,33 +176,26 @@ async fn execute_init(args: InitArgs) -> CliResult<()> {
     Ok(())
 }
 
-/// Execute the run command
+/// Execute the run command, routing to mock or production processor via `--mock`.
 async fn execute_run(args: RunArgs) -> CliResult<()> {
     info!("Processing webhook event locally");
     debug!("Run args: {:?}", args);
 
     if args.dry_run {
-        info!("Running in dry-run mode - no actual operations will be performed");
+        info!("Running in dry-run mode — no actual operations will be performed");
     }
 
-    // Load configuration
-    let config_path = args
-        .config_path
-        .or_else(|| Some(PathBuf::from(".release-regent.yml")))
-        .unwrap();
-
-    if !config_path.exists() {
-        return Err(CliError::config_file(format!(
-            "Configuration file not found: {}. Run 'rr init' to create one.",
-            config_path.display()
-        )));
+    // Validate that an explicit config file, when provided, actually exists.
+    if let Some(ref config_path) = args.config_path {
+        if !config_path.exists() {
+            return Err(CliError::config_file(format!(
+                "Configuration file not found: {}. Run 'rr init' to create one.",
+                config_path.display()
+            )));
+        }
     }
 
-    let _config =
-        release_regent_core::config::ReleaseRegentConfig::load_from_file(&config_path).await?;
-    info!("Loaded configuration from: {}", config_path.display());
-
-    // Load webhook event
+    // Load and parse the webhook JSON file.
     if !args.event_file.exists() {
         return Err(CliError::invalid_argument(
             "--event-file",
@@ -183,19 +203,105 @@ async fn execute_run(args: RunArgs) -> CliResult<()> {
         ));
     }
 
-    let _event_json = tokio::fs::read_to_string(&args.event_file).await?;
+    let event_json = tokio::fs::read_to_string(&args.event_file).await?;
     info!("Loaded webhook event from: {}", args.event_file.display());
 
-    // TODO: Parse webhook JSON and create WebhookEvent
-    // TODO: Create ReleaseRegent instance and process webhook
-    // This will be implemented in subsequent issues
+    let payload: serde_json::Value = serde_json::from_str(&event_json)
+        .map_err(|e| CliError::invalid_argument("--event-file", format!("Invalid JSON: {}", e)))?;
 
-    if args.dry_run {
-        println!("🔍 Dry run completed - no changes made");
+    // "action" lives at the top of every GitHub webhook payload.
+    let action = payload["action"].as_str().unwrap_or("unknown").to_string();
+
+    let event = release_regent_core::webhook::WebhookEvent::new(
+        args.event_type.clone(),
+        action,
+        payload,
+        std::collections::HashMap::new(), // no HTTP headers for local file input
+    );
+
+    info!(
+        "Parsed webhook event: type={}, dry_run={}, mock={}",
+        args.event_type, args.dry_run, args.mock
+    );
+
+    // Route to the appropriate processor based on the --mock flag.
+    if args.mock {
+        info!("Using mock processor for local development");
+        let processor = factory::create_mock_processor();
+        run_with_processor(processor, event, args.dry_run).await
     } else {
-        println!("✅ Webhook processing completed successfully");
+        info!("Using production processor with GitHub API credentials from environment");
+        let processor = factory::create_production_processor().await?;
+        run_with_processor(processor, event, args.dry_run).await
+    }
+}
+
+/// Drive a [`ReleaseRegentProcessor`] through a single webhook event.
+///
+/// Generic over the four processor trait parameters so it compiles for both the
+/// mock and production processor flavours without requiring a trait object.
+async fn run_with_processor<G, C, V, W>(
+    processor: release_regent_core::ReleaseRegentProcessor<G, C, V, W>,
+    event: release_regent_core::webhook::WebhookEvent,
+    dry_run: bool,
+) -> CliResult<()>
+where
+    G: release_regent_core::traits::GitHubOperations,
+    C: release_regent_core::traits::ConfigurationProvider,
+    V: release_regent_core::traits::VersionCalculator,
+    W: release_regent_core::traits::WebhookValidator,
+{
+    if dry_run {
+        info!("Dry-run mode: skipping webhook processing");
+        println!("🔍 Dry run completed - no changes made");
+        return Ok(());
     }
 
+    processor.process_webhook(event).await?;
+    info!("Webhook processing completed successfully");
+    println!("✅ Webhook processing completed successfully");
+    Ok(())
+}
+
+/// Execute the generate command — write test data files to the output directory.
+async fn execute_generate(args: GenerateArgs) -> CliResult<()> {
+    info!("Generating test data files");
+    debug!("Generate args: {:?}", args);
+
+    tokio::fs::create_dir_all(&args.output_dir).await?;
+
+    let wants_webhook = args.kind == "webhook" || args.kind == "all";
+    let wants_config = args.kind == "config" || args.kind == "all";
+
+    if wants_webhook {
+        let path = args.output_dir.join("sample-webhook.json");
+        if path.exists() && !args.overwrite {
+            return Err(CliError::config_file(format!(
+                "{} already exists. Use --overwrite to replace it.",
+                path.display()
+            )));
+        }
+        tokio::fs::write(&path, generate_sample_webhook()).await?;
+        info!("Generated webhook fixture: {}", path.display());
+        println!("📄 Webhook fixture: {}", path.display());
+    }
+
+    if wants_config {
+        let path = args.output_dir.join("sample-config.yml");
+        if path.exists() && !args.overwrite {
+            return Err(CliError::config_file(format!(
+                "{} already exists. Use --overwrite to replace it.",
+                path.display()
+            )));
+        }
+        let config = release_regent_core::config::ReleaseRegentConfig::default();
+        let yaml = serde_yaml::to_string(&config)?;
+        tokio::fs::write(&path, yaml).await?;
+        info!("Generated config fixture: {}", path.display());
+        println!("📄 Config fixture: {}", path.display());
+    }
+
+    println!("✅ Test data generated in {}", args.output_dir.display());
     Ok(())
 }
 
@@ -341,6 +447,7 @@ async fn main() -> CliResult<()> {
         Commands::Init(args) => execute_init(args).await,
         Commands::Run(args) => execute_run(args).await,
         Commands::Test(args) => execute_test(args).await,
+        Commands::Generate(args) => execute_generate(args).await,
     }
 }
 

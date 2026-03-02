@@ -21,6 +21,13 @@ pub enum CliError {
         source: Box<release_regent_github_client::Error>,
     },
 
+    /// Configuration provider errors
+    #[error("Configuration provider error: {source}")]
+    ConfigProvider {
+        #[from]
+        source: release_regent_config_provider::ConfigProviderError,
+    },
+
     /// Configuration file errors
     #[error("Configuration file error: {message}")]
     ConfigFile { message: String },

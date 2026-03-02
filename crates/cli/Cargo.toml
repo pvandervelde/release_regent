@@ -22,6 +22,8 @@ serde_yaml = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
 
 # CLI dependencies
 clap = { workspace = true }
@@ -29,6 +31,8 @@ clap = { workspace = true }
 # Release Regent dependencies
 release-regent-core = { path = "../core" }
 release-regent-github-client = { path = "../github_client" }
+release_regent_config_provider = { path = "../config_provider" }
+release_regent_testing = { path = "../testing" }
 
 [dev-dependencies]
 tokio-test = { workspace = true }

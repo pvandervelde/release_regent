@@ -20,6 +20,7 @@ tracing = { workspace = true }
 
 # GitHub integration - using github-bot-sdk
 github-bot-sdk = { workspace = true }
+jsonwebtoken = { workspace = true }
 reqwest = { workspace = true }
 chrono = { workspace = true }
 
