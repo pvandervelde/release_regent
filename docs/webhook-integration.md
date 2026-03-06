@@ -17,7 +17,7 @@ Release Regent processes GitHub webhooks to automatically manage releases when p
 
 1. **WebhookProcessor** (`core::webhook`): Core webhook processing logic
 2. **GitHubAuthManager** (`github_client::auth`): Signature validation and authentication
-3. **Azure Function** (`az_func`): HTTP endpoint for receiving webhooks
+3. **Server** (`server`): HTTP endpoint for receiving webhooks
 
 ### Flow
 

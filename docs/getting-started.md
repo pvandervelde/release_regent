@@ -138,7 +138,7 @@ release_regent/
 │   ├── core/           # Core business logic
 │   ├── cli/            # Command-line interface
 │   ├── github_client/  # GitHub API integration
-│   └── az_func/        # Azure Function deployment
+│   └── server/         # HTTP web server deployment
 ├── docs/
 │   ├── webhook-integration.md     # Technical guide
 │   ├── github-app-setup.md       # Setup instructions

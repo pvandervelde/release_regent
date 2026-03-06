@@ -99,7 +99,7 @@ release_regent/
 ├── crates/
 │   ├── core/           # Core logic and workflows
 │   ├── cli/            # Command-line interface
-│   ├── az_func/        # Azure Functions runtime
+│   ├── server/         # HTTP web server runtime
 │   └── github_client/  # GitHub API integration
 └── docs/               # Documentation
 ```
@@ -110,7 +110,7 @@ release_regent/
 
 **CLI Tool** (`release-regent-cli`): **Published** - Provides local testing capabilities and development workflow integration. Essential for validating configurations and testing release logic.
 
-**Azure Function** (`release-regent-az-func`): **Published** - Webhook processor that connects GitHub events to the core release workflows. Handles authentication, signature validation, and async processing.
+**Server** (`release-regent-server`): **Published** - Webhook processor that connects GitHub events to the core release workflows. Handles authentication, signature validation, and async processing.
 
 **GitHub Client** (`release-regent-github-client`): Internal API client that handles all GitHub interactions with proper rate limiting, retry logic, and error handling.
 

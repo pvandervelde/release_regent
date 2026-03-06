@@ -201,8 +201,8 @@ jobs:
   #     run: |
   #       mkdir -p target/func/merge_warden
   #       cp -r ./target/temp/x86_64-unknown-linux-musl/release/az_handler target/func
-  #       cp -r ./configs/az_func/merge_warden/* target/func/merge_warden
-  #       cp -r ./configs/az_func/host.json target/func
+  #       cp -r ./configs/server/merge_warden/* target/func/merge_warden
+  #       cp -r ./configs/server/host.json target/func
 
   #   - name: show directories after assemble
   #     run: |
