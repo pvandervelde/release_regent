@@ -139,7 +139,7 @@ crates/
 ├── core/          # Business logic and core functionality
 ├── github_client/ # GitHub API interactions
 ├── cli/           # Command-line interface
-└── az_func/       # Azure Function runtime
+└── server/        # HTTP web server runtime
 ```
 
 ### Error Handling

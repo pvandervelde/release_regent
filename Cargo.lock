@@ -2949,26 +2949,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a96887878f22d7bad8a3b6dc5b7440e0ada9a245242924394987b21cf2210a4c"
 
 [[package]]
-name = "release-regent-az-func"
-version = "0.1.0"
-dependencies = [
- "axum",
- "azure_identity",
- "azure_security_keyvault_secrets",
- "hyper 1.8.1",
- "release-regent-core",
- "release-regent-github-client",
- "serde",
- "serde_json",
- "serde_yaml",
- "thiserror 2.0.18",
- "tokio",
- "tokio-test",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "release-regent-cli"
 version = "0.1.0"
 dependencies = [
@@ -3025,6 +3005,26 @@ dependencies = [
  "tokio",
  "tokio-test",
  "tracing",
+]
+
+[[package]]
+name = "release-regent-server"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "azure_identity",
+ "azure_security_keyvault_secrets",
+ "hyper 1.8.1",
+ "release-regent-core",
+ "release-regent-github-client",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-test",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

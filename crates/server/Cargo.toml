@@ -1,5 +1,5 @@
 [package]
-name = "release-regent-az-func"
+name = "release-regent-server"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,6 +8,10 @@ license.workspace = true
 homepage.workspace = true
 repository.workspace = true
 description = "Web server host for Release Regent webhook processing"
+
+[[bin]]
+name = "rr-server"
+path = "src/main.rs"
 
 [dependencies]
 # Core dependencies

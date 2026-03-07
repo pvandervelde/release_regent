@@ -4,7 +4,7 @@ members = [
     "crates/github_client",
     "crates/core",
     "crates/cli",
-    "crates/az_func",
+    "crates/server",
     "crates/testing",
     "crates/config_provider",
 ]

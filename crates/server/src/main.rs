@@ -129,7 +129,7 @@ async fn process_webhook_request(payload: String) -> FunctionResult<serde_json::
 fn setup_logging() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let filter = tracing_subscriber::filter::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| {
-            "release_regent_az_func=debug,release_regent_core=debug,release_regent_github_client=debug,info".into()
+            "release_regent_server=debug,release_regent_core=debug,release_regent_github_client=debug,info".into()
         });
 
     tracing_subscriber::registry()
