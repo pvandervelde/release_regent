@@ -39,7 +39,7 @@ When a release PR is merged:
 ### Core Components
 
 - **CLI Tool**: Local development and testing of release workflows
-- **Azure Functions Integration**: Webhook-based automation for GitHub repositories
+- **Webhook Server Integration**: Webhook-based automation for GitHub repositories
 - **GitHub API Client**: Handles all GitHub interactions with proper authentication and rate limiting
 - **Configuration System**: Template-based customization of release PRs and changelog formatting
 
@@ -114,7 +114,7 @@ release_regent/
 
 **GitHub Client** (`release-regent-github-client`): Internal API client that handles all GitHub interactions with proper rate limiting, retry logic, and error handling.
 
-> **Publication Model**: Only the CLI tool and Azure Function are published for end users. The core and GitHub client components are internal implementation details that ensure clean separation of concerns.
+> **Publication Model**: Only the CLI tool and server binary are published for end users. The core and GitHub client components are internal implementation details that ensure clean separation of concerns.
 
 ## Configuration Example
 
@@ -174,7 +174,7 @@ Release Regent is in **active development** implementing the complete automation
 
 - **Release PR Management**: Automated PR creation and updates
 - **Release Automation**: GitHub release creation from merged release PRs
-- **Webhook Processing**: Complete Azure Function integration
+- **Webhook Processing**: Complete HTTP server integration
 - **Template System**: Full customization capabilities
 
 ### 🎯 Upcoming (v1.0)

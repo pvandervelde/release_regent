@@ -24,24 +24,24 @@ Release Regent processes GitHub webhooks to automatically manage releases when p
 ```mermaid
 sequenceDiagram
     participant GitHub
-    participant AzureFunction
+    participant Server
     participant WebhookProcessor
     participant GitHubAuth
     participant ReleaseManager
 
-    GitHub->>AzureFunction: POST /webhook (signed payload)
-    AzureFunction->>WebhookProcessor: process_event()
+    GitHub->>Server: POST /webhook (signed payload)
+    Server->>WebhookProcessor: process_event()
     WebhookProcessor->>GitHubAuth: verify_webhook_signature()
     GitHubAuth-->>WebhookProcessor: validation result
 
     alt signature valid
         WebhookProcessor->>WebhookProcessor: extract_pull_request_info()
         WebhookProcessor->>ReleaseManager: trigger_release_process()
-        WebhookProcessor-->>AzureFunction: ProcessingResult
-        AzureFunction-->>GitHub: 200 OK
+        WebhookProcessor-->>Server: ProcessingResult
+        Server-->>GitHub: 200 OK
     else signature invalid
-        WebhookProcessor-->>AzureFunction: ValidationError
-        AzureFunction-->>GitHub: 401 Unauthorized
+        WebhookProcessor-->>Server: ValidationError
+        Server-->>GitHub: 401 Unauthorized
     end
 ```
 
