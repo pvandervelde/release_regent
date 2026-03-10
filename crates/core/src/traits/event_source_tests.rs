@@ -190,7 +190,10 @@ fn test_processing_event_serde_preserves_event_id() {
 
 #[test]
 fn test_event_type_display_pull_request_merged_matches_wire_format() {
-    assert_eq!(EventType::PullRequestMerged.to_string(), "pull_request_merged");
+    assert_eq!(
+        EventType::PullRequestMerged.to_string(),
+        "pull_request_merged"
+    );
 }
 
 #[test]
