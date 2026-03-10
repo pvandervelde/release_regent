@@ -40,6 +40,12 @@ pub struct PullRequestInfo {
 }
 
 /// Repository information from webhook
+///
+/// # Deprecation
+///
+/// TODO(task-5.0): superseded by [`traits::event_source::RepositoryInfo`].
+/// Remove this type once the webhook processor is updated to produce
+/// `ProcessingEvent` directly and task 5.0 is complete.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RepositoryInfo {
     /// Repository owner

@@ -141,6 +141,14 @@ pub enum EventType {
     /// A GitHub event that this version of Release Regent does not recognise.
     ///
     /// The inner `String` preserves the raw event type for diagnostic logging.
+    ///
+    /// # Serialisation note
+    ///
+    /// With `#[serde(rename_all = "snake_case")]` the unit variants serialise
+    /// as bare JSON strings (e.g. `"pull_request_merged"`), but this newtype
+    /// variant serialises as a JSON object (e.g. `{"unknown":"some_novel_event"}`).
+    /// Downstream consumers that compare raw JSON text against a serialised
+    /// `EventType` must account for this difference.
     Unknown(String),
 }
 
@@ -163,6 +171,30 @@ impl From<&str> for EventType {
 impl From<String> for EventType {
     fn from(s: String) -> Self {
         Self::from(s.as_str())
+    }
+}
+
+impl std::fmt::Display for EventType {
+    /// Formats the event type as its wire-format string.
+    ///
+    /// Unit variants produce the same string as their serde serialised form
+    /// (e.g. `pull_request_merged`). The `Unknown` variant forwards the inner
+    /// raw string, so `format!("{}", EventType::Unknown("foo".into()))` gives
+    /// `"foo"` rather than `"unknown"`.
+    ///
+    /// This is useful for structured log fields:
+    /// ```rust
+    /// use release_regent_core::traits::event_source::EventType;
+    /// let et = EventType::PullRequestMerged;
+    /// assert_eq!(et.to_string(), "pull_request_merged");
+    /// ```
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PullRequestMerged => write!(f, "pull_request_merged"),
+            Self::ReleasePrMerged => write!(f, "release_pr_merged"),
+            Self::PullRequestCommentReceived => write!(f, "pull_request_comment_received"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
     }
 }
 
@@ -193,7 +225,8 @@ pub struct ProcessingEvent {
     ///
     /// Passed back to [`EventSource::acknowledge`] / [`EventSource::reject`] so
     /// the source can settle (complete, abandon, or dead-letter) the underlying
-    /// message or request.
+    /// message or request. When calling `reject`, also supply `permanent: bool`
+    /// to indicate whether the failure is retryable.
     pub event_id: String,
 
     /// Cross-system correlation identifier for distributed tracing.
@@ -241,11 +274,11 @@ pub struct ProcessingEvent {
 ///
 /// # Source-specific semantics
 ///
-/// | Source | `acknowledge` | `reject` |
-/// |--------|--------------|---------|
-/// | Webhook | no-op (fire-and-forget) | no-op |
-/// | Queue   | complete/delete message | abandon (retryable) or dead-letter (permanent) |
-/// | Mock    | recorded for assertions | recorded for assertions |
+/// | Source | `acknowledge` | `reject(_, permanent=false)` | `reject(_, permanent=true)` |
+/// |--------|--------------|------------------------------|-----------------------------|
+/// | Webhook | no-op (fire-and-forget) | no-op | no-op |
+/// | Queue   | complete/delete message | re-queue for retry | dead-letter |
+/// | Mock    | recorded for assertions | recorded for assertions | recorded for assertions |
 #[async_trait]
 pub trait EventSource: Send + Sync {
     /// Poll for the next available event.
@@ -277,19 +310,24 @@ pub trait EventSource: Send + Sync {
 
     /// Signal that processing of the event identified by `event_id` failed.
     ///
-    /// For queue-based sources this either re-queues the message for a retry
-    /// (transient failure) or routes it to a dead-letter queue (permanent
-    /// failure). For webhook sources this is a no-op.
+    /// The `permanent` flag distinguishes transient from permanent failures:
+    ///
+    /// - `permanent = false` — transient failure; the event may be retried.
+    ///   Queue-based sources re-queue the message (abandon / nack).
+    /// - `permanent = true` — permanent failure; the event must not be retried.
+    ///   Queue-based sources route the message to a dead-letter queue (or
+    ///   equivalent). Webhook sources treat both values as a no-op.
     ///
     /// # Parameters
     ///
     /// - `event_id`: The [`ProcessingEvent::event_id`] returned by `next_event`.
+    /// - `permanent`: Whether this is a permanent (non-retryable) failure.
     ///
     /// # Errors
     ///
     /// Returns `Err` only for unrecoverable infrastructure failures. An unknown
     /// `event_id` must **not** be treated as an error.
-    async fn reject(&self, event_id: &str) -> CoreResult<()>;
+    async fn reject(&self, event_id: &str, permanent: bool) -> CoreResult<()>;
 }
 
 #[cfg(test)]

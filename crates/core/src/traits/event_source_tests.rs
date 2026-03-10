@@ -186,6 +186,49 @@ fn test_processing_event_serde_preserves_event_id() {
     assert_eq!(decoded.event_id, "evt-001");
 }
 
+// ── EventType Display ────────────────────────────────────────────────────────
+
+#[test]
+fn test_event_type_display_pull_request_merged_matches_wire_format() {
+    assert_eq!(EventType::PullRequestMerged.to_string(), "pull_request_merged");
+}
+
+#[test]
+fn test_event_type_display_release_pr_merged_matches_wire_format() {
+    assert_eq!(EventType::ReleasePrMerged.to_string(), "release_pr_merged");
+}
+
+#[test]
+fn test_event_type_display_pull_request_comment_received_matches_wire_format() {
+    assert_eq!(
+        EventType::PullRequestCommentReceived.to_string(),
+        "pull_request_comment_received"
+    );
+}
+
+#[test]
+fn test_event_type_display_unknown_returns_inner_string_not_variant_name() {
+    assert_eq!(
+        EventType::Unknown("deployment_created".to_string()).to_string(),
+        "deployment_created"
+    );
+}
+
+#[test]
+fn test_event_type_display_matches_from_round_trip() {
+    // Display output must be parseable back to the same variant via From.
+    let variants = [
+        EventType::PullRequestMerged,
+        EventType::ReleasePrMerged,
+        EventType::PullRequestCommentReceived,
+    ];
+    for variant in &variants {
+        let displayed = variant.to_string();
+        let reparsed = EventType::from(displayed.as_str());
+        assert_eq!(*variant, reparsed, "round-trip failed for {displayed}");
+    }
+}
+
 // ── RepositoryInfo serde round-trip ──────────────────────────────────────────
 
 #[test]
