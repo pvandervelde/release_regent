@@ -54,8 +54,8 @@ opentelemetry-jaeger = "0.22"
 opentelemetry_sdk = "0.30"
 
 # Azure
-azure_identity = "0.31"
-azure_security_keyvault_secrets = "0.10"
+azure_identity = "0.33"
+azure_security_keyvault_secrets = "0.12"
 
 # Test dependencies
 tempfile = "3.8"
