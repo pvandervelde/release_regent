@@ -37,7 +37,7 @@ toml = "0.8"
 # GitHub integration
 github-bot-sdk = { git = "https://github.com/pvandervelde/github-bot-sdk", rev = "5ea985e" }
 octocrab = "0.38"
-reqwest = { version = "0.11", features = ["json", "rustls-tls"] }
+reqwest = { version = "0.13", features = ["json", "rustls-tls"] }
 
 # Crypto and security
 jsonwebtoken = "9.2"
