@@ -15,6 +15,8 @@ path = "src/main.rs"
 
 [dependencies]
 # Core dependencies
+async-trait = { workspace = true }
+bytes = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -22,6 +24,7 @@ serde_yaml = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+chrono = { workspace = true }
 
 # Web server dependencies
 axum = { workspace = true }
@@ -31,9 +34,15 @@ hyper = { workspace = true }
 azure_identity = { workspace = true }
 azure_security_keyvault_secrets = { workspace = true }
 
+# GitHub SDK
+github-bot-sdk = { workspace = true }
+
 # Release Regent dependencies
 release-regent-core = { path = "../core" }
 release-regent-github-client = { path = "../github_client" }
 
 [dev-dependencies]
 tokio-test = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }

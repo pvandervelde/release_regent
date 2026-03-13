@@ -1,16 +1,22 @@
 # System Architecture Overview
 
-**Last Updated**: 2025-07-19
-**Status**: Complete
+**Last Updated**: 2026-03-13
+**Status**: Updated — see ADR-002
 
 ## High-Level Architecture
 
-Release Regent follows a serverless, event-driven architecture that processes GitHub webhooks to automate release management workflows.
+Release Regent is a containerised, event-driven service that processes GitHub webhooks to
+automate release management workflows.
+
+> **Note**: Earlier versions of this document described a serverless (Azure Functions / AWS
+> Lambda) deployment model. That target has been superseded by a container-based deployment
+> model. See [ADR-002](../../adr/ADR-002-long-running-server-deployment-model.md) for the
+> rationale.
 
 ### Architecture Principles
 
 **Event-Driven Processing**: All workflows triggered by GitHub webhook events
-**Serverless Design**: Stateless functions that auto-scale based on demand
+**Container-Based Deployment**: Runs as an OCI container in any container orchestration platform
 **Idempotent Operations**: All operations safe to retry without side effects
 **Single Responsibility**: Each component has a focused, well-defined purpose
 
@@ -24,7 +30,7 @@ C4Context
     Person(developer, "Developer", "Contributes code changes")
     System(releaseregent, "Release Regent", "Automates release management")
     System_Ext(github, "GitHub", "Source code hosting and API")
-    System_Ext(cloud, "Cloud Provider", "Serverless hosting platform")
+    System_Ext(cloud, "Cloud Provider", "Container orchestration platform")
 
     Rel(developer, github, "Merges pull requests")
     Rel(github, releaseregent, "Sends webhook events")
@@ -39,7 +45,7 @@ C4Context
 C4Container
     title Container Diagram for Release Regent
 
-    Container(function, "Function Host", "Azure Functions/AWS Lambda", "Serverless function runtime")
+    Container(function, "Server", "Docker / OCI container", "Long-running Axum HTTP server")
     Container(core, "Core Engine", "Rust", "Business logic and workflow orchestration")
     Container(github_client, "GitHub Client", "Rust", "GitHub API integration")
     Container(config, "Configuration", "YAML", "Application and repository settings")
@@ -92,16 +98,16 @@ flowchart TD
 
 ### Core Components
 
-#### 1. Function Host
+#### 1. Server (Container Host)
 
-**Purpose**: Serverless runtime environment
-**Technology**: Azure Functions (Linux) or AWS Lambda
+**Purpose**: Long-running HTTP server hosting the webhook intake
+**Technology**: Axum HTTP server (`crates/server`), deployed as an OCI container
 **Responsibilities**:
 
-- Receive and validate incoming webhooks
-- Route events to core processing engine
-- Handle authentication and environment setup
-- Manage function lifecycle and scaling
+- Receive and signature-validate incoming webhooks (via `github-bot-sdk`)
+- Route validated events into the core processing pipeline
+- Handle environment configuration and startup
+- Expose health check endpoint for container orchestration probes
 
 #### 2. Webhook Processor
 
@@ -154,7 +160,7 @@ flowchart TD
 ```mermaid
 sequenceDiagram
     participant G as GitHub
-    participant F as Function Host
+    participant F as Server (Container)
     participant W as Webhook Processor
     participant R as Release Orchestrator
     participant P as PR Manager
@@ -183,7 +189,7 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     participant G as GitHub
-    participant F as Function Host
+    participant F as Server (Container)
     participant W as Webhook Processor
     participant A as Release Automator
     participant R as Release Manager
@@ -250,40 +256,44 @@ sequenceDiagram
 
 ## Deployment Architecture
 
-### Serverless Deployment
+### Container Deployment
+
+Release Regent runs as an OCI container image built from `crates/server`. It can be hosted on
+any container orchestration platform (Kubernetes, Azure Container Apps, AWS ECS, Docker Compose).
+See [ADR-002](../../adr/ADR-002-long-running-server-deployment-model.md) for the full rationale.
 
 ```mermaid
 graph TB
-    subgraph "Azure/AWS Cloud"
+    subgraph "Container Platform (Kubernetes / ACA / ECS)"
         subgraph "Compute"
-            F[Function App/Lambda]
-            S[Auto Scaling]
+            C[rr-server container]
+            RS[Replica set / horizontal pod autoscaler]
         end
 
         subgraph "Security"
-            KV[Key Vault/Secrets Manager]
-            IAM[Identity & Access Management]
+            KV[Secret Store\nKey Vault / Secrets Manager]
+            IAM[Workload Identity / IAM role]
         end
 
-        subgraph "Monitoring"
-            L[Logs]
-            M[Metrics]
+        subgraph "Observability"
+            L[Structured logs\nstdout JSON]
+            M[Metrics scrape endpoint]
             A[Alerts]
         end
 
         subgraph "Networking"
-            GW[API Gateway]
-            DNS[Custom Domain]
+            ING[Ingress / Load Balancer]
+            DNS[Custom Domain + TLS]
         end
     end
 
-    F --> KV
-    F --> L
-    F --> M
-    S --> F
-    GW --> F
-    DNS --> GW
-    IAM --> F
+    C --> KV
+    C --> L
+    C --> M
+    RS --> C
+    ING --> C
+    DNS --> ING
+    IAM --> C
     IAM --> KV
     M --> A
 ```
@@ -292,29 +302,29 @@ graph TB
 
 #### Compute Resources
 
-**Azure Functions**:
+**Container image**: Built with a multi-stage Dockerfile; final image is a minimal
+`debian:bookworm-slim` or `distroless` image containing only the `rr-server` binary.
 
-- Consumption plan for automatic scaling
-- Linux runtime for Rust application
-- Application Insights for monitoring
+**Scaling**: Horizontal pod / task scaling driven by CPU or request-rate metrics.
+A minimum of one replica is required; the application is stateless so any number of
+replicas can run behind a load balancer.
 
-**AWS Lambda**:
+**Health probes**:
 
-- On-demand scaling with reserved concurrency
-- x86_64 runtime with custom runtime for Rust
-- CloudWatch for logging and monitoring
+- Liveness: `GET /` → HTTP 200
+- Readiness: `GET /` → HTTP 200
 
 #### Storage Resources
 
 **Configuration Storage**: Git repositories or cloud configuration services
-**Temporary Storage**: In-memory processing only
-**Log Storage**: Cloud-native logging services with retention policies
+**Temporary Storage**: In-memory processing only (bounded `mpsc` channel)
+**Log Storage**: Container stdout captured by the platform's native log aggregator
 
 #### Network Resources
 
-**API Gateway**: Custom domain and SSL termination
-**Private Networking**: VNet/VPC integration for security
-**Load Balancing**: Built-in serverless load balancing
+**Ingress / Load Balancer**: Routes HTTPS traffic from GitHub to the container; terminates TLS
+**Private Networking**: Restrict egress to GitHub API endpoints; no inbound except webhook port
+**Load Balancing**: Platform ingress controller (nginx, ALB, Azure Application Gateway)
 
 ## Security Architecture
 
