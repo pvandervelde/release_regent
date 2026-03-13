@@ -215,29 +215,63 @@ fn test_classify_event_pull_request_closed_merged_release_branch_returns_release
 }
 
 #[test]
-fn test_classify_event_pull_request_not_merged_returns_unknown() {
+fn test_classify_event_pull_request_not_merged_returns_unknown_with_action() {
     let payload = json!({
         "action": "closed",
         "pull_request": { "merged": false, "head": { "ref": "feature/x" } }
     });
     let result = classify_event("pull_request", &payload);
-    assert!(matches!(result, EventType::Unknown(_)));
+    assert!(
+        matches!(result, EventType::Unknown(ref s) if s == "pull_request:closed"),
+        "non-merged closed PR must return Unknown with action suffix"
+    );
 }
 
 #[test]
-fn test_classify_event_pull_request_opened_returns_unknown() {
+fn test_classify_event_pull_request_opened_returns_unknown_with_action() {
     let payload = json!({
         "action": "opened",
         "pull_request": { "merged": false, "head": { "ref": "feature/x" } }
     });
     let result = classify_event("pull_request", &payload);
-    assert!(matches!(result, EventType::Unknown(_)));
+    assert!(
+        matches!(result, EventType::Unknown(ref s) if s == "pull_request:opened"),
+        "opened PR must return Unknown with action suffix"
+    );
 }
 
 #[test]
-fn test_classify_event_issue_comment_returns_pr_comment_received() {
-    let result = classify_event("issue_comment", &json!({}));
+fn test_classify_event_issue_comment_on_pr_returns_pr_comment_received() {
+    // Payload with "issue.pull_request" present — this is a PR comment.
+    let payload = json!({
+        "action": "created",
+        "issue": {
+            "number": 7,
+            "pull_request": {
+                "url": "https://api.github.com/repos/owner/repo/pulls/7"
+            }
+        }
+    });
+    let result = classify_event("issue_comment", &payload);
     assert_eq!(result, EventType::PullRequestCommentReceived);
+}
+
+#[test]
+fn test_classify_event_issue_comment_on_regular_issue_returns_unknown() {
+    // Payload without "issue.pull_request" — this is a plain issue comment.
+    let payload = json!({
+        "action": "created",
+        "issue": {
+            "number": 42,
+            "title": "Bug report"
+            // no "pull_request" key
+        }
+    });
+    let result = classify_event("issue_comment", &payload);
+    assert!(
+        matches!(result, EventType::Unknown(ref s) if s == "issue_comment:issue"),
+        "issue_comment on a plain issue must not be classified as PullRequestCommentReceived"
+    );
 }
 
 #[test]
@@ -669,12 +703,13 @@ async fn test_receive_webhook_valid_request_invokes_handler_and_sends_event() {
     let response = receiver.receive_webhook(request).await;
     assert_eq!(response.status_code(), 200);
 
-    // The handler runs fire-and-forget; wait briefly for it to complete.
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-    let event = rx
-        .try_recv()
-        .expect("handler must have sent a ProcessingEvent to the channel");
+    // The handler runs fire-and-forget inside the SDK. Wait up to 1 second for
+    // the spawned task to deliver the event rather than relying on an arbitrary
+    // sleep, which is fragile on slow CI machines.
+    let event = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+        .await
+        .expect("timed out waiting for fire-and-forget handler to deliver event")
+        .expect("channel must not be closed before the event arrives");
     assert_eq!(event.event_type, EventType::PullRequestMerged);
     assert_eq!(event.repository.owner, "owner");
     assert_eq!(event.repository.name, "test-repo");

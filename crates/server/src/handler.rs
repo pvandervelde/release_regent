@@ -102,6 +102,10 @@ impl SecretProvider for WebhookSecretProvider {
     }
 
     fn cache_duration(&self) -> chrono::Duration {
+        // The SDK requires a non-zero TTL. In this implementation the secret is
+        // pre-loaded at startup — this value does not trigger any actual re-fetch;
+        // it only satisfies the contract. Five minutes is the shortest reasonable
+        // value for a cached credential.
         chrono::Duration::minutes(5)
     }
 }
@@ -112,10 +116,25 @@ impl SecretProvider for WebhookSecretProvider {
 
 /// Classify a raw GitHub webhook event into a domain [`EventType`].
 ///
-/// Only `pull_request` events with `action = "closed"` **and** `merged = true`
-/// are classified as [`EventType::PullRequestMerged`] or
-/// [`EventType::ReleasePrMerged`]. Everything else falls back to
-/// [`EventType::Unknown`].
+/// ## Routing table
+///
+/// | `X-GitHub-Event`              | Conditions                                     | Result                             |
+/// |-------------------------------|------------------------------------------------|------------------------------------|
+/// | `pull_request`                | `action=closed`, `merged=true`, non-release branch | `PullRequestMerged`            |
+/// | `pull_request`                | `action=closed`, `merged=true`, `release/v*` branch | `ReleasePrMerged`             |
+/// | `pull_request`                | any other action or not merged                 | `Unknown("pull_request:<action>")` |
+/// | `issue_comment`               | `issue.pull_request` field present in payload  | `PullRequestCommentReceived`       |
+/// | `issue_comment`               | no `issue.pull_request` field (plain issue)    | `Unknown("issue_comment:issue")`   |
+/// | `pull_request_review_comment` | always                                         | `PullRequestCommentReceived`       |
+/// | everything else               | always                                         | `Unknown("<event_type>")`          |
+///
+/// # Release branch prefix
+///
+/// The `release/v` branch prefix is currently hardcoded. Repositories using a
+/// different convention (e.g. `releases/v`, `rel/v`) will have their release
+/// PR merges classified as [`EventType::PullRequestMerged`] instead of
+/// [`EventType::ReleasePrMerged`]. This will be made configurable once branch
+/// prefix support is added to the configuration loading infrastructure.
 ///
 /// # Parameters
 ///
@@ -124,22 +143,49 @@ impl SecretProvider for WebhookSecretProvider {
 pub fn classify_event(event_type: &str, payload: &serde_json::Value) -> EventType {
     match event_type {
         "pull_request" => classify_pull_request_event(payload),
-        "issue_comment" | "pull_request_review_comment" => EventType::PullRequestCommentReceived,
+        "issue_comment" => classify_issue_comment_event(payload),
+        "pull_request_review_comment" => EventType::PullRequestCommentReceived,
         other => EventType::Unknown(other.to_string()),
     }
 }
 
+/// Classify an `issue_comment` payload.
+///
+/// GitHub fires `issue_comment` events for comments on both plain Issues and
+/// Pull Requests. Only comments where the `issue.pull_request` field is present
+/// are classified as [`EventType::PullRequestCommentReceived`]. Comments on
+/// plain issues are classified as `Unknown("issue_comment:issue")` and will be
+/// logged and dropped by the event loop.
+fn classify_issue_comment_event(payload: &serde_json::Value) -> EventType {
+    if payload
+        .get("issue")
+        .and_then(|i| i.get("pull_request"))
+        .is_some()
+    {
+        EventType::PullRequestCommentReceived
+    } else {
+        EventType::Unknown("issue_comment:issue".to_string())
+    }
+}
+
 /// Classify a `pull_request` payload into a specific [`EventType`].
+///
+/// Non-closed and non-merged events return `Unknown("pull_request:<action>")`
+/// so that the action is visible in logs when diagnosing which events are being
+/// discarded.
 fn classify_pull_request_event(payload: &serde_json::Value) -> EventType {
-    let is_closed = payload.get("action").and_then(serde_json::Value::as_str) == Some("closed");
+    let action = payload
+        .get("action")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("unknown");
 
     let is_merged = payload
         .pointer("/pull_request/merged")
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
 
-    if !(is_closed && is_merged) {
-        return EventType::Unknown("pull_request".to_string());
+    if !(action == "closed" && is_merged) {
+        return EventType::Unknown(format!("pull_request:{action}"));
     }
 
     let head_ref = payload
@@ -297,6 +343,13 @@ impl WebhookHandler for ReleaseRegentWebhookHandler {
 ///
 /// `acknowledge` and `reject` are deliberate no-ops: webhooks are
 /// fire-and-forget and GitHub does not support per-event back-pressure.
+///
+/// # Implementation notes
+///
+/// The receiver is wrapped in `Arc<Mutex<…>>` solely because the
+/// [`EventSource`] trait requires `&self` on `next_event`; mutably borrowing
+/// the channel requires interior mutability. In a healthy deployment only one
+/// task ever calls `next_event`, so lock contention is zero.
 pub struct WebhookEventSource {
     rx: Arc<Mutex<mpsc::Receiver<ProcessingEvent>>>,
 }
@@ -312,6 +365,13 @@ impl WebhookEventSource {
 
 #[async_trait]
 impl EventSource for WebhookEventSource {
+    /// Poll for the next available event.
+    ///
+    /// Uses [`mpsc::Receiver::try_recv`] (non-blocking) so that this call
+    /// returns immediately when the channel is empty, consistent with the
+    /// [`EventSource`] trait contract. The event loop consuming this source
+    /// **must** yield between empty polls (e.g. via `tokio::time::sleep`) to
+    /// avoid busy-spinning.
     async fn next_event(&self) -> CoreResult<Option<ProcessingEvent>> {
         let mut rx = self.rx.lock().await;
         match rx.try_recv() {

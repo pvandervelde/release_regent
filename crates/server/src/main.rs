@@ -92,11 +92,12 @@ async fn webhook_handler(
 ) -> StatusCode {
     let headers_map: HashMap<String, String> = headers
         .iter()
-        .filter_map(|(name, value)| {
-            value
-                .to_str()
-                .ok()
-                .map(|v| (name.as_str().to_string(), v.to_string()))
+        .filter_map(|(name, value)| match value.to_str() {
+            Ok(v) => Some((name.as_str().to_string(), v.to_string())),
+            Err(_) => {
+                warn!(header = %name, "Dropping header with non-UTF-8 value");
+                None
+            }
         })
         .collect();
 
@@ -174,10 +175,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .unwrap_or_else(|_| vec!["*".to_string()]);
 
     // Bounded channel capacity for in-flight events.
-    let channel_capacity: usize = std::env::var("EVENT_CHANNEL_CAPACITY")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(1024);
+    let channel_capacity: usize = match std::env::var("EVENT_CHANNEL_CAPACITY") {
+        Ok(s) => s.parse::<usize>().unwrap_or_else(|_| {
+            warn!(
+                value = %s,
+                variable = "EVENT_CHANNEL_CAPACITY",
+                "Invalid value; using default 1024"
+            );
+            1024
+        }),
+        Err(_) => 1024,
+    };
 
     // Build matched handler/source pair sharing a bounded mpsc channel.
     // `_event_source` is wired into `run_event_loop` in task 4.0.
