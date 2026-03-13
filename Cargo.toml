@@ -32,7 +32,7 @@ thiserror = "2.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.9"
-toml = "0.8"
+toml = "0.9"
 
 # GitHub integration
 github-bot-sdk = { git = "https://github.com/pvandervelde/github-bot-sdk", rev = "5ea985e" }
