@@ -16,6 +16,7 @@ use tracing::{debug, error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod errors;
+mod handler;
 
 use errors::FunctionResult;
 
