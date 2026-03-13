@@ -1,16 +1,22 @@
 # System Architecture Overview
 
-**Last Updated**: 2025-07-19
-**Status**: Complete
+**Last Updated**: 2026-03-13
+**Status**: Updated — see ADR-002
 
 ## High-Level Architecture
 
-Release Regent follows a serverless, event-driven architecture that processes GitHub webhooks to automate release management workflows.
+Release Regent is a containerised, event-driven service that processes GitHub webhooks to
+automate release management workflows.
+
+> **Note**: Earlier versions of this document described a serverless (Azure Functions / AWS
+> Lambda) deployment model. That target has been superseded by a container-based deployment
+> model. See [ADR-002](../../adr/ADR-002-long-running-server-deployment-model.md) for the
+> rationale.
 
 ### Architecture Principles
 
 **Event-Driven Processing**: All workflows triggered by GitHub webhook events
-**Serverless Design**: Stateless functions that auto-scale based on demand
+**Container-Based Deployment**: Runs as an OCI container in any container orchestration platform
 **Idempotent Operations**: All operations safe to retry without side effects
 **Single Responsibility**: Each component has a focused, well-defined purpose
 
@@ -39,7 +45,7 @@ C4Context
 C4Container
     title Container Diagram for Release Regent
 
-    Container(function, "Function Host", "Azure Functions/AWS Lambda", "Serverless function runtime")
+    Container(function, "Server", "Docker / OCI container", "Long-running Axum HTTP server")
     Container(core, "Core Engine", "Rust", "Business logic and workflow orchestration")
     Container(github_client, "GitHub Client", "Rust", "GitHub API integration")
     Container(config, "Configuration", "YAML", "Application and repository settings")
@@ -92,16 +98,16 @@ flowchart TD
 
 ### Core Components
 
-#### 1. Function Host
+#### 1. Server (Container Host)
 
-**Purpose**: Serverless runtime environment
-**Technology**: Azure Functions (Linux) or AWS Lambda
+**Purpose**: Long-running HTTP server hosting the webhook intake
+**Technology**: Axum HTTP server (`crates/server`), deployed as an OCI container
 **Responsibilities**:
 
-- Receive and validate incoming webhooks
-- Route events to core processing engine
-- Handle authentication and environment setup
-- Manage function lifecycle and scaling
+- Receive and signature-validate incoming webhooks (via `github-bot-sdk`)
+- Route validated events into the core processing pipeline
+- Handle environment configuration and startup
+- Expose health check endpoint for container orchestration probes
 
 #### 2. Webhook Processor
 
@@ -154,7 +160,7 @@ flowchart TD
 ```mermaid
 sequenceDiagram
     participant G as GitHub
-    participant F as Function Host
+    participant F as Server (Container)
     participant W as Webhook Processor
     participant R as Release Orchestrator
     participant P as PR Manager
@@ -183,7 +189,7 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     participant G as GitHub
-    participant F as Function Host
+    participant F as Server (Container)
     participant W as Webhook Processor
     participant A as Release Automator
     participant R as Release Manager
