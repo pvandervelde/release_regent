@@ -30,7 +30,7 @@ C4Context
     Person(developer, "Developer", "Contributes code changes")
     System(releaseregent, "Release Regent", "Automates release management")
     System_Ext(github, "GitHub", "Source code hosting and API")
-    System_Ext(cloud, "Cloud Provider", "Serverless hosting platform")
+    System_Ext(cloud, "Cloud Provider", "Container orchestration platform")
 
     Rel(developer, github, "Merges pull requests")
     Rel(github, releaseregent, "Sends webhook events")
@@ -256,40 +256,44 @@ sequenceDiagram
 
 ## Deployment Architecture
 
-### Serverless Deployment
+### Container Deployment
+
+Release Regent runs as an OCI container image built from `crates/server`. It can be hosted on
+any container orchestration platform (Kubernetes, Azure Container Apps, AWS ECS, Docker Compose).
+See [ADR-002](../../adr/ADR-002-long-running-server-deployment-model.md) for the full rationale.
 
 ```mermaid
 graph TB
-    subgraph "Azure/AWS Cloud"
+    subgraph "Container Platform (Kubernetes / ACA / ECS)"
         subgraph "Compute"
-            F[Function App/Lambda]
-            S[Auto Scaling]
+            C[rr-server container]
+            RS[Replica set / horizontal pod autoscaler]
         end
 
         subgraph "Security"
-            KV[Key Vault/Secrets Manager]
-            IAM[Identity & Access Management]
+            KV[Secret Store\nKey Vault / Secrets Manager]
+            IAM[Workload Identity / IAM role]
         end
 
-        subgraph "Monitoring"
-            L[Logs]
-            M[Metrics]
+        subgraph "Observability"
+            L[Structured logs\nstdout JSON]
+            M[Metrics scrape endpoint]
             A[Alerts]
         end
 
         subgraph "Networking"
-            GW[API Gateway]
-            DNS[Custom Domain]
+            ING[Ingress / Load Balancer]
+            DNS[Custom Domain + TLS]
         end
     end
 
-    F --> KV
-    F --> L
-    F --> M
-    S --> F
-    GW --> F
-    DNS --> GW
-    IAM --> F
+    C --> KV
+    C --> L
+    C --> M
+    RS --> C
+    ING --> C
+    DNS --> ING
+    IAM --> C
     IAM --> KV
     M --> A
 ```
@@ -298,29 +302,29 @@ graph TB
 
 #### Compute Resources
 
-**Azure Functions**:
+**Container image**: Built with a multi-stage Dockerfile; final image is a minimal
+`debian:bookworm-slim` or `distroless` image containing only the `rr-server` binary.
 
-- Consumption plan for automatic scaling
-- Linux runtime for Rust application
-- Application Insights for monitoring
+**Scaling**: Horizontal pod / task scaling driven by CPU or request-rate metrics.
+A minimum of one replica is required; the application is stateless so any number of
+replicas can run behind a load balancer.
 
-**AWS Lambda**:
+**Health probes**:
 
-- On-demand scaling with reserved concurrency
-- x86_64 runtime with custom runtime for Rust
-- CloudWatch for logging and monitoring
+- Liveness: `GET /` → HTTP 200
+- Readiness: `GET /` → HTTP 200
 
 #### Storage Resources
 
 **Configuration Storage**: Git repositories or cloud configuration services
-**Temporary Storage**: In-memory processing only
-**Log Storage**: Cloud-native logging services with retention policies
+**Temporary Storage**: In-memory processing only (bounded `mpsc` channel)
+**Log Storage**: Container stdout captured by the platform's native log aggregator
 
 #### Network Resources
 
-**API Gateway**: Custom domain and SSL termination
-**Private Networking**: VNet/VPC integration for security
-**Load Balancing**: Built-in serverless load balancing
+**Ingress / Load Balancer**: Routes HTTPS traffic from GitHub to the container; terminates TLS
+**Private Networking**: Restrict egress to GitHub API endpoints; no inbound except webhook port
+**Load Balancing**: Platform ingress controller (nginx, ALB, Azure Application Gateway)
 
 ## Security Architecture
 
