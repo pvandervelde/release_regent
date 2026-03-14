@@ -221,6 +221,155 @@ pub use traits::{
     ConfigurationProvider, GitHubOperations, GitOperations, VersionCalculator, WebhookValidator,
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// run_event_loop — public API
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Drive the event processing loop until `token` is cancelled.
+///
+/// The loop polls `source.next_event()` continuously:
+///
+/// - `Ok(Some(event))` — dispatches the event to the appropriate handler,
+///   then calls `source.acknowledge()` on success or `source.reject()` on
+///   failure.  Processing errors are **never** fatal to the loop.
+/// - `Ok(None)` — sleeps for 100 ms before polling again (avoids busy-spin).
+/// - `Err(e)` — logs the source-level error and continues; a bad message from
+///   the source does not crash the loop.
+///
+/// The loop exits cleanly (returning `Ok(())`) when `token.is_cancelled()`
+/// returns `true` at the top of any iteration.
+///
+/// # Structured logging
+///
+/// Every event dispatch is wrapped in a tracing span that records
+/// `event_id`, `correlation_id`, and `event_type` as structured fields so that
+/// all log lines emitted within the handler are automatically correlated.
+///
+/// # Cancellation
+///
+/// Cancellation is cooperative: the loop finishes processing the *current*
+/// event (if any) before checking for cancellation again.  There is no forced
+/// interruption mid-dispatch.
+///
+/// # Errors
+///
+/// Currently always returns `Ok(())`.  Future versions may propagate
+/// unrecoverable infrastructure errors.
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// use release_regent_core::run_event_loop;
+/// use tokio_util::sync::CancellationToken;
+///
+/// let token = CancellationToken::new();
+/// let source = MyEventSource::new();
+/// run_event_loop(&source, token).await?;
+/// ```
+pub async fn run_event_loop<S>(
+    source: &S,
+    token: tokio_util::sync::CancellationToken,
+) -> CoreResult<()>
+where
+    S: traits::event_source::EventSource,
+{
+    use traits::event_source::EventType;
+
+    loop {
+        if token.is_cancelled() {
+            break;
+        }
+
+        match source.next_event().await {
+            Ok(Some(event)) => {
+                let span = tracing::info_span!(
+                    "process_event",
+                    event_id = %event.event_id,
+                    correlation_id = %event.correlation_id,
+                    event_type = %event.event_type,
+                );
+                let _entered = span.enter();
+
+                let dispatch_result: CoreResult<()> = match &event.event_type {
+                    EventType::PullRequestMerged => {
+                        tracing::info!(
+                            event_id = %event.event_id,
+                            repository = %format!(
+                                "{}/{}",
+                                event.repository.owner, event.repository.name
+                            ),
+                            "Pull request merged — release orchestrator not yet wired"
+                        );
+                        Ok(())
+                    }
+                    EventType::ReleasePrMerged => {
+                        tracing::info!(
+                            event_id = %event.event_id,
+                            repository = %format!(
+                                "{}/{}",
+                                event.repository.owner, event.repository.name
+                            ),
+                            "Release PR merged — release automator not yet wired"
+                        );
+                        Ok(())
+                    }
+                    EventType::PullRequestCommentReceived => {
+                        tracing::debug!(
+                            event_id = %event.event_id,
+                            "Pull request comment received — no handler yet"
+                        );
+                        Ok(())
+                    }
+                    EventType::Unknown(raw) => {
+                        tracing::debug!(
+                            event_id = %event.event_id,
+                            raw_type = %raw,
+                            "Unknown event type; dropping"
+                        );
+                        Ok(())
+                    }
+                };
+
+                match dispatch_result {
+                    Ok(()) => {
+                        if let Err(e) = source.acknowledge(&event.event_id).await {
+                            tracing::error!(
+                                error = %e,
+                                event_id = %event.event_id,
+                                "Failed to acknowledge event"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        let permanent = !e.is_retryable();
+                        tracing::warn!(
+                            error = %e,
+                            event_id = %event.event_id,
+                            permanent,
+                            "Event processing failed; rejecting"
+                        );
+                        if let Err(reject_err) = source.reject(&event.event_id, permanent).await {
+                            tracing::error!(
+                                error = %reject_err,
+                                event_id = %event.event_id,
+                                "Failed to reject event"
+                            );
+                        }
+                    }
+                }
+            }
+            Ok(None) => {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "Event source error; continuing");
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Release Regent core engine
 ///
 /// This is the main entry point for Release Regent operations. It orchestrates
