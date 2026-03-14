@@ -1,6 +1,7 @@
 use thiserror::Error;
 
 #[cfg(test)]
+#[allow(clippy::duplicate_mod)]
 #[path = "errors_tests.rs"]
 mod tests;
 

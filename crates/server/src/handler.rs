@@ -416,5 +416,6 @@ pub fn create_webhook_components(
 }
 
 #[cfg(test)]
+#[allow(clippy::duplicate_mod)]
 #[path = "handler_tests.rs"]
 mod tests;
