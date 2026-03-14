@@ -2,7 +2,7 @@
 //!
 //! This module provides two creation paths:
 //!
-//! * **Mock mode** ([`create_mock_processor`]) — wires all four dependencies with
+//! * **Mock mode** ([`create_mock_processor`]) — wires all three dependencies with
 //!   in-process mocks from the `release-regent-testing` crate.  Useful during
 //!   development and local integration tests where no real GitHub credentials are
 //!   needed.
@@ -10,10 +10,9 @@
 //! * **Production mode** ([`create_production_processor`]) — reads GitHub App
 //!   credentials from environment variables and connects to the real GitHub API.
 
-use async_trait::async_trait;
-use release_regent_core::{traits::WebhookValidator, CoreResult, ReleaseRegentProcessor};
+use release_regent_core::ReleaseRegentProcessor;
 use release_regent_testing::mocks::{
-    MockConfigurationProvider, MockGitHubOperations, MockVersionCalculator, MockWebhookValidator,
+    MockConfigurationProvider, MockGitHubOperations, MockVersionCalculator,
 };
 use tracing::info;
 
@@ -27,47 +26,6 @@ use crate::{
 mod tests;
 
 // ──────────────────────────────────────────────────────────────────────────────
-// PassThroughWebhookValidator
-// ──────────────────────────────────────────────────────────────────────────────
-
-/// Webhook validator that unconditionally approves every request.
-///
-/// Used in the CLI where webhooks are loaded from local files and there is
-/// no actual HTTP signature to verify.  This must **never** be used in a
-/// deployed service that receives webhooks from the internet.
-#[derive(Debug, Default)]
-pub struct PassThroughWebhookValidator;
-
-impl PassThroughWebhookValidator {
-    /// Create a new pass-through validator.
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-#[async_trait]
-impl WebhookValidator for PassThroughWebhookValidator {
-    /// Always returns `Ok(true)` — signature checking is skipped for local files.
-    async fn verify_signature(
-        &self,
-        _payload: &[u8],
-        _signature: &str,
-        _secret: &str,
-    ) -> CoreResult<bool> {
-        Ok(true)
-    }
-
-    /// Always returns `Ok(true)` — payload structure validation is skipped.
-    async fn validate_payload(
-        &self,
-        _payload: &serde_json::Value,
-        _event_type: &str,
-    ) -> CoreResult<bool> {
-        Ok(true)
-    }
-}
-
-// ──────────────────────────────────────────────────────────────────────────────
 // Type aliases for the two processor flavours
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -76,7 +34,6 @@ pub type MockProcessor = ReleaseRegentProcessor<
     MockGitHubOperations,
     MockConfigurationProvider,
     MockVersionCalculator,
-    MockWebhookValidator,
 >;
 
 /// Type alias for the production processor returned by [`create_production_processor`].
@@ -84,7 +41,6 @@ pub type ProductionProcessor = ReleaseRegentProcessor<
     release_regent_github_client::GitHubClient,
     release_regent_config_provider::FileConfigurationProvider,
     DefaultVersionCalculator,
-    PassThroughWebhookValidator,
 >;
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -93,7 +49,7 @@ pub type ProductionProcessor = ReleaseRegentProcessor<
 
 /// Create a processor that uses all-mock dependencies.
 ///
-/// All four trait slots are filled with configurable in-process mocks from the
+/// All three trait slots are filled with configurable in-process mocks from the
 /// `release-regent-testing` crate.  The mocks return pre-configured responses
 /// and track every call for assertion in tests.
 ///
@@ -107,8 +63,7 @@ pub fn create_mock_processor() -> MockProcessor {
     let github_ops = MockGitHubOperations::new();
     let config_provider = MockConfigurationProvider::new();
     let version_calc = MockVersionCalculator::new();
-    let webhook_validator = MockWebhookValidator::new();
-    ReleaseRegentProcessor::new(github_ops, config_provider, version_calc, webhook_validator)
+    ReleaseRegentProcessor::new(github_ops, config_provider, version_calc)
 }
 
 /// Create a processor that uses production dependencies sourced from environment variables.
@@ -174,12 +129,10 @@ pub async fn create_production_processor() -> CliResult<ProductionProcessor> {
         release_regent_config_provider::FileConfigurationProvider::new(config_dir).await?;
 
     let version_calculator = DefaultVersionCalculator::new();
-    let webhook_validator = PassThroughWebhookValidator::new();
 
     Ok(ReleaseRegentProcessor::new(
         github_client,
         config_provider,
         version_calculator,
-        webhook_validator,
     ))
 }

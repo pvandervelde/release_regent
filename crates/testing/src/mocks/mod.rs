@@ -43,13 +43,11 @@ pub mod configuration_provider;
 pub mod event_source;
 pub mod github_operations;
 pub mod version_calculator;
-pub mod webhook_validator;
 
 pub use configuration_provider::MockConfigurationProvider;
 pub use event_source::MockEventSource;
 pub use github_operations::MockGitHubOperations;
 pub use version_calculator::MockVersionCalculator;
-pub use webhook_validator::MockWebhookValidator;
 
 /// Mock behavior configuration for all trait implementations
 #[derive(Debug, Clone)]

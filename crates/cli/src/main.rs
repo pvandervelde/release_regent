@@ -206,60 +206,25 @@ async fn execute_run(args: RunArgs) -> CliResult<()> {
     let event_json = tokio::fs::read_to_string(&args.event_file).await?;
     info!("Loaded webhook event from: {}", args.event_file.display());
 
-    let payload: serde_json::Value = serde_json::from_str(&event_json)
+    let _payload: serde_json::Value = serde_json::from_str(&event_json)
         .map_err(|e| CliError::invalid_argument("--event-file", format!("Invalid JSON: {}", e)))?;
-
-    // "action" lives at the top of every GitHub webhook payload.
-    let action = payload["action"].as_str().unwrap_or("unknown").to_string();
-
-    let event = release_regent_core::webhook::WebhookEvent::new(
-        args.event_type.clone(),
-        action,
-        payload,
-        std::collections::HashMap::new(), // no HTTP headers for local file input
-    );
 
     info!(
         "Parsed webhook event: type={}, dry_run={}, mock={}",
         args.event_type, args.dry_run, args.mock
     );
 
-    // Route to the appropriate processor based on the --mock flag.
-    if args.mock {
-        info!("Using mock processor for local development");
-        let processor = factory::create_mock_processor();
-        run_with_processor(processor, event, args.dry_run).await
-    } else {
-        info!("Using production processor with GitHub API credentials from environment");
-        let processor = factory::create_production_processor().await?;
-        run_with_processor(processor, event, args.dry_run).await
-    }
-}
-
-/// Drive a [`ReleaseRegentProcessor`] through a single webhook event.
-///
-/// Generic over the four processor trait parameters so it compiles for both the
-/// mock and production processor flavours without requiring a trait object.
-async fn run_with_processor<G, C, V, W>(
-    processor: release_regent_core::ReleaseRegentProcessor<G, C, V, W>,
-    event: release_regent_core::webhook::WebhookEvent,
-    dry_run: bool,
-) -> CliResult<()>
-where
-    G: release_regent_core::traits::GitHubOperations,
-    C: release_regent_core::traits::ConfigurationProvider,
-    V: release_regent_core::traits::VersionCalculator,
-    W: release_regent_core::traits::WebhookValidator,
-{
-    if dry_run {
-        info!("Dry-run mode: skipping webhook processing");
+    if args.dry_run {
+        info!("Dry-run mode: no operations performed");
         println!("🔍 Dry run completed - no changes made");
         return Ok(());
     }
 
-    processor.process_webhook(event).await?;
-    info!("Webhook processing completed successfully");
-    println!("✅ Webhook processing completed successfully");
+    // Direct single-event processing via the CLI is not yet re-implemented
+    // after the transition to the event-source / run_event_loop pipeline.
+    // Use the `rr-server` binary for production webhook processing.
+    println!("⚠️  Direct webhook processing is pending re-implementation.");
+    println!("    Use the rr-server binary for production event processing.");
     Ok(())
 }
 
