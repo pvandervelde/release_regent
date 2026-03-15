@@ -30,7 +30,7 @@
 //! # Graceful shutdown
 //!
 //! A `CancellationToken` is shared between the Axum server and the event loop.
-//! When `SIGINT` (Ctrl-C) or `SIGTERM` is received, the token is cancelled:
+//! When `SIGINT` (Ctrl-C) is received (or `SIGTERM` on Unix), the token is cancelled:
 //! - Axum stops accepting new connections after completing in-flight requests.
 //! - The event loop finishes processing the current event and then exits.
 
@@ -213,14 +213,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         #[cfg(unix)]
         {
             use tokio::signal::unix::{signal, SignalKind};
-            let mut sigterm =
-                signal(SignalKind::terminate()).expect("failed to install SIGTERM handler");
-            tokio::select! {
-                _ = tokio::signal::ctrl_c() => {
-                    info!("Received SIGINT; cancelling");
+            match signal(SignalKind::terminate()) {
+                Ok(mut sigterm) => {
+                    tokio::select! {
+                        _ = tokio::signal::ctrl_c() => {
+                            info!("Received SIGINT; cancelling");
+                        }
+                        _ = sigterm.recv() => {
+                            info!("Received SIGTERM; cancelling");
+                        }
+                    }
                 }
-                _ = sigterm.recv() => {
-                    info!("Received SIGTERM; cancelling");
+                Err(e) => {
+                    error!(error = %e, "Failed to install SIGTERM handler; monitoring SIGINT only");
+                    match tokio::signal::ctrl_c().await {
+                        Ok(()) => info!("Received SIGINT; cancelling"),
+                        Err(e2) => error!(error = %e2, "Failed to install Ctrl-C handler"),
+                    }
                 }
             }
         }
