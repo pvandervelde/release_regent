@@ -52,8 +52,6 @@ struct MockEventSourceState {
     acknowledged: Vec<String>,
     /// `(event_id, permanent)` values passed to `reject`.
     rejected: Vec<(String, bool)>,
-    /// Optional error to inject from `next_event` (injected once, then cleared).
-    next_error: Option<CoreError>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -76,6 +74,11 @@ struct MockEventSourceState {
 #[derive(Debug, Clone)]
 pub struct MockEventSource {
     state: Arc<Mutex<MockEventSourceState>>,
+    /// Kept separate from the async `Mutex` so that `inject_next_error` can be
+    /// called synchronously from test setup without entering a Tokio runtime
+    /// (e.g. from `#[tokio::test]` setup code that runs before the async loop
+    /// is spawned — calling `block_on` from inside a Tokio worker panics).
+    next_error: Arc<std::sync::Mutex<Option<CoreError>>>,
 }
 
 impl MockEventSource {
@@ -89,6 +92,7 @@ impl MockEventSource {
                 events: events.into(),
                 ..Default::default()
             })),
+            next_error: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -100,13 +104,9 @@ impl MockEventSource {
     /// Inject an error that will be returned by the **next** `next_event` call.
     ///
     /// After the error is returned once the queue reverts to normal operation.
+    /// Safe to call from both sync and async contexts.
     pub fn inject_next_error(&self, error: CoreError) {
-        // Block-on to keep API sync; tests run inside a Tokio runtime so this is safe.
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(async {
-            let mut state = self.state.lock().await;
-            state.next_error = Some(error);
-        });
+        *self.next_error.lock().unwrap() = Some(error);
     }
 
     // ─── Assertion helpers ────────────────────────────────────────────────
@@ -139,12 +139,10 @@ impl EventSource for MockEventSource {
     /// If an error was injected via [`inject_next_error`](MockEventSource::inject_next_error),
     /// that error is returned and cleared before any queued event is checked.
     async fn next_event(&self) -> CoreResult<Option<ProcessingEvent>> {
-        let mut state = self.state.lock().await;
-
-        if let Some(err) = state.next_error.take() {
+        if let Some(err) = self.next_error.lock().unwrap().take() {
             return Err(err);
         }
-
+        let mut state = self.state.lock().await;
         Ok(state.events.pop_front())
     }
 

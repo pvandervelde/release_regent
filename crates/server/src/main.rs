@@ -206,18 +206,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let shutdown_token = CancellationToken::new();
 
-    // Spawn a task that cancels the token on SIGINT / Ctrl-C.
+    // Cancel the token on SIGINT (Ctrl-C) or SIGTERM (sent by Kubernetes / ECS
+    // before SIGKILL).  Both signals trigger the same cooperative-shutdown path.
     let signal_token = shutdown_token.clone();
     tokio::spawn(async move {
-        match tokio::signal::ctrl_c().await {
-            Ok(()) => {
-                info!("Received shutdown signal; cancelling event loop and server");
-                signal_token.cancel();
-            }
-            Err(e) => {
-                error!(error = %e, "Failed to install Ctrl-C handler");
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{signal, SignalKind};
+            let mut sigterm =
+                signal(SignalKind::terminate()).expect("failed to install SIGTERM handler");
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {
+                    info!("Received SIGINT; cancelling");
+                }
+                _ = sigterm.recv() => {
+                    info!("Received SIGTERM; cancelling");
+                }
             }
         }
+        #[cfg(not(unix))]
+        {
+            match tokio::signal::ctrl_c().await {
+                Ok(()) => info!("Received shutdown signal; cancelling"),
+                Err(e) => error!(error = %e, "Failed to install Ctrl-C handler"),
+            }
+        }
+        signal_token.cancel();
     });
 
     // ── Event source + processing loop ─────────────────────────────────────

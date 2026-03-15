@@ -376,7 +376,9 @@ impl EventSource for WebhookEventSource {
         let mut rx = self.rx.lock().await;
         match rx.try_recv() {
             Ok(event) => Ok(Some(event)),
-            Err(mpsc::error::TryRecvError::Empty | mpsc::error::TryRecvError::Disconnected) => {
+            Err(mpsc::error::TryRecvError::Empty) => Ok(None),
+            Err(mpsc::error::TryRecvError::Disconnected) => {
+                tracing::warn!("WebhookEventSource channel disconnected; all senders have been dropped");
                 Ok(None)
             }
         }

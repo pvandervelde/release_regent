@@ -264,6 +264,7 @@ pub async fn run_event_loop<S>(
 where
     S: traits::event_source::EventSource,
 {
+    use tracing::Instrument as _;
     use traits::event_source::EventType;
 
     loop {
@@ -279,47 +280,50 @@ where
                     correlation_id = %event.correlation_id,
                     event_type = %event.event_type,
                 );
-                let _entered = span.enter();
 
-                let dispatch_result: CoreResult<()> = match &event.event_type {
-                    EventType::PullRequestMerged => {
-                        tracing::info!(
-                            event_id = %event.event_id,
-                            repository = %format!(
-                                "{}/{}",
-                                event.repository.owner, event.repository.name
-                            ),
-                            "Pull request merged — release orchestrator not yet wired"
-                        );
-                        Ok(())
+                let dispatch_result: CoreResult<()> = async {
+                    match &event.event_type {
+                        EventType::PullRequestMerged => {
+                            tracing::info!(
+                                event_id = %event.event_id,
+                                repository = %format!(
+                                    "{}/{}",
+                                    event.repository.owner, event.repository.name
+                                ),
+                                "Pull request merged — release orchestrator not yet wired"
+                            );
+                            Ok(())
+                        }
+                        EventType::ReleasePrMerged => {
+                            tracing::info!(
+                                event_id = %event.event_id,
+                                repository = %format!(
+                                    "{}/{}",
+                                    event.repository.owner, event.repository.name
+                                ),
+                                "Release PR merged — release automator not yet wired"
+                            );
+                            Ok(())
+                        }
+                        EventType::PullRequestCommentReceived => {
+                            tracing::debug!(
+                                event_id = %event.event_id,
+                                "Pull request comment received — no handler yet"
+                            );
+                            Ok(())
+                        }
+                        EventType::Unknown(raw) => {
+                            tracing::debug!(
+                                event_id = %event.event_id,
+                                raw_type = %raw,
+                                "Unknown event type; dropping"
+                            );
+                            Ok(())
+                        }
                     }
-                    EventType::ReleasePrMerged => {
-                        tracing::info!(
-                            event_id = %event.event_id,
-                            repository = %format!(
-                                "{}/{}",
-                                event.repository.owner, event.repository.name
-                            ),
-                            "Release PR merged — release automator not yet wired"
-                        );
-                        Ok(())
-                    }
-                    EventType::PullRequestCommentReceived => {
-                        tracing::debug!(
-                            event_id = %event.event_id,
-                            "Pull request comment received — no handler yet"
-                        );
-                        Ok(())
-                    }
-                    EventType::Unknown(raw) => {
-                        tracing::debug!(
-                            event_id = %event.event_id,
-                            raw_type = %raw,
-                            "Unknown event type; dropping"
-                        );
-                        Ok(())
-                    }
-                };
+                }
+                .instrument(span)
+                .await;
 
                 match dispatch_result {
                     Ok(()) => {
@@ -354,6 +358,7 @@ where
             }
             Err(e) => {
                 tracing::error!(error = %e, "Event source error; continuing");
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
         }
     }

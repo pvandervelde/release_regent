@@ -115,6 +115,29 @@ fn make_test_event(id: &str, event_type: EventType) -> ProcessingEvent {
     }
 }
 
+/// Poll `acknowledged_ids()` until it contains at least `expected_count`
+/// entries, or the deadline expires.  Cancels `token` once done so the loop
+/// under test exits.  Returns the final acknowledged list.
+async fn wait_for_acks(
+    source: &TestEventSource,
+    expected_count: usize,
+    token: &CancellationToken,
+) -> Vec<String> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let acked = source.acknowledged_ids().await;
+        if acked.len() >= expected_count {
+            token.cancel();
+            return acked;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            token.cancel();
+            return acked;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // ReleaseRegent smoke tests
 // ─────────────────────────────────────────────────────────────────────────────
@@ -154,124 +177,101 @@ async fn test_run_event_loop_exits_immediately_when_token_precancelled() {
 /// A single `PullRequestMerged` event is processed and acknowledged.
 #[tokio::test]
 async fn test_run_event_loop_acknowledges_pull_request_merged_event() {
+    let token = CancellationToken::new();
     let source = TestEventSource::new(vec![make_test_event(
         "evt-pr-1",
         EventType::PullRequestMerged,
     )]);
     let source_for_loop = source.clone();
-
-    let token = CancellationToken::new();
-    let token_loop = token.clone();
-    let token_cancel = token.clone();
+    let loop_token = token.clone();
 
     let loop_handle =
-        tokio::spawn(async move { run_event_loop(&source_for_loop, token_loop).await });
+        tokio::spawn(async move { run_event_loop(&source_for_loop, loop_token).await });
 
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    token_cancel.cancel();
-
+    let acked = wait_for_acks(&source, 1, &token).await;
     loop_handle.await.unwrap().unwrap();
-    assert_eq!(source.acknowledged_ids().await, vec!["evt-pr-1"]);
+    assert_eq!(acked, vec!["evt-pr-1"]);
     assert!(source.rejected_ids().await.is_empty());
 }
 
 /// A single `ReleasePrMerged` event is processed and acknowledged.
 #[tokio::test]
 async fn test_run_event_loop_acknowledges_release_pr_merged_event() {
+    let token = CancellationToken::new();
     let source = TestEventSource::new(vec![make_test_event(
         "evt-rel-1",
         EventType::ReleasePrMerged,
     )]);
     let source_for_loop = source.clone();
-
-    let token = CancellationToken::new();
-    let token_loop = token.clone();
-    let token_cancel = token.clone();
+    let loop_token = token.clone();
 
     let loop_handle =
-        tokio::spawn(async move { run_event_loop(&source_for_loop, token_loop).await });
+        tokio::spawn(async move { run_event_loop(&source_for_loop, loop_token).await });
 
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    token_cancel.cancel();
-
+    let acked = wait_for_acks(&source, 1, &token).await;
     loop_handle.await.unwrap().unwrap();
-    assert_eq!(source.acknowledged_ids().await, vec!["evt-rel-1"]);
+    assert_eq!(acked, vec!["evt-rel-1"]);
     assert!(source.rejected_ids().await.is_empty());
 }
 
 /// `PullRequestCommentReceived` events are acknowledged.
 #[tokio::test]
 async fn test_run_event_loop_acknowledges_pr_comment_event() {
+    let token = CancellationToken::new();
     let source = TestEventSource::new(vec![make_test_event(
         "evt-comment-1",
         EventType::PullRequestCommentReceived,
     )]);
     let source_for_loop = source.clone();
-
-    let token = CancellationToken::new();
-    let token_loop = token.clone();
-    let token_cancel = token.clone();
+    let loop_token = token.clone();
 
     let loop_handle =
-        tokio::spawn(async move { run_event_loop(&source_for_loop, token_loop).await });
+        tokio::spawn(async move { run_event_loop(&source_for_loop, loop_token).await });
 
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    token_cancel.cancel();
-
+    let acked = wait_for_acks(&source, 1, &token).await;
     loop_handle.await.unwrap().unwrap();
-    assert_eq!(source.acknowledged_ids().await, vec!["evt-comment-1"]);
+    assert_eq!(acked, vec!["evt-comment-1"]);
     assert!(source.rejected_ids().await.is_empty());
 }
 
 /// Unknown event types are acknowledged (logged-and-dropped, not errors).
 #[tokio::test]
 async fn test_run_event_loop_acknowledges_unknown_event_type() {
+    let token = CancellationToken::new();
     let source = TestEventSource::new(vec![make_test_event(
         "evt-unknown-1",
         EventType::Unknown("novel_event".to_string()),
     )]);
     let source_for_loop = source.clone();
-
-    let token = CancellationToken::new();
-    let token_loop = token.clone();
-    let token_cancel = token.clone();
+    let loop_token = token.clone();
 
     let loop_handle =
-        tokio::spawn(async move { run_event_loop(&source_for_loop, token_loop).await });
+        tokio::spawn(async move { run_event_loop(&source_for_loop, loop_token).await });
 
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    token_cancel.cancel();
-
+    let acked = wait_for_acks(&source, 1, &token).await;
     loop_handle.await.unwrap().unwrap();
-    assert_eq!(source.acknowledged_ids().await, vec!["evt-unknown-1"]);
+    assert_eq!(acked, vec!["evt-unknown-1"]);
     assert!(source.rejected_ids().await.is_empty());
 }
 
 /// Multiple events are processed in FIFO order and all acknowledged.
 #[tokio::test]
 async fn test_run_event_loop_processes_multiple_events_in_order() {
+    let token = CancellationToken::new();
     let source = TestEventSource::new(vec![
         make_test_event("evt-a", EventType::PullRequestMerged),
         make_test_event("evt-b", EventType::ReleasePrMerged),
         make_test_event("evt-c", EventType::PullRequestMerged),
     ]);
     let source_for_loop = source.clone();
-
-    let token = CancellationToken::new();
-    let token_loop = token.clone();
-    let token_cancel = token.clone();
+    let loop_token = token.clone();
 
     let loop_handle =
-        tokio::spawn(async move { run_event_loop(&source_for_loop, token_loop).await });
+        tokio::spawn(async move { run_event_loop(&source_for_loop, loop_token).await });
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    token_cancel.cancel();
-
+    let acked = wait_for_acks(&source, 3, &token).await;
     loop_handle.await.unwrap().unwrap();
-    assert_eq!(
-        source.acknowledged_ids().await,
-        vec!["evt-a", "evt-b", "evt-c"]
-    );
+    assert_eq!(acked, vec!["evt-a", "evt-b", "evt-c"]);
     assert!(source.rejected_ids().await.is_empty());
 }
 
@@ -279,45 +279,38 @@ async fn test_run_event_loop_processes_multiple_events_in_order() {
 /// that follows the error is still processed and acknowledged.
 #[tokio::test]
 async fn test_run_event_loop_continues_after_source_error() {
+    let token = CancellationToken::new();
     let source = TestEventSource::new(vec![make_test_event(
         "evt-after-err",
         EventType::PullRequestMerged,
     )]);
     source.inject_error(CoreError::network("transient source failure"));
     let source_for_loop = source.clone();
-
-    let token = CancellationToken::new();
-    let token_loop = token.clone();
-    let token_cancel = token.clone();
+    let loop_token = token.clone();
 
     let loop_handle =
-        tokio::spawn(async move { run_event_loop(&source_for_loop, token_loop).await });
+        tokio::spawn(async move { run_event_loop(&source_for_loop, loop_token).await });
 
-    // Allow: error iteration + 100 ms sleep + event processing + 100 ms sleep + margin
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    token_cancel.cancel();
-
+    let acked = wait_for_acks(&source, 1, &token).await;
     loop_handle.await.unwrap().unwrap();
-    // The event after the injected error was still processed.
-    assert_eq!(source.acknowledged_ids().await, vec!["evt-after-err"]);
+    assert_eq!(acked, vec!["evt-after-err"]);
     assert!(source.rejected_ids().await.is_empty());
 }
 
 /// An empty source with a cancellation token exits cleanly.
 #[tokio::test]
 async fn test_run_event_loop_empty_source_exits_cleanly() {
+    let token = CancellationToken::new();
     let source = TestEventSource::empty();
     let source_for_loop = source.clone();
-
-    let token = CancellationToken::new();
-    let token_loop = token.clone();
-    let token_cancel = token.clone();
+    let loop_token = token.clone();
 
     let loop_handle =
-        tokio::spawn(async move { run_event_loop(&source_for_loop, token_loop).await });
+        tokio::spawn(async move { run_event_loop(&source_for_loop, loop_token).await });
 
-    tokio::time::sleep(Duration::from_millis(150)).await;
-    token_cancel.cancel();
+    // Nothing to wait for; cancel immediately and let the loop exit cleanly.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    token.cancel();
 
     loop_handle.await.unwrap().unwrap();
     assert!(source.acknowledged_ids().await.is_empty());
