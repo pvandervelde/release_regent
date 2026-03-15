@@ -30,11 +30,8 @@ mod tests;
 // ──────────────────────────────────────────────────────────────────────────────
 
 /// Type alias for the all-mock processor returned by [`create_mock_processor`].
-pub type MockProcessor = ReleaseRegentProcessor<
-    MockGitHubOperations,
-    MockConfigurationProvider,
-    MockVersionCalculator,
->;
+pub type MockProcessor =
+    ReleaseRegentProcessor<MockGitHubOperations, MockConfigurationProvider, MockVersionCalculator>;
 
 /// Type alias for the production processor returned by [`create_production_processor`].
 pub type ProductionProcessor = ReleaseRegentProcessor<
