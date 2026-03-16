@@ -1,4 +1,146 @@
 use super::*;
+use async_trait::async_trait;
+use chrono::Utc;
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex as StdMutex},
+    time::Duration,
+};
+use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
+use traits::event_source::{
+    EventSource, EventSourceKind, EventType, ProcessingEvent, RepositoryInfo,
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Inline test double (avoids cross-crate type identity issues)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Minimal in-process `EventSource` for unit tests in this crate.
+///
+/// Using `release_regent_testing::MockEventSource` directly in `lib_tests.rs`
+/// causes a type-identity mismatch: the testing crate is compiled against the
+/// *library* artifact of `release_regent_core`, while test code here is
+/// compiled as part of that same crate. Defining the mock locally ensures all
+/// types come from a single compilation unit.
+#[derive(Clone)]
+struct TestEventSource {
+    events: Arc<Mutex<VecDeque<ProcessingEvent>>>,
+    acked: Arc<Mutex<Vec<String>>>,
+    rejected: Arc<Mutex<Vec<(String, bool)>>>,
+    /// `std::sync::Mutex` so `inject_error` can be called from sync test setup.
+    next_error: Arc<StdMutex<Option<CoreError>>>,
+}
+
+impl TestEventSource {
+    fn new(events: Vec<ProcessingEvent>) -> Self {
+        Self {
+            events: Arc::new(Mutex::new(events.into())),
+            acked: Arc::new(Mutex::new(vec![])),
+            rejected: Arc::new(Mutex::new(vec![])),
+            next_error: Arc::new(StdMutex::new(None)),
+        }
+    }
+
+    fn empty() -> Self {
+        Self::new(vec![])
+    }
+
+    /// Inject a one-shot error to be returned by the next `next_event` call.
+    ///
+    /// Callable from synchronous test setup (before the async loop is spawned).
+    fn inject_error(&self, error: CoreError) {
+        *self.next_error.lock().unwrap() = Some(error);
+    }
+
+    async fn acknowledged_ids(&self) -> Vec<String> {
+        self.acked.lock().await.clone()
+    }
+
+    async fn rejected_ids(&self) -> Vec<(String, bool)> {
+        self.rejected.lock().await.clone()
+    }
+
+    async fn remaining_count(&self) -> usize {
+        self.events.lock().await.len()
+    }
+}
+
+#[async_trait]
+impl EventSource for TestEventSource {
+    async fn next_event(&self) -> CoreResult<Option<ProcessingEvent>> {
+        // Check injected error first (sync lock, no await required).
+        let maybe_err = self.next_error.lock().unwrap().take();
+        if let Some(e) = maybe_err {
+            return Err(e);
+        }
+        Ok(self.events.lock().await.pop_front())
+    }
+
+    async fn acknowledge(&self, event_id: &str) -> CoreResult<()> {
+        self.acked.lock().await.push(event_id.to_string());
+        Ok(())
+    }
+
+    async fn reject(&self, event_id: &str, permanent: bool) -> CoreResult<()> {
+        self.rejected
+            .lock()
+            .await
+            .push((event_id.to_string(), permanent));
+        Ok(())
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn test_repo() -> RepositoryInfo {
+    RepositoryInfo {
+        owner: "acme".to_string(),
+        name: "app".to_string(),
+        default_branch: "main".to_string(),
+    }
+}
+
+fn make_test_event(id: &str, event_type: EventType) -> ProcessingEvent {
+    ProcessingEvent {
+        event_id: id.to_string(),
+        correlation_id: format!("corr-{id}"),
+        event_type,
+        repository: test_repo(),
+        payload: serde_json::json!({}),
+        received_at: Utc::now(),
+        source: EventSourceKind::Webhook,
+    }
+}
+
+/// Poll `acknowledged_ids()` until it contains at least `expected_count`
+/// entries, or the deadline expires.  Cancels `token` once done so the loop
+/// under test exits.  Returns the final acknowledged list.
+async fn wait_for_acks(
+    source: &TestEventSource,
+    expected_count: usize,
+    token: &CancellationToken,
+) -> Vec<String> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let acked = source.acknowledged_ids().await;
+        if acked.len() >= expected_count {
+            token.cancel();
+            return acked;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            token.cancel();
+            return acked;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ReleaseRegent smoke tests
+// ─────────────────────────────────────────────────────────────────────────────
 
 #[test]
 fn test_release_regent_creation() {
@@ -9,19 +151,168 @@ fn test_release_regent_creation() {
     assert_eq!(regent.config().core.branches.main, "main");
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// run_event_loop tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A pre-cancelled token causes the loop to return immediately without
+/// consuming any events.
 #[tokio::test]
-async fn test_webhook_processing_placeholder() {
-    let config = config::ReleaseRegentConfig::default();
-    let regent = ReleaseRegent::new(config);
+async fn test_run_event_loop_exits_immediately_when_token_precancelled() {
+    let token = CancellationToken::new();
+    token.cancel();
 
-    let event = webhook::WebhookEvent::new(
-        "pull_request".to_string(),
-        "closed".to_string(),
-        serde_json::json!({}),
-        std::collections::HashMap::new(),
-    );
+    let source = TestEventSource::new(vec![make_test_event(
+        "evt-never",
+        EventType::PullRequestMerged,
+    )]);
 
-    // This should succeed with the placeholder implementation
-    let result = regent.process_webhook(event).await;
+    let result = run_event_loop(&source, token).await;
     assert!(result.is_ok());
+    // Event was never consumed because the token was already cancelled.
+    assert_eq!(source.remaining_count().await, 1);
+    assert!(source.acknowledged_ids().await.is_empty());
+}
+
+/// A single `PullRequestMerged` event is processed and acknowledged.
+#[tokio::test]
+async fn test_run_event_loop_acknowledges_pull_request_merged_event() {
+    let token = CancellationToken::new();
+    let source = TestEventSource::new(vec![make_test_event(
+        "evt-pr-1",
+        EventType::PullRequestMerged,
+    )]);
+    let source_for_loop = source.clone();
+    let loop_token = token.clone();
+
+    let loop_handle =
+        tokio::spawn(async move { run_event_loop(&source_for_loop, loop_token).await });
+
+    let acked = wait_for_acks(&source, 1, &token).await;
+    loop_handle.await.unwrap().unwrap();
+    assert_eq!(acked, vec!["evt-pr-1"]);
+    assert!(source.rejected_ids().await.is_empty());
+}
+
+/// A single `ReleasePrMerged` event is processed and acknowledged.
+#[tokio::test]
+async fn test_run_event_loop_acknowledges_release_pr_merged_event() {
+    let token = CancellationToken::new();
+    let source = TestEventSource::new(vec![make_test_event(
+        "evt-rel-1",
+        EventType::ReleasePrMerged,
+    )]);
+    let source_for_loop = source.clone();
+    let loop_token = token.clone();
+
+    let loop_handle =
+        tokio::spawn(async move { run_event_loop(&source_for_loop, loop_token).await });
+
+    let acked = wait_for_acks(&source, 1, &token).await;
+    loop_handle.await.unwrap().unwrap();
+    assert_eq!(acked, vec!["evt-rel-1"]);
+    assert!(source.rejected_ids().await.is_empty());
+}
+
+/// `PullRequestCommentReceived` events are acknowledged.
+#[tokio::test]
+async fn test_run_event_loop_acknowledges_pr_comment_event() {
+    let token = CancellationToken::new();
+    let source = TestEventSource::new(vec![make_test_event(
+        "evt-comment-1",
+        EventType::PullRequestCommentReceived,
+    )]);
+    let source_for_loop = source.clone();
+    let loop_token = token.clone();
+
+    let loop_handle =
+        tokio::spawn(async move { run_event_loop(&source_for_loop, loop_token).await });
+
+    let acked = wait_for_acks(&source, 1, &token).await;
+    loop_handle.await.unwrap().unwrap();
+    assert_eq!(acked, vec!["evt-comment-1"]);
+    assert!(source.rejected_ids().await.is_empty());
+}
+
+/// Unknown event types are acknowledged (logged-and-dropped, not errors).
+#[tokio::test]
+async fn test_run_event_loop_acknowledges_unknown_event_type() {
+    let token = CancellationToken::new();
+    let source = TestEventSource::new(vec![make_test_event(
+        "evt-unknown-1",
+        EventType::Unknown("novel_event".to_string()),
+    )]);
+    let source_for_loop = source.clone();
+    let loop_token = token.clone();
+
+    let loop_handle =
+        tokio::spawn(async move { run_event_loop(&source_for_loop, loop_token).await });
+
+    let acked = wait_for_acks(&source, 1, &token).await;
+    loop_handle.await.unwrap().unwrap();
+    assert_eq!(acked, vec!["evt-unknown-1"]);
+    assert!(source.rejected_ids().await.is_empty());
+}
+
+/// Multiple events are processed in FIFO order and all acknowledged.
+#[tokio::test]
+async fn test_run_event_loop_processes_multiple_events_in_order() {
+    let token = CancellationToken::new();
+    let source = TestEventSource::new(vec![
+        make_test_event("evt-a", EventType::PullRequestMerged),
+        make_test_event("evt-b", EventType::ReleasePrMerged),
+        make_test_event("evt-c", EventType::PullRequestMerged),
+    ]);
+    let source_for_loop = source.clone();
+    let loop_token = token.clone();
+
+    let loop_handle =
+        tokio::spawn(async move { run_event_loop(&source_for_loop, loop_token).await });
+
+    let acked = wait_for_acks(&source, 3, &token).await;
+    loop_handle.await.unwrap().unwrap();
+    assert_eq!(acked, vec!["evt-a", "evt-b", "evt-c"]);
+    assert!(source.rejected_ids().await.is_empty());
+}
+
+/// A transient source error is logged and the loop continues; the event
+/// that follows the error is still processed and acknowledged.
+#[tokio::test]
+async fn test_run_event_loop_continues_after_source_error() {
+    let token = CancellationToken::new();
+    let source = TestEventSource::new(vec![make_test_event(
+        "evt-after-err",
+        EventType::PullRequestMerged,
+    )]);
+    source.inject_error(CoreError::network("transient source failure"));
+    let source_for_loop = source.clone();
+    let loop_token = token.clone();
+
+    let loop_handle =
+        tokio::spawn(async move { run_event_loop(&source_for_loop, loop_token).await });
+
+    let acked = wait_for_acks(&source, 1, &token).await;
+    loop_handle.await.unwrap().unwrap();
+    assert_eq!(acked, vec!["evt-after-err"]);
+    assert!(source.rejected_ids().await.is_empty());
+}
+
+/// An empty source with a cancellation token exits cleanly.
+#[tokio::test]
+async fn test_run_event_loop_empty_source_exits_cleanly() {
+    let token = CancellationToken::new();
+    let source = TestEventSource::empty();
+    let source_for_loop = source.clone();
+    let loop_token = token.clone();
+
+    let loop_handle =
+        tokio::spawn(async move { run_event_loop(&source_for_loop, loop_token).await });
+
+    // Nothing to wait for; cancel immediately and let the loop exit cleanly.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    token.cancel();
+
+    loop_handle.await.unwrap().unwrap();
+    assert!(source.acknowledged_ids().await.is_empty());
+    assert!(source.rejected_ids().await.is_empty());
 }

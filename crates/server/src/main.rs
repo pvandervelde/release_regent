@@ -23,9 +23,16 @@
 //!                                       └─ ReleaseRegentWebhookHandler
 //!                                               └─ mpsc::Sender<ProcessingEvent>
 //!                                                            │
-//!                                                       WebhookEventSource   (task 4.0)
+//!                                                       WebhookEventSource
 //!                                                            └─ run_event_loop
 //! ```
+//!
+//! # Graceful shutdown
+//!
+//! A `CancellationToken` is shared between the Axum server and the event loop.
+//! When `SIGINT` (Ctrl-C) is received (or `SIGTERM` on Unix), the token is cancelled:
+//! - Axum stops accepting new connections after completing in-flight requests.
+//! - The event loop finishes processing the current event and then exits.
 
 use axum::{
     extract::{DefaultBodyLimit, State},
@@ -39,8 +46,10 @@ use github_bot_sdk::{
     events::{EventProcessor, ProcessorConfig},
     webhook::{WebhookReceiver, WebhookRequest, WebhookResponse},
 };
+use release_regent_core::run_event_loop;
 use std::{collections::HashMap, sync::Arc};
 use tokio::net::TcpListener;
+use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -146,6 +155,10 @@ fn setup_logging() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
 /// Main entry point for the Release Regent webhook server.
 ///
+/// # Environment
+///
+/// See the module-level documentation for the full configuration table.
+///
 /// # Errors
 ///
 /// Returns an error if:
@@ -157,6 +170,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     setup_logging()?;
 
     info!("Starting Release Regent webhook server");
+
+    // ── Secret / configuration loading ────────────────────────────────────
 
     // Load webhook secret.
     // Full SecretProvider wiring (Azure Key Vault / AWS Secrets Manager) is task 14.1.
@@ -187,10 +202,64 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Err(_) => 1024,
     };
 
+    // ── Shutdown token ─────────────────────────────────────────────────────
+
+    let shutdown_token = CancellationToken::new();
+
+    // Cancel the token on SIGINT (Ctrl-C) or SIGTERM (sent by Kubernetes / ECS
+    // before SIGKILL).  Both signals trigger the same cooperative-shutdown path.
+    let signal_token = shutdown_token.clone();
+    tokio::spawn(async move {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{signal, SignalKind};
+            match signal(SignalKind::terminate()) {
+                Ok(mut sigterm) => {
+                    tokio::select! {
+                        _ = tokio::signal::ctrl_c() => {
+                            info!("Received SIGINT; cancelling");
+                        }
+                        _ = sigterm.recv() => {
+                            info!("Received SIGTERM; cancelling");
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!(error = %e, "Failed to install SIGTERM handler; monitoring SIGINT only");
+                    match tokio::signal::ctrl_c().await {
+                        Ok(()) => info!("Received SIGINT; cancelling"),
+                        Err(e2) => error!(error = %e2, "Failed to install Ctrl-C handler"),
+                    }
+                }
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            match tokio::signal::ctrl_c().await {
+                Ok(()) => info!("Received shutdown signal; cancelling"),
+                Err(e) => error!(error = %e, "Failed to install Ctrl-C handler"),
+            }
+        }
+        signal_token.cancel();
+    });
+
+    // ── Event source + processing loop ─────────────────────────────────────
+
     // Build matched handler/source pair sharing a bounded mpsc channel.
-    // `_event_source` is wired into `run_event_loop` in task 4.0.
-    let (webhook_event_handler, _event_source) =
+    let (webhook_event_handler, event_source) =
         handler::create_webhook_components(allowed_repos, channel_capacity);
+
+    // Spawn the event processing loop.  It runs until the shutdown token is
+    // cancelled, processing each `ProcessingEvent` from the mpsc channel.
+    let loop_token = shutdown_token.clone();
+    let event_loop_handle = tokio::spawn(async move {
+        if let Err(e) = run_event_loop(&event_source, loop_token).await {
+            error!(error = %e, "Event loop exited with error");
+        }
+        info!("Event loop stopped");
+    });
+
+    // ── HTTP server ────────────────────────────────────────────────────────
 
     // Build the SDK WebhookReceiver (validates signatures, dispatches to handlers).
     let secret_provider = Arc::new(WebhookSecretProvider::new(github_secret));
@@ -214,7 +283,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     info!(address = %addr, "Server listening");
 
-    axum::serve(listener, app).await?;
+    // `with_graceful_shutdown` waits for the token to be cancelled before
+    // closing the listener and draining in-flight connections.
+    let server_token = shutdown_token.clone();
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async move { server_token.cancelled().await })
+        .await?;
 
+    // Wait for the event loop to drain any in-flight events before exiting.
+    let _ = event_loop_handle.await;
+
+    info!("Shutdown complete");
     Ok(())
 }
