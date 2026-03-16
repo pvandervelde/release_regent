@@ -170,3 +170,7 @@ impl EventSource for MockEventSource {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "event_source_tests.rs"]
+mod tests;
