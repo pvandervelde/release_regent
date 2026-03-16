@@ -1,6 +1,6 @@
 # System Architecture Overview
 
-**Last Updated**: 2026-03-13
+**Last Updated**: 2026-03-16
 **Status**: Updated — see ADR-002
 
 ## High-Level Architecture
@@ -68,9 +68,10 @@ C4Container
 
 ```mermaid
 flowchart TD
-    A[GitHub Webhook] --> B[Function Host]
-    B --> C[Webhook Processor]
-    C --> D{Event Type?}
+    A[GitHub Webhook] --> B[Server Container]
+    B --> C[WebhookEventSource]
+    C --> EL[run_event_loop]
+    EL --> D{Event Type?}
 
     D -->|Merged Regular PR| E[Release Orchestrator]
     D -->|Merged Release PR| F[Release Automator]
@@ -109,18 +110,28 @@ flowchart TD
 - Handle environment configuration and startup
 - Expose health check endpoint for container orchestration probes
 
-#### 2. Webhook Processor
+#### 2. Event Source
 
-**Purpose**: Event validation and routing
-**Location**: `crates/core/src/webhook_processor.rs`
+**Purpose**: Bridge HTTP webhook intake to the event processing loop
+**Location**: `crates/server/src/handler.rs`
 **Responsibilities**:
 
-- Validate webhook signatures
-- Parse and validate event payloads
-- Route events to appropriate handlers
-- Generate correlation IDs for tracing
+- Receive validated webhook events from the Axum handler via a bounded mpsc channel
+- Implement the `EventSource` trait consumed by `run_event_loop`
+- Surface channel teardown (`Disconnected`) as an observable warning condition
 
-#### 3. Release Orchestrator
+#### 3. Event Loop
+
+**Purpose**: Consume events and route them to domain handlers
+**Location**: `crates/core/src/lib.rs`
+**Responsibilities**:
+
+- Pull events from `EventSource` in a cancellation-aware loop
+- Route events to the appropriate `CoreOperations` handler
+- Apply back-off sleep on transient source errors to prevent busy-spin
+- Propagate tracing spans across async dispatch boundaries
+
+#### 4. Release Orchestrator
 
 **Purpose**: Coordinate release PR workflow
 **Location**: `crates/core/src/release_orchestrator.rs`
@@ -131,7 +142,7 @@ flowchart TD
 - Orchestrate PR creation and updates
 - Handle error recovery and logging
 
-#### 4. Release Automator
+#### 5. Release Automator
 
 **Purpose**: Create GitHub releases
 **Location**: `crates/core/src/release_automator.rs`
@@ -142,7 +153,7 @@ flowchart TD
 - Create Git tags and GitHub releases
 - Clean up release branches
 
-#### 5. GitHub API Client
+#### 6. GitHub API Client
 
 **Purpose**: All GitHub interactions
 **Location**: `crates/github_client/src/`
@@ -161,16 +172,20 @@ flowchart TD
 sequenceDiagram
     participant G as GitHub
     participant F as Server (Container)
-    participant W as Webhook Processor
+    participant ES as WebhookEventSource
+    participant EL as run_event_loop
     participant R as Release Orchestrator
     participant P as PR Manager
     participant A as GitHub API
 
     G->>F: POST /webhook (PR merged)
-    F->>W: Process event
-    W->>W: Validate signature
-    W->>W: Parse payload
-    W->>R: Route to orchestrator
+    F->>F: Validate signature & parse payload
+    F->>ES: Send event (mpsc channel)
+    F-->>G: HTTP 200 OK
+    Note over ES,EL: Asynchronous processing
+    EL->>ES: next_event()
+    ES-->>EL: WebhookEvent
+    EL->>R: Dispatch to orchestrator
     R->>R: Load configuration
     R->>R: Calculate version
     R->>P: Find/create release PR
@@ -179,9 +194,7 @@ sequenceDiagram
     P->>A: Create/update PR
     A-->>P: PR operation result
     P-->>R: Operation complete
-    R-->>W: Processing complete
-    W-->>F: Success response
-    F-->>G: HTTP 200 OK
+    R-->>EL: Processing complete
 ```
 
 ### Release Creation Pipeline
@@ -190,14 +203,20 @@ sequenceDiagram
 sequenceDiagram
     participant G as GitHub
     participant F as Server (Container)
-    participant W as Webhook Processor
+    participant ES as WebhookEventSource
+    participant EL as run_event_loop
     participant A as Release Automator
     participant R as Release Manager
     participant API as GitHub API
 
     G->>F: POST /webhook (Release PR merged)
-    F->>W: Process event
-    W->>A: Route to automator
+    F->>F: Validate signature & parse payload
+    F->>ES: Send event (mpsc channel)
+    F-->>G: HTTP 200 OK
+    Note over ES,EL: Asynchronous processing
+    EL->>ES: next_event()
+    ES-->>EL: WebhookEvent
+    EL->>A: Dispatch to automator
     A->>A: Extract version from PR
     A->>A: Generate release notes
     A->>R: Create release
@@ -208,9 +227,7 @@ sequenceDiagram
     R->>API: Delete release branch
     API-->>R: Branch deleted
     R-->>A: Release complete
-    A-->>W: Processing complete
-    W-->>F: Success response
-    F-->>G: HTTP 200 OK
+    A-->>EL: Processing complete
 ```
 
 ## Integration Architecture
