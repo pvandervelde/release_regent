@@ -107,6 +107,10 @@ async fn test_inject_error_does_not_consume_queued_event() {
     let error_result = mock.next_event().await;
     assert!(error_result.is_err());
 
+    // The queue depth must be unchanged after the injected error fires — the
+    // error must not silently consume a slot.
+    assert_eq!(mock.remaining_event_count().await, 1);
+
     // The queued event must still be available after the injected error fires.
     let event_result = mock.next_event().await.unwrap();
     assert_eq!(event_result.unwrap().event_id, "evt-1");

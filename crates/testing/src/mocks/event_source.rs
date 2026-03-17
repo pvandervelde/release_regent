@@ -60,8 +60,9 @@ struct MockEventSourceState {
 
 /// Deterministic, in-process [`EventSource`] for tests.
 ///
-/// Events are pre-loaded via [`new`](MockEventSource::new) (or
-/// [`with_error`](MockEventSource::with_error)) and drained in FIFO order.
+/// Events are pre-loaded via [`new`](MockEventSource::new) and drained in FIFO
+/// order. Errors can be injected one-shot via
+/// [`inject_next_error`](MockEventSource::inject_next_error).
 /// `next_event` returns `Ok(None)` when the queue is empty.
 ///
 /// All `acknowledge` and `reject` calls are recorded; use the assertion helpers
