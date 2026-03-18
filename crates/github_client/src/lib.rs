@@ -493,6 +493,36 @@ impl GitHubOperations for GitHubClient {
         convert_sdk_pr_to_release_regent_pr(sdk_pr)
     }
 
+    #[instrument(skip(self))]
+    async fn list_pull_requests(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _state: Option<&str>,
+        _head: Option<&str>,
+        _base: Option<&str>,
+        _per_page: Option<u8>,
+        _page: Option<u32>,
+    ) -> CoreResult<Vec<PullRequest>> {
+        Err(CoreError::not_supported(
+            "list_pull_requests",
+            "not yet implemented in GitHubClient",
+        ))
+    }
+
+    #[instrument(skip(self))]
+    async fn search_pull_requests(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _query: &str,
+    ) -> CoreResult<Vec<PullRequest>> {
+        Err(CoreError::not_supported(
+            "search_pull_requests",
+            "not yet implemented in GitHubClient",
+        ))
+    }
+
     #[instrument(skip(self, params))]
     async fn update_release(
         &self,

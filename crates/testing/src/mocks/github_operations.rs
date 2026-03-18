@@ -39,6 +39,8 @@ pub struct MockGitHubOperations {
     repositories: HashMap<String, Repository>,
     /// Pre-configured GitCommit data
     commits: HashMap<String, Vec<GitCommit>>,
+    /// Pre-configured pull request data
+    pull_requests: HashMap<String, Vec<PullRequest>>,
     /// Pre-configured tag data
     tags: HashMap<String, Vec<Tag>>,
     /// Pre-configured release data
@@ -202,6 +204,7 @@ impl MockGitHubOperations {
             state: Arc::new(RwLock::new(MockState::new())),
             repositories: HashMap::new(),
             commits: HashMap::new(),
+            pull_requests: HashMap::new(),
             tags: HashMap::new(),
             releases: HashMap::new(),
         }
@@ -252,6 +255,7 @@ impl MockGitHubOperations {
             state: Arc::new(RwLock::new(MockState::with_config(config))),
             repositories: HashMap::new(),
             commits: HashMap::new(),
+            pull_requests: HashMap::new(),
             tags: HashMap::new(),
             releases: HashMap::new(),
         }
@@ -330,6 +334,21 @@ impl MockGitHubOperations {
         } else {
             self
         }
+    }
+
+    /// Configure the mock with pull request data for a repository
+    ///
+    /// # Parameters
+    /// - `owner`: Repository owner
+    /// - `repo`: Repository name
+    /// - `prs`: List of pull requests to return
+    ///
+    /// # Returns
+    /// Self for method chaining
+    pub fn with_pull_requests(mut self, owner: &str, repo: &str, prs: Vec<PullRequest>) -> Self {
+        let key = format!("{}/{}", owner, repo);
+        self.pull_requests.insert(key, prs);
+        self
     }
 
     /// Configure the mock with tag data for a repository
@@ -597,9 +616,39 @@ impl GitHubOperations for MockGitHubOperations {
             "update_release not yet implemented",
         ))
     }
+
+    async fn list_pull_requests(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _state: Option<&str>,
+        _head: Option<&str>,
+        _base: Option<&str>,
+        _per_page: Option<u8>,
+        _page: Option<u32>,
+    ) -> CoreResult<Vec<PullRequest>> {
+        // TODO: implement - placeholder for compilation
+        Err(CoreError::not_supported(
+            "MockGitHubOperations",
+            "list_pull_requests not yet implemented",
+        ))
+    }
+
+    async fn search_pull_requests(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _query: &str,
+    ) -> CoreResult<Vec<PullRequest>> {
+        // TODO: implement - placeholder for compilation
+        Err(CoreError::not_supported(
+            "MockGitHubOperations",
+            "search_pull_requests not yet implemented",
+        ))
+    }
 }
 
-/// GitOperations implementation for MockGitHubOperations
+/// `GitOperations` implementation for `MockGitHubOperations`
 #[async_trait]
 impl GitOperations for MockGitHubOperations {
     async fn get_commits_between(
@@ -709,3 +758,7 @@ impl GitOperations for MockGitHubOperations {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "github_operations_tests.rs"]
+mod tests;
