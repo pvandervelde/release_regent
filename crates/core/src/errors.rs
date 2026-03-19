@@ -113,6 +113,13 @@ pub enum CoreError {
         source: Option<Box<dyn std::error::Error + Send + Sync>>,
     },
 
+    /// Resource not found
+    #[error("Not found: {resource}")]
+    NotFound {
+        resource: String,
+        context: Option<ErrorContext>,
+    },
+
     /// Operation not supported in current context
     #[error("Operation not supported: {operation} - {context}")]
     NotSupported {
@@ -375,6 +382,14 @@ impl CoreError {
         }
     }
 
+    /// Create a new not found error
+    pub fn not_found(resource: impl Into<String>) -> Self {
+        Self::NotFound {
+            resource: resource.into(),
+            context: None,
+        }
+    }
+
     /// Create a new authentication error
     pub fn authentication(message: impl Into<String>) -> Self {
         Self::Authentication {
@@ -438,6 +453,7 @@ impl CoreError {
             | Self::Network { context, .. }
             | Self::Authentication { context, .. }
             | Self::RateLimit { context, .. } => context.as_ref(),
+            Self::NotFound { context, .. } => context.as_ref(),
             Self::NotSupported { error_context, .. } => error_context.as_ref(),
             _ => None,
         }

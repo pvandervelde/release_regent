@@ -191,6 +191,60 @@ pub trait GitHubOperations: GitOperations + Send + Sync {
         page: Option<u32>,
     ) -> CoreResult<Vec<Release>>;
 
+    /// List pull requests in a repository
+    ///
+    /// Returns pull requests matching the specified filters.
+    ///
+    /// # Parameters
+    /// - `owner`: Repository owner name
+    /// - `repo`: Repository name
+    /// - `state`: PR state filter: `"open"`, `"closed"`, or `"all"` (default: `"open"`)
+    /// - `head`: Filter by head branch name (optional)
+    /// - `base`: Filter by base branch name (optional)
+    /// - `per_page`: Number of PRs per page, max 100 (optional)
+    /// - `page`: Page number, 1-based (optional)
+    ///
+    /// # Returns
+    /// List of pull requests matching the filters
+    ///
+    /// # Errors
+    /// - `CoreError::GitHub` - API communication failed
+    /// - `CoreError::InvalidInput` - Invalid parameters
+    async fn list_pull_requests(
+        &self,
+        owner: &str,
+        repo: &str,
+        state: Option<&str>,
+        head: Option<&str>,
+        base: Option<&str>,
+        per_page: Option<u8>,
+        page: Option<u32>,
+    ) -> CoreResult<Vec<PullRequest>>;
+
+    /// Search pull requests using GitHub search query syntax
+    ///
+    /// Supports a subset of GitHub search qualifiers:
+    /// - `is:open` / `is:closed` / `is:merged` — filter by state
+    /// - `head:BRANCH` or `head:PREFIX*` — filter by head branch (glob prefix with `*`)
+    /// - `base:BRANCH` — filter by exact base branch name
+    ///
+    /// # Parameters
+    /// - `owner`: Repository owner name
+    /// - `repo`: Repository name
+    /// - `query`: Space-separated search qualifiers
+    ///
+    /// # Returns
+    /// List of matching pull requests
+    ///
+    /// # Errors
+    /// - `CoreError::GitHub` - API communication failed
+    async fn search_pull_requests(
+        &self,
+        owner: &str,
+        repo: &str,
+        query: &str,
+    ) -> CoreResult<Vec<PullRequest>>;
+
     /// Update an existing pull request
     ///
     /// # Parameters
