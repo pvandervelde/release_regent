@@ -36,8 +36,10 @@ use tokio::sync::RwLock;
 pub struct MockGitHubOperations {
     /// Shared state for tracking and configuration
     state: SharedMockState,
-    /// Sequential counter for deterministic mock IDs and SHAs
+    /// Sequential counter for generating deterministic resource IDs (PR numbers, release IDs)
     next_id: Arc<AtomicU64>,
+    /// Sequential counter for generating deterministic mock commit SHAs
+    next_sha: Arc<AtomicU64>,
     /// Pre-configured repository data
     repositories: HashMap<String, Repository>,
     /// Pre-configured GitCommit data
@@ -86,6 +88,7 @@ impl MockGitHubOperations {
         Self {
             state: Arc::new(RwLock::new(MockState::new())),
             next_id: Arc::new(AtomicU64::new(1)),
+            next_sha: Arc::new(AtomicU64::new(1)),
             repositories: HashMap::new(),
             commits: HashMap::new(),
             pull_requests: HashMap::new(),
@@ -138,6 +141,7 @@ impl MockGitHubOperations {
         Self {
             state: Arc::new(RwLock::new(MockState::with_config(config))),
             next_id: Arc::new(AtomicU64::new(1)),
+            next_sha: Arc::new(AtomicU64::new(1)),
             repositories: HashMap::new(),
             commits: HashMap::new(),
             pull_requests: HashMap::new(),
@@ -261,17 +265,19 @@ impl Default for MockGitHubOperations {
 impl MockGitHubOperations {
     /// Generate a sequential mock ID for created resources (PRs, releases, etc.).
     ///
-    /// Uses a per-instance atomic counter so tests that store the returned
-    /// ID can predict it (starts at 1, increments by 1 per call).
+    /// Uses a dedicated per-instance atomic counter so tests can predict the
+    /// sequence: first created PR gets number 1, the second gets 2, and so on.
     fn generate_mock_id(&self) -> u64 {
         self.next_id.fetch_add(1, Ordering::SeqCst)
     }
 
     /// Generate a deterministic mock commit SHA for created resources.
     ///
-    /// Returns a 40-hex-character string based on the internal ID counter.
+    /// Uses a separate per-instance counter from `generate_mock_id`, so calling
+    /// `create_pull_request` (which requires two SHAs) does not disturb the ID
+    /// sequence. The SHA counter starts at 1 and increments by 1 per call.
     fn generate_mock_sha(&self) -> String {
-        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let id = self.next_sha.fetch_add(1, Ordering::SeqCst);
         format!("{id:040x}")
     }
 }

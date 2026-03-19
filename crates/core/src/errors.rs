@@ -453,6 +453,7 @@ impl CoreError {
             | Self::Network { context, .. }
             | Self::Authentication { context, .. }
             | Self::RateLimit { context, .. } => context.as_ref(),
+            Self::NotFound { context, .. } => context.as_ref(),
             Self::NotSupported { error_context, .. } => error_context.as_ref(),
             _ => None,
         }

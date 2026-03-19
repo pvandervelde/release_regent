@@ -5,7 +5,7 @@ fn test_config_error_creation() {
     let error = CoreError::config("Invalid YAML format");
 
     match error {
-        CoreError::Config { ref message } => {
+        CoreError::Config { ref message, .. } => {
             assert_eq!(message, "Invalid YAML format");
         }
         _ => panic!("Expected Config error"),
@@ -22,7 +22,7 @@ fn test_internal_state_error_creation() {
     let error = CoreError::internal_state("Unexpected state transition");
 
     match error {
-        CoreError::InternalState { ref message } => {
+        CoreError::InternalState { ref message, .. } => {
             assert_eq!(message, "Unexpected state transition");
         }
         _ => panic!("Expected InternalState error"),
@@ -42,6 +42,7 @@ fn test_invalid_input_error_creation() {
         CoreError::InvalidInput {
             ref field,
             ref message,
+            ..
         } => {
             assert_eq!(field, "branch_name");
             assert_eq!(message, "Invalid characters in branch name");
@@ -76,6 +77,7 @@ fn test_not_supported_error_creation() {
         CoreError::NotSupported {
             ref operation,
             ref context,
+            ..
         } => {
             assert_eq!(operation, "external_versioning");
             assert_eq!(context, "No external script configured");
@@ -94,7 +96,7 @@ fn test_versioning_error_creation() {
     let error = CoreError::versioning("No conventional commits found");
 
     match error {
-        CoreError::Versioning { ref reason } => {
+        CoreError::Versioning { ref reason, .. } => {
             assert_eq!(reason, "No conventional commits found");
         }
         _ => panic!("Expected Versioning error"),
@@ -114,6 +116,7 @@ fn test_webhook_error_creation() {
         CoreError::Webhook {
             ref stage,
             ref message,
+            ..
         } => {
             assert_eq!(stage, "signature_validation");
             assert_eq!(message, "Invalid signature");
@@ -125,6 +128,33 @@ fn test_webhook_error_creation() {
         error.to_string(),
         "Webhook processing failed: signature_validation - Invalid signature"
     );
+}
+
+/// Verify `not_found()` creates a `NotFound` variant with the correct resource string and display text.
+#[test]
+fn test_not_found_error_creation() {
+    let error = CoreError::not_found("release for tag 'v1.0.0' not found");
+
+    match error {
+        CoreError::NotFound { ref resource, .. } => {
+            assert_eq!(resource, "release for tag 'v1.0.0' not found");
+        }
+        _ => panic!("Expected NotFound error"),
+    }
+
+    assert_eq!(
+        error.to_string(),
+        "Not found: release for tag 'v1.0.0' not found"
+    );
+
+    // context() must not silently discard an attached context
+    let ctx = ErrorContext::new("get_release_by_tag", "mock");
+    let with_ctx = CoreError::NotFound {
+        resource: "r".to_string(),
+        context: Some(ctx),
+    };
+    assert!(with_ctx.context().is_some());
+    assert!(CoreError::not_found("r").context().is_none());
 }
 
 #[test]
