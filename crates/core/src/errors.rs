@@ -113,6 +113,13 @@ pub enum CoreError {
         source: Option<Box<dyn std::error::Error + Send + Sync>>,
     },
 
+    /// Resource not found
+    #[error("Not found: {resource}")]
+    NotFound {
+        resource: String,
+        context: Option<ErrorContext>,
+    },
+
     /// Operation not supported in current context
     #[error("Operation not supported: {operation} - {context}")]
     NotSupported {
@@ -372,6 +379,14 @@ impl CoreError {
             message: message.into(),
             context: None,
             source: None,
+        }
+    }
+
+    /// Create a new not found error
+    pub fn not_found(resource: impl Into<String>) -> Self {
+        Self::NotFound {
+            resource: resource.into(),
+            context: None,
         }
     }
 

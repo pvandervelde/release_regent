@@ -46,7 +46,7 @@ mod mock_tests {
         assert_eq!(mock.call_count().await, 1);
         let history = mock.call_history().await;
         assert_eq!(history.len(), 1);
-        assert_eq!(history[0].method, "get_repository");
+        assert_eq!(history[0].method, "get_repository_info");
     }
 
     #[tokio::test]

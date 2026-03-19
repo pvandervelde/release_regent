@@ -5,12 +5,12 @@
 
 use crate::mocks::{CallResult, MockConfig, MockState, SharedMockState};
 use async_trait::async_trait;
-use rand::Rng as _;
 use release_regent_core::{
     traits::{git_operations::*, github_operations::*},
     CoreError, CoreResult, GitHubOperations, GitOperations,
 };
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -36,6 +36,8 @@ use tokio::sync::RwLock;
 pub struct MockGitHubOperations {
     /// Shared state for tracking and configuration
     state: SharedMockState,
+    /// Sequential counter for deterministic mock IDs and SHAs
+    next_id: Arc<AtomicU64>,
     /// Pre-configured repository data
     repositories: HashMap<String, Repository>,
     /// Pre-configured GitCommit data
@@ -73,126 +75,6 @@ impl MockGitHubOperations {
         Ok(())
     }
 
-    /// Get commits between two references
-    ///
-    /// Returns the configured GitCommit data for the repository.
-    ///
-    /// # Parameters
-    /// - `owner`: Repository owner
-    /// - `name`: Repository name
-    /// - `base`: Base reference (ignored in mock)
-    /// - `head`: Head reference (ignored in mock)
-    ///
-    /// # Returns
-    /// List of commits
-    ///
-    /// # Errors
-    /// - `CoreError::NotFound` - No commits configured for repository
-    /// - `CoreError::GitHub` - Simulated GitHub API error
-    pub async fn get_commits_between(
-        &self,
-        owner: &str,
-        name: &str,
-        base: &str,
-        head: &str,
-    ) -> CoreResult<Vec<GitCommit>> {
-        let method = "get_commits_between";
-        let params = format!(
-            "owner={}, name={}, base={}, head={}",
-            owner, name, base, head
-        );
-
-        // Check quota and simulate latency
-        self.check_quota().await?;
-        self.simulate_latency().await;
-
-        // Simulate failure if configured
-        if self.should_simulate_failure().await {
-            let error = CoreError::network("Simulated GitHub API error");
-            self.record_call(method, &params, CallResult::Error(error.to_string()))
-                .await;
-            return Err(error);
-        }
-
-        let key = format!("{}/{}", owner, name);
-        let commits = self.commits.get(&key).cloned().unwrap_or_default();
-
-        self.record_call(method, &params, CallResult::Success).await;
-        Ok(commits)
-    }
-
-    /// Get repository releases
-    ///
-    /// Returns the configured release data for the repository.
-    ///
-    /// # Parameters
-    /// - `owner`: Repository owner
-    /// - `name`: Repository name
-    ///
-    /// # Returns
-    /// List of releases
-    ///
-    /// # Errors
-    /// - `CoreError::GitHub` - Simulated GitHub API error
-    pub async fn get_releases(&self, owner: &str, name: &str) -> CoreResult<Vec<Release>> {
-        let method = "get_releases";
-        let params = format!("owner={}, name={}", owner, name);
-
-        // Check quota and simulate latency
-        self.check_quota().await?;
-        self.simulate_latency().await;
-
-        // Simulate failure if configured
-        if self.should_simulate_failure().await {
-            let error = CoreError::network("Simulated GitHub API error");
-            self.record_call(method, &params, CallResult::Error(error.to_string()))
-                .await;
-            return Err(error);
-        }
-
-        let key = format!("{}/{}", owner, name);
-        let releases = self.releases.get(&key).cloned().unwrap_or_default();
-
-        self.record_call(method, &params, CallResult::Success).await;
-        Ok(releases)
-    }
-
-    /// Get repository tags
-    ///
-    /// Returns the configured tag data for the repository.
-    ///
-    /// # Parameters
-    /// - `owner`: Repository owner
-    /// - `name`: Repository name
-    ///
-    /// # Returns
-    /// List of tags
-    ///
-    /// # Errors
-    /// - `CoreError::GitHub` - Simulated GitHub API error
-    pub async fn get_tags(&self, owner: &str, name: &str) -> CoreResult<Vec<Tag>> {
-        let method = "get_tags";
-        let params = format!("owner={}, name={}", owner, name);
-
-        // Check quota and simulate latency
-        self.check_quota().await?;
-        self.simulate_latency().await;
-
-        // Simulate failure if configured
-        if self.should_simulate_failure().await {
-            let error = CoreError::network("Simulated GitHub API error");
-            self.record_call(method, &params, CallResult::Error(error.to_string()))
-                .await;
-            return Err(error);
-        }
-
-        let key = format!("{}/{}", owner, name);
-        let tags = self.tags.get(&key).cloned().unwrap_or_default();
-
-        self.record_call(method, &params, CallResult::Success).await;
-        Ok(tags)
-    }
-
     /// Create a new mock with default configuration
     ///
     /// Returns a mock configured for basic testing scenarios with:
@@ -203,6 +85,7 @@ impl MockGitHubOperations {
     pub fn new() -> Self {
         Self {
             state: Arc::new(RwLock::new(MockState::new())),
+            next_id: Arc::new(AtomicU64::new(1)),
             repositories: HashMap::new(),
             commits: HashMap::new(),
             pull_requests: HashMap::new(),
@@ -254,6 +137,7 @@ impl MockGitHubOperations {
     pub fn with_config(config: MockConfig) -> Self {
         Self {
             state: Arc::new(RwLock::new(MockState::with_config(config))),
+            next_id: Arc::new(AtomicU64::new(1)),
             repositories: HashMap::new(),
             commits: HashMap::new(),
             pull_requests: HashMap::new(),
@@ -374,9 +258,22 @@ impl Default for MockGitHubOperations {
     }
 }
 
-/// Generate a unique mock ID for created resources (PRs, releases, etc.).
-fn generate_mock_id() -> u64 {
-    rand::thread_rng().gen_range(1..=999_999)
+impl MockGitHubOperations {
+    /// Generate a sequential mock ID for created resources (PRs, releases, etc.).
+    ///
+    /// Uses a per-instance atomic counter so tests that store the returned
+    /// ID can predict it (starts at 1, increments by 1 per call).
+    fn generate_mock_id(&self) -> u64 {
+        self.next_id.fetch_add(1, Ordering::SeqCst)
+    }
+
+    /// Generate a deterministic mock commit SHA for created resources.
+    ///
+    /// Returns a 40-hex-character string based on the internal ID counter.
+    fn generate_mock_sha(&self) -> String {
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        format!("{id:040x}")
+    }
 }
 
 /// Convert a `github_operations::Tag` to a `git_operations::GitTag`.
@@ -437,7 +334,7 @@ impl GitHubOperations for MockGitHubOperations {
             homepage: None,
         };
         let pr = PullRequest {
-            number: generate_mock_id(),
+            number: self.generate_mock_id(),
             title: params.title,
             body: params.body,
             state: if params.draft {
@@ -456,12 +353,12 @@ impl GitHubOperations for MockGitHubOperations {
             },
             head: PullRequestBranch {
                 ref_name: params.head,
-                sha: "0000000000000000000000000000000000000000".to_string(),
+                sha: self.generate_mock_sha(),
                 repo: stub_repo.clone(),
             },
             base: PullRequestBranch {
                 ref_name: params.base,
-                sha: "0000000000000000000000000000000000000000".to_string(),
+                sha: self.generate_mock_sha(),
                 repo: stub_repo,
             },
         };
@@ -492,7 +389,7 @@ impl GitHubOperations for MockGitHubOperations {
 
         let now = chrono::Utc::now();
         let release = Release {
-            id: generate_mock_id(),
+            id: self.generate_mock_id(),
             tag_name: params.tag_name,
             target_commitish: params
                 .target_commitish
@@ -603,9 +500,19 @@ impl GitHubOperations for MockGitHubOperations {
             .get(&key)
             .and_then(|prs| prs.iter().find(|pr| pr.number == pr_number).cloned());
 
+        let Some(pr) = pr else {
+            self.record_call(
+                method,
+                &params_str,
+                CallResult::Error(format!("PR #{pr_number} not found")),
+            )
+            .await;
+            return Err(CoreError::not_found(format!("PR #{pr_number} not found")));
+        };
+
         self.record_call(method, &params_str, CallResult::Success)
             .await;
-        pr.ok_or_else(|| CoreError::network(format!("PR #{pr_number} not found")))
+        Ok(pr)
     }
 
     async fn get_release_by_tag(&self, owner: &str, repo: &str, tag: &str) -> CoreResult<Release> {
@@ -628,9 +535,21 @@ impl GitHubOperations for MockGitHubOperations {
             .get(&key)
             .and_then(|releases| releases.iter().find(|r| r.tag_name == tag).cloned());
 
+        let Some(release) = release else {
+            self.record_call(
+                method,
+                &params_str,
+                CallResult::Error(format!("release for tag '{tag}' not found")),
+            )
+            .await;
+            return Err(CoreError::not_found(format!(
+                "release for tag '{tag}' not found"
+            )));
+        };
+
         self.record_call(method, &params_str, CallResult::Success)
             .await;
-        release.ok_or_else(|| CoreError::network(format!("release for tag '{tag}' not found")))
+        Ok(release)
     }
 
     async fn list_releases(
@@ -696,7 +615,7 @@ impl GitHubOperations for MockGitHubOperations {
                 CallResult::Error(format!("PR #{pr_number} not found")),
             )
             .await;
-            return Err(CoreError::network(format!("PR #{pr_number} not found")));
+            return Err(CoreError::not_found(format!("PR #{pr_number} not found")));
         };
 
         if let Some(t) = title {
@@ -748,7 +667,7 @@ impl GitHubOperations for MockGitHubOperations {
                 CallResult::Error(format!("release #{release_id} not found")),
             )
             .await;
-            return Err(CoreError::network(format!(
+            return Err(CoreError::not_found(format!(
                 "release #{release_id} not found"
             )));
         };
@@ -940,9 +859,21 @@ impl GitOperations for MockGitHubOperations {
             .get(&key)
             .and_then(|commits| commits.iter().find(|c| c.sha == commit_sha).cloned());
 
+        let Some(commit) = commit else {
+            self.record_call(
+                method,
+                &params_str,
+                CallResult::Error(format!("commit '{commit_sha}' not found")),
+            )
+            .await;
+            return Err(CoreError::not_found(format!(
+                "commit '{commit_sha}' not found"
+            )));
+        };
+
         self.record_call(method, &params_str, CallResult::Success)
             .await;
-        commit.ok_or_else(|| CoreError::network(format!("commit '{commit_sha}' not found")))
+        Ok(commit)
     }
 
     async fn list_tags(
@@ -997,9 +928,19 @@ impl GitOperations for MockGitHubOperations {
             .and_then(|tags| tags.iter().find(|t| t.name == tag_name))
             .map(github_tag_to_git_tag);
 
+        let Some(git_tag) = git_tag else {
+            self.record_call(
+                method,
+                &params_str,
+                CallResult::Error(format!("tag '{tag_name}' not found")),
+            )
+            .await;
+            return Err(CoreError::not_found(format!("tag '{tag_name}' not found")));
+        };
+
         self.record_call(method, &params_str, CallResult::Success)
             .await;
-        git_tag.ok_or_else(|| CoreError::network(format!("tag '{tag_name}' not found")))
+        Ok(git_tag)
     }
 
     async fn tag_exists(&self, owner: &str, repo: &str, tag_name: &str) -> CoreResult<bool> {
@@ -1052,13 +993,23 @@ impl GitOperations for MockGitHubOperations {
             .get(&key)
             .and_then(|commits| commits.first().cloned());
 
+        let Some(commit) = commit else {
+            self.record_call(
+                method,
+                &params_str,
+                CallResult::Error("head commit not found".to_string()),
+            )
+            .await;
+            return Err(CoreError::not_found("head commit not found"));
+        };
+
         self.record_call(method, &params_str, CallResult::Success)
             .await;
-        commit.ok_or_else(|| CoreError::network("no commits found"))
+        Ok(commit)
     }
 
     async fn get_repository_info(&self, owner: &str, repo: &str) -> CoreResult<GitRepository> {
-        let method = "get_repository";
+        let method = "get_repository_info";
         let params_str = format!("owner={owner}, repo={repo}");
 
         self.check_quota().await?;
@@ -1071,25 +1022,29 @@ impl GitOperations for MockGitHubOperations {
             return Err(error);
         }
 
+        let key = format!("{owner}/{repo}");
+        let Some(repository) = self.repositories.get(&key) else {
+            self.record_call(
+                method,
+                &params_str,
+                CallResult::Error("repository not found".to_string()),
+            )
+            .await;
+            return Err(CoreError::not_found(format!("{owner}/{repo} not found")));
+        };
+
         self.record_call(method, &params_str, CallResult::Success)
             .await;
-
-        let key = format!("{owner}/{repo}");
-        self.repositories.get(&key).map_or_else(
-            || Err(CoreError::network("Repository not found")),
-            |repository| {
-                Ok(GitRepository {
-                    name: repository.name.clone(),
-                    owner: repository.owner.clone(),
-                    full_name: repository.full_name.clone(),
-                    default_branch: repository.default_branch.clone(),
-                    clone_url: repository.clone_url.clone(),
-                    ssh_url: repository.ssh_url.clone(),
-                    private: repository.private,
-                    description: repository.description.clone(),
-                })
-            },
-        )
+        Ok(GitRepository {
+            name: repository.name.clone(),
+            owner: repository.owner.clone(),
+            full_name: repository.full_name.clone(),
+            default_branch: repository.default_branch.clone(),
+            clone_url: repository.clone_url.clone(),
+            ssh_url: repository.ssh_url.clone(),
+            private: repository.private,
+            description: repository.description.clone(),
+        })
     }
 }
 

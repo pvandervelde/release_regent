@@ -34,6 +34,7 @@ fn open_pr(number: u64, head_ref: &str) -> PullRequest {
 // get_pull_request
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Verify that a stored PR is returned when queried by its number.
 #[tokio::test]
 async fn test_get_pull_request_returns_stored_pr_when_found() {
     let pr = open_pr(42, "feature/my-feature");
@@ -45,6 +46,7 @@ async fn test_get_pull_request_returns_stored_pr_when_found() {
     assert_eq!(result.head.ref_name, "feature/my-feature");
 }
 
+/// Verify that querying a non-existent PR number returns an error.
 #[tokio::test]
 async fn test_get_pull_request_returns_error_when_not_found() {
     let mock = make_mock().with_pull_requests("owner", "repo", vec![open_pr(1, "x")]);
@@ -54,6 +56,7 @@ async fn test_get_pull_request_returns_error_when_not_found() {
     assert!(result.is_err());
 }
 
+/// Verify that a successful `get_pull_request` call increments the call counter.
 #[tokio::test]
 async fn test_get_pull_request_records_call_on_success() {
     let mock = make_mock().with_pull_requests("owner", "repo", vec![open_pr(7, "x")]);
@@ -66,6 +69,7 @@ async fn test_get_pull_request_records_call_on_success() {
 // list_pull_requests
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Verify that `list_pull_requests` with `state=open` returns only open PRs.
 #[tokio::test]
 async fn test_list_pull_requests_returns_open_prs_by_default() {
     let open = open_pr(1, "feature/a");
@@ -81,6 +85,7 @@ async fn test_list_pull_requests_returns_open_prs_by_default() {
     assert_eq!(result[0].number, 1);
 }
 
+/// Verify that `list_pull_requests` with `state=all` returns both open and closed PRs.
 #[tokio::test]
 async fn test_list_pull_requests_returns_all_when_state_is_all() {
     let mock = make_mock().with_pull_requests(
@@ -100,6 +105,7 @@ async fn test_list_pull_requests_returns_all_when_state_is_all() {
     assert_eq!(result.len(), 2);
 }
 
+/// Verify that `list_pull_requests` filters results to only those matching the head branch.
 #[tokio::test]
 async fn test_list_pull_requests_filters_by_head_branch() {
     let mock = make_mock().with_pull_requests(
@@ -117,6 +123,7 @@ async fn test_list_pull_requests_filters_by_head_branch() {
     assert_eq!(result[0].number, 1);
 }
 
+/// Verify that `list_pull_requests` filters results to only those matching the base branch.
 #[tokio::test]
 async fn test_list_pull_requests_filters_by_base_branch() {
     let pr_main = PullRequestBuilder::new()
@@ -138,6 +145,7 @@ async fn test_list_pull_requests_filters_by_base_branch() {
     assert_eq!(result[0].number, 2);
 }
 
+/// Verify that `list_pull_requests` returns an empty list when no PRs match the state filter.
 #[tokio::test]
 async fn test_list_pull_requests_returns_empty_when_no_match() {
     let mock = make_mock().with_pull_requests("o", "r", vec![open_pr(1, "x")]);
@@ -154,6 +162,7 @@ async fn test_list_pull_requests_returns_empty_when_no_match() {
 // search_pull_requests
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Verify that `search_pull_requests` with `is:open` returns only open PRs.
 #[tokio::test]
 async fn test_search_pull_requests_filters_by_is_open() {
     let mock = make_mock().with_pull_requests(
@@ -174,6 +183,7 @@ async fn test_search_pull_requests_filters_by_is_open() {
     assert_eq!(result[0].number, 1);
 }
 
+/// Verify that `search_pull_requests` supports glob-prefix head branch matching (e.g. `head:release/*`).
 #[tokio::test]
 async fn test_search_pull_requests_matches_head_branch_glob_prefix() {
     let mock = make_mock().with_pull_requests(
@@ -197,6 +207,7 @@ async fn test_search_pull_requests_matches_head_branch_glob_prefix() {
         .all(|pr| pr.head.ref_name.starts_with("release/")));
 }
 
+/// Verify that `search_pull_requests` returns the exact matching PR when a full head branch name is given.
 #[tokio::test]
 async fn test_search_pull_requests_matches_exact_head_branch() {
     let mock = make_mock().with_pull_requests(
@@ -214,6 +225,7 @@ async fn test_search_pull_requests_matches_exact_head_branch() {
     assert_eq!(result[0].number, 1);
 }
 
+/// Verify that `search_pull_requests` returns an empty list when no PRs match the query.
 #[tokio::test]
 async fn test_search_pull_requests_returns_empty_when_no_match() {
     let mock = make_mock().with_pull_requests("o", "r", vec![open_pr(1, "feature/x")]);
@@ -230,6 +242,7 @@ async fn test_search_pull_requests_returns_empty_when_no_match() {
 // get_release_by_tag
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Verify that a configured release is returned when queried by its tag name.
 #[tokio::test]
 async fn test_get_release_by_tag_returns_matching_release() {
     let rel = ReleaseBuilder::new().with_tag_name("v1.2.0").build();
@@ -240,6 +253,7 @@ async fn test_get_release_by_tag_returns_matching_release() {
     assert_eq!(result.tag_name, "v1.2.0");
 }
 
+/// Verify that querying for a release with a non-existent tag returns an error.
 #[tokio::test]
 async fn test_get_release_by_tag_returns_error_when_not_found() {
     let mock = make_mock().with_releases(
@@ -257,6 +271,7 @@ async fn test_get_release_by_tag_returns_error_when_not_found() {
 // list_releases
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Verify that `list_releases` returns all configured releases for the repository.
 #[tokio::test]
 async fn test_list_releases_returns_all_stored_releases() {
     let releases = vec![
@@ -270,6 +285,7 @@ async fn test_list_releases_returns_all_stored_releases() {
     assert_eq!(result.len(), 2);
 }
 
+/// Verify that `list_releases` returns an empty list when no releases have been configured.
 #[tokio::test]
 async fn test_list_releases_returns_empty_when_no_releases_configured() {
     let mock = make_mock();
@@ -283,6 +299,7 @@ async fn test_list_releases_returns_empty_when_no_releases_configured() {
 // get_latest_release
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Verify that `get_latest_release` returns only a stable (non-draft, non-prerelease) release.
 #[tokio::test]
 async fn test_get_latest_release_returns_non_draft_non_prerelease() {
     let stable = ReleaseBuilder::new().with_tag_name("v1.0.0").build();
@@ -298,6 +315,7 @@ async fn test_get_latest_release_returns_non_draft_non_prerelease() {
     assert_eq!(result.unwrap().tag_name, "v1.0.0");
 }
 
+/// Verify that `get_latest_release` returns `None` when all releases are drafts.
 #[tokio::test]
 async fn test_get_latest_release_returns_none_when_only_draft_exists() {
     let mock = make_mock().with_releases("o", "r", vec![ReleaseBuilder::new().as_draft().build()]);
@@ -307,6 +325,7 @@ async fn test_get_latest_release_returns_none_when_only_draft_exists() {
     assert!(result.is_none());
 }
 
+/// Verify that `get_latest_release` returns `None` when no releases are configured.
 #[tokio::test]
 async fn test_get_latest_release_returns_none_when_no_releases() {
     let mock = make_mock();
@@ -316,6 +335,7 @@ async fn test_get_latest_release_returns_none_when_no_releases() {
     assert!(result.is_none());
 }
 
+/// Verify that `get_latest_release` skips prerelease entries and returns the stable release.
 #[tokio::test]
 async fn test_get_latest_release_skips_prerelease() {
     let stable = ReleaseBuilder::new().with_tag_name("v1.0.0").build();
@@ -334,6 +354,7 @@ async fn test_get_latest_release_skips_prerelease() {
 // create_pull_request
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Verify that `create_pull_request` returns a PR built from the provided params and records the call.
 #[tokio::test]
 async fn test_create_pull_request_records_call_and_returns_pr_from_params() {
     let mock = make_mock();
@@ -357,6 +378,7 @@ async fn test_create_pull_request_records_call_and_returns_pr_from_params() {
 // create_release
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Verify that `create_release` returns a release built from the provided params and records the call.
 #[tokio::test]
 async fn test_create_release_records_call_and_returns_release_from_params() {
     let mock = make_mock();
@@ -380,6 +402,7 @@ async fn test_create_release_records_call_and_returns_release_from_params() {
 // create_tag
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Verify that `create_tag` returns a tag with the given name and commit SHA, and records the call.
 #[tokio::test]
 async fn test_create_tag_records_call_and_returns_tag_from_params() {
     let mock = make_mock();
@@ -405,6 +428,7 @@ async fn test_create_tag_records_call_and_returns_tag_from_params() {
 // update_pull_request
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Verify that `update_pull_request` returns a modified PR with the new title applied.
 #[tokio::test]
 async fn test_update_pull_request_applies_title_change() {
     let pr = open_pr(10, "release/v1.0.0");
@@ -418,6 +442,7 @@ async fn test_update_pull_request_applies_title_change() {
     assert_eq!(result.title, "Updated Title");
 }
 
+/// Verify that `update_pull_request` returns an error when the target PR does not exist.
 #[tokio::test]
 async fn test_update_pull_request_returns_error_when_pr_not_found() {
     let mock = make_mock().with_pull_requests("o", "r", vec![open_pr(1, "x")]);
@@ -433,6 +458,7 @@ async fn test_update_pull_request_returns_error_when_pr_not_found() {
 // update_release
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Verify that `update_release` returns a modified release with the new body applied.
 #[tokio::test]
 async fn test_update_release_applies_body_change() {
     let mut rel = ReleaseBuilder::new().with_tag_name("v1.0.0").build();
@@ -450,6 +476,7 @@ async fn test_update_release_applies_body_change() {
     assert_eq!(result.body.as_deref(), Some("New notes"));
 }
 
+/// Verify that `update_release` returns an error when the target release ID does not exist.
 #[tokio::test]
 async fn test_update_release_returns_error_when_not_found() {
     let mock = make_mock();
@@ -469,6 +496,7 @@ async fn test_update_release_returns_error_when_not_found() {
 // GitOperations: list_tags / get_tag / tag_exists
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Verify that `list_tags` converts stored `github_operations::Tag` values into `GitTag` and returns them.
 #[tokio::test]
 async fn test_list_tags_returns_stored_tags_as_git_tags() {
     let tag = TagBuilder::new()
@@ -487,6 +515,7 @@ async fn test_list_tags_returns_stored_tags_as_git_tags() {
     assert_eq!(result[0].target_sha, "abc");
 }
 
+/// Verify that a tag with a message is converted to `GitTagType::Annotated`.
 #[tokio::test]
 async fn test_list_tags_returns_annotated_type_when_message_set() {
     let tag = TagBuilder::new().with_name("v1.0.0").annotated().build();
@@ -500,6 +529,7 @@ async fn test_list_tags_returns_annotated_type_when_message_set() {
     assert!(matches!(result[0].tag_type, GitTagType::Annotated));
 }
 
+/// Verify that a tag without a message is converted to `GitTagType::Lightweight`.
 #[tokio::test]
 async fn test_list_tags_returns_lightweight_type_when_no_message() {
     let tag = TagBuilder::new().with_name("v1.0.0").build();
@@ -513,6 +543,7 @@ async fn test_list_tags_returns_lightweight_type_when_no_message() {
     assert!(matches!(result[0].tag_type, GitTagType::Lightweight));
 }
 
+/// Verify that `list_tags` returns an empty list when no tags have been configured.
 #[tokio::test]
 async fn test_list_tags_returns_empty_when_no_tags_configured() {
     let mock = make_mock();
@@ -525,6 +556,7 @@ async fn test_list_tags_returns_empty_when_no_tags_configured() {
     assert!(result.is_empty());
 }
 
+/// Verify that `get_tag` returns the correct `GitTag` when queried by its exact name.
 #[tokio::test]
 async fn test_get_tag_returns_stored_tag_found_by_name() {
     let tag = TagBuilder::new()
@@ -539,6 +571,7 @@ async fn test_get_tag_returns_stored_tag_found_by_name() {
     assert_eq!(result.target_sha, "deadbeef");
 }
 
+/// Verify that `get_tag` returns an error when the tag name does not match any configured tag.
 #[tokio::test]
 async fn test_get_tag_returns_error_when_not_found() {
     let mock = make_mock().with_tags(
@@ -552,6 +585,7 @@ async fn test_get_tag_returns_error_when_not_found() {
     assert!(result.is_err());
 }
 
+/// Verify that `tag_exists` returns `true` when the named tag is configured.
 #[tokio::test]
 async fn test_tag_exists_returns_true_when_tag_present() {
     let mock = make_mock().with_tags(
@@ -565,6 +599,7 @@ async fn test_tag_exists_returns_true_when_tag_present() {
     assert!(result);
 }
 
+/// Verify that `tag_exists` returns `false` when the named tag is not among the configured tags.
 #[tokio::test]
 async fn test_tag_exists_returns_false_when_tag_absent() {
     let mock = make_mock().with_tags(
@@ -578,6 +613,7 @@ async fn test_tag_exists_returns_false_when_tag_absent() {
     assert!(!result);
 }
 
+/// Verify that `tag_exists` returns `false` when no tags have been configured.
 #[tokio::test]
 async fn test_tag_exists_returns_false_when_no_tags_configured() {
     let mock = make_mock();
@@ -591,6 +627,7 @@ async fn test_tag_exists_returns_false_when_no_tags_configured() {
 // GitOperations: get_commit / get_commits_between — call recording
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Verify that `get_commit` returns the matching commit and records the call.
 #[tokio::test]
 async fn test_get_commit_returns_stored_commit_and_records_call() {
     use crate::builders::{CommitBuilder, TestDataBuilder};
@@ -604,6 +641,7 @@ async fn test_get_commit_returns_stored_commit_and_records_call() {
     // call recording via get_repository_info or direct methods
 }
 
+/// Verify that `get_commit` returns an error when the SHA does not match any configured commit.
 #[tokio::test]
 async fn test_get_commit_returns_error_when_sha_not_found() {
     use crate::builders::{CommitBuilder, TestDataBuilder};
@@ -619,6 +657,7 @@ async fn test_get_commit_returns_error_when_sha_not_found() {
 // Error injection (failure simulation)
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Verify that a fully-configured failure simulation causes `list_releases` to return an error.
 #[tokio::test]
 async fn test_failure_simulation_returns_error_for_list_releases() {
     use crate::mocks::MockConfig;
@@ -638,6 +677,7 @@ async fn test_failure_simulation_returns_error_for_list_releases() {
     assert!(result.is_err());
 }
 
+/// Verify that each method call increments the total call counter by one.
 #[tokio::test]
 async fn test_call_count_increments_for_each_method_call() {
     let pr = open_pr(1, "x");
@@ -657,12 +697,14 @@ async fn test_call_count_increments_for_each_method_call() {
 // TagBuilder
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Verify that `TagBuilder::with_name` sets the tag name field correctly.
 #[test]
 fn test_tag_builder_with_name_sets_name() {
     let tag = TagBuilder::new().with_name("v3.0.0").build();
     assert_eq!(tag.name, "v3.0.0");
 }
 
+/// Verify that `TagBuilder::annotated` populates the message field with a non-empty string containing the tag name.
 #[test]
 fn test_tag_builder_annotated_sets_message() {
     let tag = TagBuilder::new().with_name("v1.0.0").annotated().build();
@@ -670,18 +712,21 @@ fn test_tag_builder_annotated_sets_message() {
     assert!(tag.message.unwrap().contains("v1.0.0"));
 }
 
+/// Verify that a tag built without calling `annotated()` has no message.
 #[test]
 fn test_tag_builder_default_has_no_message() {
     let tag = TagBuilder::new().build();
     assert!(tag.message.is_none());
 }
 
+/// Verify that `TagBuilder::with_commit_sha` sets the commit SHA field correctly.
 #[test]
 fn test_tag_builder_with_commit_sha_sets_sha() {
     let tag = TagBuilder::new().with_commit_sha("cafebabe").build();
     assert_eq!(tag.commit_sha, "cafebabe");
 }
 
+/// Verify that `TagBuilder::with_created_at` stores the provided timestamp in the built tag.
 #[test]
 fn test_tag_builder_with_created_at_sets_timestamp() {
     let ts = Utc::now();
