@@ -127,8 +127,8 @@
 //! assert!(VersionCalculator::parse_version("1.2.3-").is_err()); // Empty prerelease
 //! ```
 
-use crate::traits::git_operations::GitTag;
 use crate::{CoreError, CoreResult};
+use crate::traits::git_operations::{GitTag, ListTagsOptions};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use tracing::{debug, info};
@@ -572,8 +572,11 @@ impl VersionCalculator {
 /// assert_eq!(latest.unwrap().to_string(), "2.0.0");
 /// ```
 #[must_use]
-pub fn latest_semver_tag(_tags: &[GitTag], _include_prerelease: bool) -> Option<SemanticVersion> {
-    todo!("implement latest_semver_tag")
+pub fn latest_semver_tag(tags: &[GitTag], include_prerelease: bool) -> Option<SemanticVersion> {
+    tags.iter()
+        .filter_map(|t| VersionCalculator::parse_version(&t.name).ok())
+        .filter(|v| include_prerelease || !v.is_prerelease())
+        .max_by(SemanticVersion::compare_precedence)
 }
 
 /// Determines the current release baseline version for a repository by querying its tags.
@@ -602,15 +605,29 @@ pub fn latest_semver_tag(_tags: &[GitTag], _include_prerelease: bool) -> Option<
 /// }
 /// ```
 pub async fn resolve_current_version<G>(
-    _github: &G,
-    _owner: &str,
-    _repo: &str,
-    _include_prerelease: bool,
+    github: &G,
+    owner: &str,
+    repo: &str,
+    include_prerelease: bool,
 ) -> CoreResult<Option<SemanticVersion>>
 where
     G: crate::traits::GitOperations,
 {
-    todo!("implement resolve_current_version")
+    let tags = github
+        .list_tags(owner, repo, ListTagsOptions::default())
+        .await?;
+
+    let version = latest_semver_tag(&tags, include_prerelease);
+
+    debug!(
+        owner = %owner,
+        repo = %repo,
+        include_prerelease,
+        resolved = ?version.as_ref().map(ToString::to_string),
+        "resolved current version from tags"
+    );
+
+    Ok(version)
 }
 
 #[cfg(test)]
