@@ -127,6 +127,7 @@
 //! assert!(VersionCalculator::parse_version("1.2.3-").is_err()); // Empty prerelease
 //! ```
 
+use crate::traits::git_operations::GitTag;
 use crate::{CoreError, CoreResult};
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -541,6 +542,75 @@ impl VersionCalculator {
             }
         }
     }
+}
+
+/// Returns the highest semantic-version tag from `tags`, ignoring non-semver names.
+///
+/// Tags whose names cannot be parsed as a semantic version (with optional `v` prefix)
+/// are silently ignored. When `include_prerelease` is `false`, tags with a pre-release
+/// component are excluded before computing the maximum.
+///
+/// Returns `None` when `tags` is empty or no tag name parses as a valid semantic version
+/// string (subject to the `include_prerelease` filter).
+///
+/// Build metadata is ignored when comparing versions (as per semver 2.0 spec).
+///
+/// # Examples
+///
+/// ```no_run
+/// use release_regent_core::traits::git_operations::{GitTag, GitTagType};
+/// use release_regent_core::versioning::latest_semver_tag;
+///
+/// let tags = vec![
+///     GitTag { name: "v1.0.0".to_string(), target_sha: "abc".to_string(),
+///              tag_type: GitTagType::Lightweight, message: None, tagger: None, created_at: None },
+///     GitTag { name: "v2.0.0".to_string(), target_sha: "def".to_string(),
+///              tag_type: GitTagType::Lightweight, message: None, tagger: None, created_at: None },
+/// ];
+///
+/// let latest = latest_semver_tag(&tags, false);
+/// assert_eq!(latest.unwrap().to_string(), "2.0.0");
+/// ```
+#[must_use]
+pub fn latest_semver_tag(_tags: &[GitTag], _include_prerelease: bool) -> Option<SemanticVersion> {
+    todo!("implement latest_semver_tag")
+}
+
+/// Determines the current release baseline version for a repository by querying its tags.
+///
+/// Fetches all Git tags via [`crate::traits::GitOperations::list_tags`], then returns the
+/// highest tag whose name parses as a valid semantic version string. By default,
+/// pre-release tags (e.g. `v1.0.0-alpha.1`) are excluded from consideration.
+/// Pass `include_prerelease = true` to include them.
+///
+/// Returns `Ok(None)` for repositories that have no tags or no tags parseable as semver.
+/// This is a valid, non-error state: version calculation will default to `0.1.0`.
+///
+/// # Errors
+///
+/// Returns `Err` only when the GitHub API or network layer fails inside `list_tags`.
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// use release_regent_core::versioning::resolve_current_version;
+///
+/// let version = resolve_current_version(&github, "myorg", "myrepo", false).await?;
+/// match version {
+///     Some(v) => println!("Latest release: {v}"),
+///     None    => println!("No releases yet — starting from 0.1.0"),
+/// }
+/// ```
+pub async fn resolve_current_version<G>(
+    _github: &G,
+    _owner: &str,
+    _repo: &str,
+    _include_prerelease: bool,
+) -> CoreResult<Option<SemanticVersion>>
+where
+    G: crate::traits::GitOperations,
+{
+    todo!("implement resolve_current_version")
 }
 
 #[cfg(test)]
