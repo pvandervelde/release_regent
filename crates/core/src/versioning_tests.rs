@@ -548,6 +548,53 @@ fn test_complex_prerelease_versions() {
     assert!(!version8.is_prerelease());
 }
 
+#[test]
+fn test_compare_precedence_numeric_identifiers_compared_as_integers() {
+    // semver 2.0 §11.4.1: numeric identifiers are compared as integers, not
+    // lexicographically. beta.11 > beta.2 because 11 > 2, but a string comparison
+    // would incorrectly return beta.2 as the greater value ("2" > "11" lexically).
+    use std::cmp::Ordering;
+
+    let beta_2 = VersionCalculator::parse_version("1.0.0-beta.2").unwrap();
+    let beta_11 = VersionCalculator::parse_version("1.0.0-beta.11").unwrap();
+
+    assert_eq!(beta_2.compare_precedence(&beta_11), Ordering::Less);
+    assert_eq!(beta_11.compare_precedence(&beta_2), Ordering::Greater);
+    assert_eq!(
+        beta_11.compare_precedence(&beta_11.clone()),
+        Ordering::Equal
+    );
+}
+
+#[test]
+fn test_compare_precedence_semver_spec_full_ordering() {
+    // Verifies the complete pre-release ordering example from semver 2.0 spec §11.4:
+    // alpha < alpha.1 < alpha.beta < beta < beta.2 < beta.11 < rc.1 < (stable)
+    use std::cmp::Ordering;
+
+    let versions = [
+        "1.0.0-alpha",
+        "1.0.0-alpha.1",
+        "1.0.0-alpha.beta",
+        "1.0.0-beta",
+        "1.0.0-beta.2",
+        "1.0.0-beta.11",
+        "1.0.0-rc.1",
+        "1.0.0",
+    ]
+    .map(|s| VersionCalculator::parse_version(s).unwrap());
+
+    for window in versions.windows(2) {
+        assert_eq!(
+            window[0].compare_precedence(&window[1]),
+            Ordering::Less,
+            "{} should be less than {}",
+            window[0],
+            window[1]
+        );
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // latest_semver_tag
 // ─────────────────────────────────────────────────────────────────────────────
@@ -694,6 +741,20 @@ fn test_latest_semver_tag_stable_beats_same_prerelease_version_when_both_present
 
     let result = latest_semver_tag(&tags, true).expect("should return Some");
     assert_eq!(result.to_string(), "1.0.0");
+}
+
+#[test]
+fn test_latest_semver_tag_numeric_prerelease_suffix_uses_integer_ordering() {
+    // Regression: a lexicographic comparison would return beta.2 as the maximum
+    // because "2" > "11" when compared as strings. The correct result is beta.11
+    // because semver 2.0 §11.4.1 requires numeric identifiers to be compared as integers.
+    let tags = vec![
+        make_lightweight_tag("v1.0.0-beta.2"),
+        make_lightweight_tag("v1.0.0-beta.11"),
+    ];
+
+    let result = latest_semver_tag(&tags, true).expect("should return Some");
+    assert_eq!(result.to_string(), "1.0.0-beta.11");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
