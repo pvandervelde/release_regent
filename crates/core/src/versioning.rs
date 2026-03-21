@@ -127,8 +127,8 @@
 //! assert!(VersionCalculator::parse_version("1.2.3-").is_err()); // Empty prerelease
 //! ```
 
-use crate::{CoreError, CoreResult};
 use crate::traits::git_operations::{GitTag, ListTagsOptions};
+use crate::{CoreError, CoreResult};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use tracing::{debug, info};
@@ -563,14 +563,14 @@ fn compare_prerelease(a: &str, b: &str) -> std::cmp::Ordering {
     loop {
         match (a_ids.next(), b_ids.next()) {
             (None, None) => return Ordering::Equal,
-            (None, Some(_)) => return Ordering::Less,    // fewer identifiers is less
+            (None, Some(_)) => return Ordering::Less, // fewer identifiers is less
             (Some(_), None) => return Ordering::Greater, // more identifiers is greater
             (Some(a_id), Some(b_id)) => {
                 let ord = match (a_id.parse::<u64>(), b_id.parse::<u64>()) {
                     (Ok(a_num), Ok(b_num)) => a_num.cmp(&b_num),
-                    (Ok(_), Err(_)) => Ordering::Less,    // numeric < alphanumeric
+                    (Ok(_), Err(_)) => Ordering::Less, // numeric < alphanumeric
                     (Err(_), Ok(_)) => Ordering::Greater, // alphanumeric > numeric
-                    (Err(_), Err(_)) => a_id.cmp(b_id),  // both alphanumeric: ASCII order
+                    (Err(_), Err(_)) => a_id.cmp(b_id), // both alphanumeric: ASCII order
                 };
                 if ord != Ordering::Equal {
                     return ord;
