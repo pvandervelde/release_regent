@@ -127,6 +127,7 @@
 //! assert!(VersionCalculator::parse_version("1.2.3-").is_err()); // Empty prerelease
 //! ```
 
+use crate::traits::git_operations::{GitTag, ListTagsOptions};
 use crate::{CoreError, CoreResult};
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -213,7 +214,7 @@ impl SemanticVersion {
                     (None, None) => Ordering::Equal,
                     (Some(_), None) => Ordering::Less, // pre-release < normal
                     (None, Some(_)) => Ordering::Greater, // normal > pre-release
-                    (Some(a), Some(b)) => a.cmp(b),    // compare pre-release strings
+                    (Some(a), Some(b)) => compare_prerelease(a, b),
                 }
             }
             other => other,
@@ -541,6 +542,141 @@ impl VersionCalculator {
             }
         }
     }
+}
+
+/// Compare two semver pre-release strings following the semver 2.0 specification (§11.4).
+///
+/// Each dot-separated identifier is compared pairwise from left to right:
+/// - Both identifiers are all-digit: compared numerically (`beta.11 > beta.2`).
+/// - Left is numeric, right is alphanumeric: `Less` (spec §11.4.3).
+/// - Left is alphanumeric, right is numeric: `Greater`.
+/// - Both are alphanumeric: compared lexically in ASCII order.
+///
+/// When all compared pairs are equal, the version with more identifiers is `Greater`
+/// (e.g. `alpha.1 > alpha` per §11.4.4).
+fn compare_prerelease(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+
+    let mut a_ids = a.split('.');
+    let mut b_ids = b.split('.');
+
+    loop {
+        match (a_ids.next(), b_ids.next()) {
+            (None, None) => return Ordering::Equal,
+            (None, Some(_)) => return Ordering::Less, // fewer identifiers is less
+            (Some(_), None) => return Ordering::Greater, // more identifiers is greater
+            (Some(a_id), Some(b_id)) => {
+                let ord = match (a_id.parse::<u64>(), b_id.parse::<u64>()) {
+                    (Ok(a_num), Ok(b_num)) => a_num.cmp(&b_num),
+                    (Ok(_), Err(_)) => Ordering::Less, // numeric < alphanumeric
+                    (Err(_), Ok(_)) => Ordering::Greater, // alphanumeric > numeric
+                    (Err(_), Err(_)) => a_id.cmp(b_id), // both alphanumeric: ASCII order
+                };
+                if ord != Ordering::Equal {
+                    return ord;
+                }
+            }
+        }
+    }
+}
+
+/// Returns the highest semantic-version tag from `tags`, ignoring non-semver names.
+///
+/// Tags whose names cannot be parsed as a semantic version (with optional `v` prefix)
+/// are silently ignored. When `include_prerelease` is `false`, tags with a pre-release
+/// component are excluded before computing the maximum.
+///
+/// Returns `None` when `tags` is empty or no tag name parses as a valid semantic version
+/// string (subject to the `include_prerelease` filter).
+///
+/// Build metadata is ignored when comparing versions (as per semver 2.0 spec).
+///
+/// # Examples
+///
+/// ```rust
+/// use release_regent_core::traits::git_operations::{GitTag, GitTagType};
+/// use release_regent_core::versioning::latest_semver_tag;
+///
+/// let tags = vec![
+///     GitTag { name: "v1.0.0".to_string(), target_sha: "abc".to_string(),
+///              tag_type: GitTagType::Lightweight, message: None, tagger: None, created_at: None },
+///     GitTag { name: "v2.0.0".to_string(), target_sha: "def".to_string(),
+///              tag_type: GitTagType::Lightweight, message: None, tagger: None, created_at: None },
+/// ];
+///
+/// let latest = latest_semver_tag(&tags, false);
+/// assert_eq!(latest.unwrap().to_string(), "2.0.0");
+/// ```
+#[must_use]
+pub fn latest_semver_tag(tags: &[GitTag], include_prerelease: bool) -> Option<SemanticVersion> {
+    tags.iter()
+        // Use `VersionCalculator::parse_version` directly rather than the convenience
+        // method `GitTag::parse_semver()`. The latter's `is_semver()` pre-check rejects
+        // valid pre-release tags (e.g. `v1.0.0-rc.1`) because it treats the patch
+        // component `"0-rc"` as non-numeric. Calling `parse_version` directly preserves
+        // full semver 2.0 support including pre-release identifiers.
+        .filter_map(|t| VersionCalculator::parse_version(&t.name).ok())
+        .filter(|v| include_prerelease || !v.is_prerelease())
+        .max_by(SemanticVersion::compare_precedence)
+}
+
+/// Determines the current release baseline version for a repository by querying its tags.
+///
+/// Fetches all Git tags via [`crate::traits::GitOperations::list_tags`], then returns the
+/// highest tag whose name parses as a valid semantic version string. By default,
+/// pre-release tags (e.g. `v1.0.0-alpha.1`) are excluded from consideration.
+/// Pass `include_prerelease = true` to include them.
+///
+/// Returns `Ok(None)` for repositories that have no tags or no tags parseable as semver.
+/// This is a valid, non-error state: version calculation will default to `0.1.0`.
+///
+/// # Pagination
+///
+/// Correctness depends on the `G: GitOperations` implementation returning the **complete**
+/// tag list. [`ListTagsOptions::default`] passes `limit: None`; if the underlying client
+/// treats this as a cap (e.g. 100 tags), the highest semver tag may not be included,
+/// producing a stale baseline. Callers on repositories with many tags should ensure
+/// their `list_tags` implementation pages through all results.
+///
+/// # Errors
+///
+/// Returns `Err` only when the GitHub API or network layer fails inside `list_tags`.
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// use release_regent_core::versioning::resolve_current_version;
+///
+/// let version = resolve_current_version(&github, "myorg", "myrepo", false).await?;
+/// match version {
+///     Some(v) => println!("Latest release: {v}"),
+///     None    => println!("No releases yet — starting from 0.1.0"),
+/// }
+/// ```
+pub async fn resolve_current_version<G>(
+    github: &G,
+    owner: &str,
+    repo: &str,
+    include_prerelease: bool,
+) -> CoreResult<Option<SemanticVersion>>
+where
+    G: crate::traits::GitOperations,
+{
+    let tags = github
+        .list_tags(owner, repo, ListTagsOptions::default())
+        .await?;
+
+    let version = latest_semver_tag(&tags, include_prerelease);
+
+    debug!(
+        owner = %owner,
+        repo = %repo,
+        include_prerelease,
+        resolved = ?version.as_ref().map(ToString::to_string),
+        "resolved current version from tags"
+    );
+
+    Ok(version)
 }
 
 #[cfg(test)]

@@ -240,12 +240,7 @@ skip = [
     # Only skip the most problematic duplicates that are common in the Rust ecosystem
     # and generally safe to have multiple versions of
     { crate = "base64@0.21.7", reason = "reqwest uses older version while newer deps use 0.22.x" },
-    { crate = "bitflags@1.3.2", reason = "system-configuration uses v1 while openssl uses v2" },
-    { crate = "http@0.2.12", reason = "ecosystem transition from 0.2 to 1.x in progress" },
-    { crate = "http-body@0.4.6", reason = "ecosystem transition from 0.4 to 1.x in progress" },
-    { crate = "reqwest@0.11.27", reason = "ecosystem transition from 0.11 to 0.12 in progress" },
-    { crate = "rustls@0.21.12", reason = "ecosystem transition from 0.21 to 0.23 in progress" },
-    { crate = "sync_wrapper@0.1.2", reason = "legacy version required by some dependencies" },
+    { crate = "reqwest@0.12.28", reason = "octocrab/azure use 0.12 while github-bot-sdk uses 0.13" },
     # Windows crates often have multiple versions due to different feature requirements
     { crate = "windows-sys@0.48.0", reason = "different windows-sys versions for different feature sets" },
     { crate = "windows-targets@0.48.5", reason = "windows ecosystem version differences" },

@@ -1,4 +1,5 @@
 use super::*;
+use crate::traits::git_operations::{GitTag, GitTagType};
 
 #[test]
 fn test_initial_version_calculation() {
@@ -545,4 +546,357 @@ fn test_complex_prerelease_versions() {
     assert!(version6.is_prerelease());
     assert!(version7.is_prerelease());
     assert!(!version8.is_prerelease());
+}
+
+#[test]
+fn test_compare_precedence_numeric_identifiers_compared_as_integers() {
+    // semver 2.0 §11.4.1: numeric identifiers are compared as integers, not
+    // lexicographically. beta.11 > beta.2 because 11 > 2, but a string comparison
+    // would incorrectly return beta.2 as the greater value ("2" > "11" lexically).
+    use std::cmp::Ordering;
+
+    let beta_2 = VersionCalculator::parse_version("1.0.0-beta.2").unwrap();
+    let beta_11 = VersionCalculator::parse_version("1.0.0-beta.11").unwrap();
+
+    assert_eq!(beta_2.compare_precedence(&beta_11), Ordering::Less);
+    assert_eq!(beta_11.compare_precedence(&beta_2), Ordering::Greater);
+    assert_eq!(
+        beta_11.compare_precedence(&beta_11.clone()),
+        Ordering::Equal
+    );
+}
+
+#[test]
+fn test_compare_precedence_semver_spec_full_ordering() {
+    // Verifies the complete pre-release ordering example from semver 2.0 spec §11.4:
+    // alpha < alpha.1 < alpha.beta < beta < beta.2 < beta.11 < rc.1 < (stable)
+    use std::cmp::Ordering;
+
+    let versions = [
+        "1.0.0-alpha",
+        "1.0.0-alpha.1",
+        "1.0.0-alpha.beta",
+        "1.0.0-beta",
+        "1.0.0-beta.2",
+        "1.0.0-beta.11",
+        "1.0.0-rc.1",
+        "1.0.0",
+    ]
+    .map(|s| VersionCalculator::parse_version(s).unwrap());
+
+    for window in versions.windows(2) {
+        assert_eq!(
+            window[0].compare_precedence(&window[1]),
+            Ordering::Less,
+            "{} should be less than {}",
+            window[0],
+            window[1]
+        );
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// latest_semver_tag
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn make_lightweight_tag(name: &str) -> GitTag {
+    GitTag {
+        name: name.to_string(),
+        target_sha: "0000000000000000000000000000000000000000".to_string(),
+        tag_type: GitTagType::Lightweight,
+        message: None,
+        tagger: None,
+        created_at: None,
+    }
+}
+
+#[test]
+fn test_latest_semver_tag_with_empty_list_returns_none() {
+    assert!(latest_semver_tag(&[], false).is_none());
+}
+
+#[test]
+fn test_latest_semver_tag_with_all_non_semver_names_returns_none() {
+    let tags = vec![
+        make_lightweight_tag("latest"),
+        make_lightweight_tag("stable"),
+        make_lightweight_tag("release-2024"),
+        make_lightweight_tag("not-a-version"),
+    ];
+
+    assert!(latest_semver_tag(&tags, false).is_none());
+}
+
+#[test]
+fn test_latest_semver_tag_with_single_valid_tag_returns_it() {
+    let tags = vec![make_lightweight_tag("v1.2.3")];
+
+    let result = latest_semver_tag(&tags, false).expect("should return Some");
+    assert_eq!(result.major, 1);
+    assert_eq!(result.minor, 2);
+    assert_eq!(result.patch, 3);
+}
+
+#[test]
+fn test_latest_semver_tag_returns_highest_of_multiple_tags() {
+    let tags = vec![
+        make_lightweight_tag("v1.0.0"),
+        make_lightweight_tag("v2.1.0"),
+        make_lightweight_tag("v1.5.3"),
+    ];
+
+    let result = latest_semver_tag(&tags, false).expect("should return Some");
+    assert_eq!(result.to_string(), "2.1.0");
+}
+
+#[test]
+fn test_latest_semver_tag_excludes_prerelease_when_flag_is_false() {
+    let tags = vec![
+        make_lightweight_tag("v1.0.0-alpha.1"),
+        make_lightweight_tag("v0.9.0"),
+    ];
+
+    // Pre-release tag is excluded; only v0.9.0 remains
+    let result = latest_semver_tag(&tags, false).expect("should return Some");
+    assert_eq!(result.to_string(), "0.9.0");
+}
+
+#[test]
+fn test_latest_semver_tag_includes_prerelease_when_flag_is_true() {
+    let tags = vec![
+        make_lightweight_tag("v1.0.0-alpha.1"),
+        make_lightweight_tag("v0.9.0"),
+    ];
+
+    // With include_prerelease = true: v1.0.0-alpha.1 > v0.9.0 by major version
+    let result = latest_semver_tag(&tags, true).expect("should return Some");
+    assert_eq!(result.to_string(), "1.0.0-alpha.1");
+}
+
+#[test]
+fn test_latest_semver_tag_with_only_prerelease_and_flag_false_returns_none() {
+    let tags = vec![
+        make_lightweight_tag("v1.0.0-rc.1"),
+        make_lightweight_tag("v2.0.0-beta.3"),
+    ];
+
+    // All tags are pre-release; filtering them out leaves nothing
+    assert!(latest_semver_tag(&tags, false).is_none());
+}
+
+#[test]
+fn test_latest_semver_tag_with_only_prerelease_and_flag_true_returns_highest() {
+    let tags = vec![
+        make_lightweight_tag("v1.0.0-beta.1"),
+        make_lightweight_tag("v1.0.0-alpha.2"),
+    ];
+
+    // beta comes after alpha lexicographically, so beta.1 > alpha.2
+    let result = latest_semver_tag(&tags, true).expect("should return Some");
+    assert_eq!(result.to_string(), "1.0.0-beta.1");
+}
+
+#[test]
+fn test_latest_semver_tag_ignores_non_semver_mixed_with_valid() {
+    let tags = vec![
+        make_lightweight_tag("myapp-v1"),
+        make_lightweight_tag("v1.0.0"),
+        make_lightweight_tag("garbage"),
+        make_lightweight_tag("v2.0.1"),
+        make_lightweight_tag("build-20240101"),
+    ];
+
+    let result = latest_semver_tag(&tags, false).expect("should return Some");
+    assert_eq!(result.to_string(), "2.0.1");
+}
+
+#[test]
+fn test_latest_semver_tag_handles_tags_without_v_prefix() {
+    // VersionCalculator::parse_version accepts both "1.0.0" and "v1.0.0"
+    let tags = vec![make_lightweight_tag("1.0.0"), make_lightweight_tag("2.0.0")];
+
+    let result = latest_semver_tag(&tags, false).expect("should return Some");
+    assert_eq!(result.to_string(), "2.0.0");
+}
+
+#[test]
+fn test_latest_semver_tag_handles_mixed_v_prefix_and_no_prefix() {
+    let tags = vec![
+        make_lightweight_tag("v1.0.0"),
+        make_lightweight_tag("2.0.0"),
+    ];
+
+    let result = latest_semver_tag(&tags, false).expect("should return Some");
+    assert_eq!(result.to_string(), "2.0.0");
+}
+
+#[test]
+fn test_latest_semver_tag_stable_beats_same_prerelease_version_when_both_present() {
+    // semver: 1.0.0 > 1.0.0-rc.1; stable should win
+    let tags = vec![
+        make_lightweight_tag("v1.0.0"),
+        make_lightweight_tag("v1.0.0-rc.1"),
+        make_lightweight_tag("v0.9.0"),
+    ];
+
+    let result = latest_semver_tag(&tags, true).expect("should return Some");
+    assert_eq!(result.to_string(), "1.0.0");
+}
+
+#[test]
+fn test_latest_semver_tag_numeric_prerelease_suffix_uses_integer_ordering() {
+    // Regression: a lexicographic comparison would return beta.2 as the maximum
+    // because "2" > "11" when compared as strings. The correct result is beta.11
+    // because semver 2.0 §11.4.1 requires numeric identifiers to be compared as integers.
+    let tags = vec![
+        make_lightweight_tag("v1.0.0-beta.2"),
+        make_lightweight_tag("v1.0.0-beta.11"),
+    ];
+
+    let result = latest_semver_tag(&tags, true).expect("should return Some");
+    assert_eq!(result.to_string(), "1.0.0-beta.11");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// resolve_current_version
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Minimal test double for `GitOperations` that serves a fixed list of tags.
+struct FakeGitOps {
+    tags: Vec<GitTag>,
+    fail: bool,
+}
+
+impl FakeGitOps {
+    fn with_tags(tags: Vec<GitTag>) -> Self {
+        Self { tags, fail: false }
+    }
+
+    fn always_failing() -> Self {
+        Self {
+            tags: vec![],
+            fail: true,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::traits::GitOperations for FakeGitOps {
+    async fn get_commits_between(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _base: &str,
+        _head: &str,
+        _options: crate::traits::git_operations::GetCommitsOptions,
+    ) -> crate::CoreResult<Vec<crate::traits::git_operations::GitCommit>> {
+        unimplemented!()
+    }
+
+    async fn get_commit(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _commit_sha: &str,
+    ) -> crate::CoreResult<crate::traits::git_operations::GitCommit> {
+        unimplemented!()
+    }
+
+    async fn list_tags(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _options: crate::traits::git_operations::ListTagsOptions,
+    ) -> crate::CoreResult<Vec<GitTag>> {
+        if self.fail {
+            return Err(crate::CoreError::network("simulated failure"));
+        }
+        Ok(self.tags.clone())
+    }
+
+    async fn get_tag(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _tag_name: &str,
+    ) -> crate::CoreResult<crate::traits::git_operations::GitTag> {
+        unimplemented!()
+    }
+
+    async fn tag_exists(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _tag_name: &str,
+    ) -> crate::CoreResult<bool> {
+        unimplemented!()
+    }
+
+    async fn get_head_commit(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _branch: Option<&str>,
+    ) -> crate::CoreResult<crate::traits::git_operations::GitCommit> {
+        unimplemented!()
+    }
+
+    async fn get_repository_info(
+        &self,
+        _owner: &str,
+        _repo: &str,
+    ) -> crate::CoreResult<crate::traits::git_operations::GitRepository> {
+        unimplemented!()
+    }
+}
+
+#[tokio::test]
+async fn test_resolve_current_version_with_semver_tags_returns_highest_stable() {
+    let ops = FakeGitOps::with_tags(vec![
+        make_lightweight_tag("v1.0.0"),
+        make_lightweight_tag("v2.3.0"),
+        make_lightweight_tag("v2.3.0-rc.1"),
+        make_lightweight_tag("not-semver"),
+    ]);
+
+    let result = resolve_current_version(&ops, "owner", "repo", false)
+        .await
+        .expect("should not fail");
+
+    assert_eq!(result.expect("should be Some").to_string(), "2.3.0");
+}
+
+#[tokio::test]
+async fn test_resolve_current_version_with_no_tags_returns_none() {
+    let ops = FakeGitOps::with_tags(vec![]);
+
+    let result = resolve_current_version(&ops, "owner", "repo", false)
+        .await
+        .expect("should not fail");
+
+    assert!(result.is_none());
+}
+
+#[tokio::test]
+async fn test_resolve_current_version_includes_prerelease_when_opted_in() {
+    let ops = FakeGitOps::with_tags(vec![
+        make_lightweight_tag("v1.0.0-alpha.1"),
+        make_lightweight_tag("v0.9.0"),
+    ]);
+
+    // v1.0.0-alpha.1 wins because major 1 > major 0
+    let result = resolve_current_version(&ops, "owner", "repo", true)
+        .await
+        .expect("should not fail");
+
+    assert_eq!(result.expect("should be Some").to_string(), "1.0.0-alpha.1");
+}
+
+#[tokio::test]
+async fn test_resolve_current_version_propagates_api_errors() {
+    let ops = FakeGitOps::always_failing();
+
+    let result = resolve_current_version(&ops, "owner", "repo", false).await;
+
+    assert!(result.is_err());
 }
