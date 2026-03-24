@@ -552,6 +552,45 @@ impl GitHubOperations for GitHubClient {
 
         Ok(convert_sdk_release_to_release_regent_release(sdk_release))
     }
+
+    async fn create_branch(
+        &self,
+        owner: &str,
+        repo: &str,
+        branch_name: &str,
+        sha: &str,
+    ) -> CoreResult<()> {
+        info!("Creating branch {branch_name} at {sha} for {owner}/{repo}");
+
+        let installation = self.installation().await?;
+
+        installation
+            .create_branch(owner, repo, branch_name, sha)
+            .await
+            .map_err(|e| {
+                // HTTP 422 from GitHub means "Reference already exists"
+                if let github_bot_sdk::error::ApiError::HttpError { status: 422, .. } = &e {
+                    CoreError::conflict(format!("branch '{branch_name}' already exists"))
+                } else {
+                    map_sdk_error(e)
+                }
+            })?;
+
+        Ok(())
+    }
+
+    async fn delete_branch(&self, owner: &str, repo: &str, branch_name: &str) -> CoreResult<()> {
+        info!("Deleting branch {branch_name} for {owner}/{repo}");
+
+        let installation = self.installation().await?;
+
+        installation
+            .delete_git_ref(owner, repo, &format!("heads/{branch_name}"))
+            .await
+            .map_err(map_sdk_error)?;
+
+        Ok(())
+    }
 }
 
 // ============================================================================
