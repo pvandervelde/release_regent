@@ -47,6 +47,19 @@ pub enum CoreError {
         context: Option<ErrorContext>,
     },
 
+    /// Optimistic-lock / concurrent-modification conflict
+    ///
+    /// Returned when a GitHub API update is rejected because the resource was
+    /// modified concurrently (e.g. HTTP 412 Precondition Failed or HTTP 422
+    /// branch-already-exists).  The caller should re-fetch the resource and
+    /// retry the operation.
+    #[error("Conflict on {resource}: resource was modified concurrently")]
+    Conflict {
+        /// Human-readable description of the conflicting resource
+        resource: String,
+        context: Option<ErrorContext>,
+    },
+
     /// Changelog generation errors
     #[error("Changelog generation failed: {message}")]
     ChangelogGeneration {
@@ -390,6 +403,25 @@ impl CoreError {
         }
     }
 
+    /// Create a conflict (optimistic-lock) error
+    ///
+    /// Use when a GitHub API update is rejected because the resource was
+    /// modified concurrently (branch already exists, ETag mismatch, etc.).
+    pub fn conflict(resource: impl Into<String>) -> Self {
+        Self::Conflict {
+            resource: resource.into(),
+            context: None,
+        }
+    }
+
+    /// Create a conflict error with context
+    pub fn conflict_with_context(resource: impl Into<String>, context: ErrorContext) -> Self {
+        Self::Conflict {
+            resource: resource.into(),
+            context: Some(context),
+        }
+    }
+
     /// Create a new authentication error
     pub fn authentication(message: impl Into<String>) -> Self {
         Self::Authentication {
@@ -452,6 +484,7 @@ impl CoreError {
             | Self::Timeout { context, .. }
             | Self::Network { context, .. }
             | Self::Authentication { context, .. }
+            | Self::Conflict { context, .. }
             | Self::RateLimit { context, .. } => context.as_ref(),
             Self::NotFound { context, .. } => context.as_ref(),
             Self::NotSupported { error_context, .. } => error_context.as_ref(),

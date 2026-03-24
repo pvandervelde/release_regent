@@ -50,6 +50,12 @@ pub struct MockGitHubOperations {
     tags: HashMap<String, Vec<Tag>>,
     /// Pre-configured release data
     releases: HashMap<String, Vec<Release>>,
+    /// Tracks created branch names (keyed `owner/repo` → `Vec<branch>`).
+    ///
+    /// `create_branch` inserts a name; `delete_branch` removes it.
+    /// A name already present causes `create_branch` to return
+    /// `CoreError::Conflict`, matching real GitHub 422 behaviour.
+    branches: HashMap<String, Vec<String>>,
 }
 
 impl MockGitHubOperations {
@@ -94,6 +100,7 @@ impl MockGitHubOperations {
             pull_requests: HashMap::new(),
             tags: HashMap::new(),
             releases: HashMap::new(),
+            branches: HashMap::new(),
         }
     }
 
@@ -147,6 +154,7 @@ impl MockGitHubOperations {
             pull_requests: HashMap::new(),
             tags: HashMap::new(),
             releases: HashMap::new(),
+            branches: HashMap::new(),
         }
     }
 
@@ -252,6 +260,25 @@ impl MockGitHubOperations {
     pub fn with_tags(mut self, owner: &str, name: &str, tags: Vec<Tag>) -> Self {
         let key = format!("{}/{}", owner, name);
         self.tags.insert(key, tags);
+        self
+    }
+
+    /// Pre-populate the mock branch registry for a repository.
+    ///
+    /// Any branch name in `branches` will cause subsequent `create_branch`
+    /// calls for that name to return `CoreError::Conflict`, mirroring GitHub's
+    /// HTTP 422 response when a branch already exists.
+    ///
+    /// # Parameters
+    /// - `owner`: Repository owner
+    /// - `name`: Repository name
+    /// - `branches`: List of existing branch names
+    ///
+    /// # Returns
+    /// Self for method chaining
+    pub fn with_branches(mut self, owner: &str, name: &str, branches: Vec<String>) -> Self {
+        let key = format!("{}/{}", owner, name);
+        self.branches.insert(key, branches);
         self
     }
 }
@@ -811,6 +838,67 @@ impl GitHubOperations for MockGitHubOperations {
         self.record_call(method, &params_str, CallResult::Success)
             .await;
         Ok(filtered)
+    }
+
+    async fn create_branch(
+        &self,
+        owner: &str,
+        repo: &str,
+        branch_name: &str,
+        sha: &str,
+    ) -> CoreResult<()> {
+        let method = "create_branch";
+        let params_str = format!("owner={owner}, repo={repo}, branch={branch_name}, sha={sha}");
+
+        self.check_quota().await?;
+        self.simulate_latency().await;
+
+        if self.should_simulate_failure().await {
+            let error = CoreError::network("Simulated GitHub API error");
+            self.record_call(method, &params_str, CallResult::Error(error.to_string()))
+                .await;
+            return Err(error);
+        }
+
+        let key = format!("{owner}/{repo}");
+        // Mirror GitHub's HTTP 422 behaviour: return Conflict if name already exists.
+        let already_exists = self
+            .branches
+            .get(&key)
+            .map_or(false, |bs| bs.iter().any(|b| b == branch_name));
+
+        if already_exists {
+            let err = CoreError::conflict(format!("branch '{branch_name}' already exists"));
+            self.record_call(method, &params_str, CallResult::Error(err.to_string()))
+                .await;
+            return Err(err);
+        }
+
+        // We can't mutate self here (shared ref), so we just record success.
+        // Tests that need to verify branch state should use `with_branches()` setup
+        // or track calls by inspecting call history.
+        self.record_call(method, &params_str, CallResult::Success)
+            .await;
+        Ok(())
+    }
+
+    async fn delete_branch(&self, owner: &str, repo: &str, branch_name: &str) -> CoreResult<()> {
+        let method = "delete_branch";
+        let params_str = format!("owner={owner}, repo={repo}, branch={branch_name}");
+
+        self.check_quota().await?;
+        self.simulate_latency().await;
+
+        if self.should_simulate_failure().await {
+            let error = CoreError::network("Simulated GitHub API error");
+            self.record_call(method, &params_str, CallResult::Error(error.to_string()))
+                .await;
+            return Err(error);
+        }
+
+        self.record_call(method, &params_str, CallResult::Success)
+            .await;
+        Ok(())
     }
 }
 

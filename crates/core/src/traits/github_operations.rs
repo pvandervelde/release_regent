@@ -294,6 +294,49 @@ pub trait GitHubOperations: GitOperations + Send + Sync {
         release_id: u64,
         params: UpdateReleaseParams,
     ) -> CoreResult<Release>;
+
+    /// Create a new branch pointing to the given commit SHA
+    ///
+    /// Creates a new Git branch (ref) in the repository at the specified commit.
+    ///
+    /// # Parameters
+    /// - `owner`: Repository owner name
+    /// - `repo`: Repository name
+    /// - `branch_name`: Name of the new branch (without `refs/heads/` prefix)
+    /// - `sha`: Commit SHA the branch should initially point to
+    ///
+    /// # Returns
+    /// `Ok(())` on success
+    ///
+    /// # Errors
+    /// - `CoreError::Conflict` - A branch with this name already exists (HTTP 422)
+    /// - `CoreError::GitHub` - API communication failed
+    /// - `CoreError::InvalidInput` - Invalid branch name or SHA
+    async fn create_branch(
+        &self,
+        owner: &str,
+        repo: &str,
+        branch_name: &str,
+        sha: &str,
+    ) -> CoreResult<()>;
+
+    /// Delete a branch
+    ///
+    /// Removes the named branch (ref) from the repository. This is a destructive
+    /// operation; the commits remain accessible through other refs or by SHA.
+    ///
+    /// # Parameters
+    /// - `owner`: Repository owner name
+    /// - `repo`: Repository name
+    /// - `branch_name`: Name of the branch to delete (without `refs/heads/` prefix)
+    ///
+    /// # Returns
+    /// `Ok(())` on success
+    ///
+    /// # Errors
+    /// - `CoreError::NotFound` - Branch does not exist
+    /// - `CoreError::GitHub` - API communication failed
+    async fn delete_branch(&self, owner: &str, repo: &str, branch_name: &str) -> CoreResult<()>;
 }
 
 // Note: Git commit information is now provided by GitOperations trait
