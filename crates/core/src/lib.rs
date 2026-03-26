@@ -206,11 +206,60 @@
 pub mod changelog;
 pub mod config;
 pub mod errors;
+pub mod release_orchestrator;
 pub mod traits;
 pub mod versioning;
 
 pub use errors::{CoreError, CoreResult};
 pub use traits::{ConfigurationProvider, GitHubOperations, GitOperations, VersionCalculator};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MergedPullRequestHandler — event handler trait
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Handles `PullRequestMerged` events received by the event loop.
+///
+/// The trait decouples [`run_event_loop`] from the concrete
+/// [`ReleaseRegentProcessor`] type so that tests can inject lightweight
+/// no-op or spy implementations without wiring up the full dependency graph.
+///
+/// [`ReleaseRegentProcessor`] provides the production implementation.  For
+/// tests and environments where the processor is not yet wired (e.g. the
+/// server before GitHub credentials are fully configured), a simple no-op
+/// implementation that returns `Ok(())` is sufficient.
+#[async_trait::async_trait]
+pub trait MergedPullRequestHandler: Send + Sync {
+    /// Process a single `PullRequestMerged` event.
+    ///
+    /// Returns `Ok(())` on success.  Any `Err` returned here is treated as a
+    /// processing failure by the event loop: the event will be rejected
+    /// (permanently if the error is not retryable) and the loop will continue.
+    async fn handle_merged_pull_request(
+        &self,
+        event: &traits::event_source::ProcessingEvent,
+    ) -> CoreResult<()>;
+}
+
+#[async_trait::async_trait]
+impl<G, C, V> MergedPullRequestHandler for ReleaseRegentProcessor<G, C, V>
+where
+    G: GitHubOperations + Send + Sync,
+    C: ConfigurationProvider + Send + Sync,
+    V: VersionCalculator + Send + Sync,
+{
+    async fn handle_merged_pull_request(
+        &self,
+        event: &traits::event_source::ProcessingEvent,
+    ) -> CoreResult<()> {
+        match self.handle_merged_pull_request(event).await {
+            Ok(result) => {
+                tracing::info!(result = ?result, "Release orchestration completed");
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
+    }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // run_event_loop — public API
@@ -250,19 +299,22 @@ pub use traits::{ConfigurationProvider, GitHubOperations, GitOperations, Version
 /// # Examples
 ///
 /// ```rust,ignore
-/// use release_regent_core::run_event_loop;
+/// use release_regent_core::{run_event_loop, MergedPullRequestHandler};
 /// use tokio_util::sync::CancellationToken;
 ///
 /// let token = CancellationToken::new();
 /// let source = MyEventSource::new();
-/// run_event_loop(&source, token).await?;
+/// let processor = build_processor();  // implements MergedPullRequestHandler
+/// run_event_loop(&source, &processor, token).await?;
 /// ```
-pub async fn run_event_loop<S>(
+pub async fn run_event_loop<S, H>(
     source: &S,
+    handler: &H,
     token: tokio_util::sync::CancellationToken,
 ) -> CoreResult<()>
 where
     S: traits::event_source::EventSource,
+    H: MergedPullRequestHandler,
 {
     use tracing::Instrument as _;
     use traits::event_source::EventType;
@@ -290,9 +342,9 @@ where
                                     "{}/{}",
                                     event.repository.owner, event.repository.name
                                 ),
-                                "Pull request merged — release orchestrator not yet wired"
+                                "Pull request merged — orchestrating release PR"
                             );
-                            Ok(())
+                            handler.handle_merged_pull_request(&event).await
                         }
                         EventType::ReleasePrMerged => {
                             tracing::info!(
@@ -478,6 +530,203 @@ where
     pub fn version_calculator(&self) -> &V {
         &self.version_calculator
     }
+
+    /// Handle a merged pull request event by orchestrating the creation or
+    /// update of a release PR.
+    ///
+    /// This is the main entry point for processing `EventType::PullRequestMerged`
+    /// events. It performs the following steps in order:
+    ///
+    /// 1. Extract `base_branch` and `merge_commit_sha` from the event payload.
+    /// 2. Load the merged repository configuration.
+    /// 3. Resolve the current release version from Git tags.
+    /// 4. Calculate the next semantic version from commit history.
+    /// 5. Format a changelog body from the commit analysis.
+    /// 6. Orchestrate the release PR (create, update, or rename via
+    ///    [`release_orchestrator::ReleaseOrchestrator`]).
+    ///
+    /// # Parameters
+    /// - `event`: The normalised `PullRequestMerged` processing event, including
+    ///   `payload` (raw GitHub webhook JSON), `repository`, and `correlation_id`.
+    ///
+    /// # Returns
+    /// The [`release_orchestrator::OrchestratorResult`] describing what action
+    /// was taken (PR created, updated, renamed, or no-op).
+    ///
+    /// # Errors
+    /// - [`CoreError::InvalidInput`] — the payload is missing `merge_commit_sha`
+    ///   and `head.sha`.
+    /// - [`CoreError::GitHub`] / [`CoreError::Network`] — a GitHub API call failed.
+    /// - [`CoreError::Versioning`] — version calculation failed.
+    /// - [`CoreError::Config`] — configuration loading failed.
+    pub async fn handle_merged_pull_request(
+        &self,
+        event: &traits::event_source::ProcessingEvent,
+    ) -> CoreResult<release_orchestrator::OrchestratorResult> {
+        use traits::configuration_provider::LoadOptions;
+        use traits::version_calculator::{CalculationOptions, VersionContext, VersioningStrategy};
+
+        let owner = &event.repository.owner;
+        let repo = &event.repository.name;
+        let correlation_id = &event.correlation_id;
+
+        // Extract base branch from payload; fall back to the repository's
+        // configured default branch when the payload field is absent.
+        let base_branch = event
+            .payload
+            .get("pull_request")
+            .and_then(|pr| pr.get("base"))
+            .and_then(|base| base.get("ref"))
+            .and_then(|v| v.as_str())
+            .unwrap_or(&event.repository.default_branch)
+            .to_string();
+
+        // The merge commit SHA is required: it is the head of the base branch
+        // immediately after the merge and serves as the branch point for the
+        // new release branch.
+        let base_sha = event
+            .payload
+            .get("pull_request")
+            .and_then(|pr| pr.get("merge_commit_sha"))
+            .and_then(|v| v.as_str())
+            .or_else(|| {
+                event
+                    .payload
+                    .get("pull_request")
+                    .and_then(|pr| pr.get("head"))
+                    .and_then(|head| head.get("sha"))
+                    .and_then(|v| v.as_str())
+            })
+            .ok_or_else(|| {
+                CoreError::invalid_input(
+                    "payload",
+                    "PullRequestMerged payload is missing both \
+                     merge_commit_sha and pull_request.head.sha",
+                )
+            })?
+            .to_string();
+
+        // Load merged (global + per-repo) configuration.
+        let repo_config = self
+            .configuration_provider
+            .get_merged_config(owner, repo, LoadOptions::default())
+            .await?;
+
+        // Resolve the currently released version from Git tags.
+        let current_version =
+            versioning::resolve_current_version(&self.github_operations, owner, repo, false)
+                .await?;
+
+        // Build the version calculation context.
+        let ctx = VersionContext {
+            base_ref: current_version.as_ref().map(|v| format!("v{v}")),
+            current_version: current_version.clone(),
+            head_ref: base_sha.clone(),
+            owner: owner.clone(),
+            repo: repo.clone(),
+            target_branch: base_branch.clone(),
+        };
+
+        // Map the repository config strategy to the calculator's strategy type.
+        let strategy = match repo_config.versioning.strategy {
+            config::VersioningStrategy::Conventional | config::VersioningStrategy::External => {
+                VersioningStrategy::ConventionalCommits {
+                    custom_types: std::collections::HashMap::new(),
+                    include_prerelease: false,
+                }
+            }
+        };
+
+        let options = CalculationOptions {
+            generate_changelog: true,
+            ..Default::default()
+        };
+
+        let calc_result = self
+            .version_calculator
+            .calculate_version(ctx, strategy, options)
+            .await?;
+
+        let changelog = format_changelog_for_release(&calc_result.changelog_entries);
+
+        // Build orchestrator config honouring the repository PR title template.
+        let orch_config = release_orchestrator::OrchestratorConfig {
+            branch_prefix: "release".to_string(),
+            title_template: repo_config.release_pr.title_template.clone(),
+            changelog_header: "## Changelog".to_string(),
+        };
+
+        let orchestrator =
+            release_orchestrator::ReleaseOrchestrator::new(orch_config, &self.github_operations);
+
+        tracing::info!(
+            owner = %owner,
+            repo = %repo,
+            version = %calc_result.next_version,
+            base_branch = %base_branch,
+            correlation_id = %correlation_id,
+            "Orchestrating release PR for merged pull request"
+        );
+
+        orchestrator
+            .orchestrate(
+                owner,
+                repo,
+                &calc_result.next_version,
+                &changelog,
+                &base_branch,
+                &base_sha,
+                correlation_id,
+            )
+            .await
+    }
+}
+
+/// Format [`traits::version_calculator::ChangelogEntry`] items into a markdown
+/// body suitable for a release PR.
+///
+/// Entries are grouped by [`ChangelogEntry::entry_type`] (e.g. "Added",
+/// "Fixed") and sorted alphabetically within each group. Each entry line
+/// includes the full 40-character commit SHA in `[sha]` notation so that the
+/// [`release_orchestrator`] changelog merge/dedup logic can identify duplicates.
+fn format_changelog_for_release(entries: &[traits::version_calculator::ChangelogEntry]) -> String {
+    use std::collections::BTreeMap;
+
+    if entries.is_empty() {
+        return String::new();
+    }
+
+    // Group entries by type preserving the alphabetical section order from BTreeMap.
+    let mut by_type: BTreeMap<&str, Vec<&traits::version_calculator::ChangelogEntry>> =
+        BTreeMap::new();
+    for entry in entries {
+        by_type
+            .entry(entry.entry_type.as_str())
+            .or_default()
+            .push(entry);
+    }
+
+    let mut out = String::new();
+    for (entry_type, items) in &by_type {
+        out.push_str(&format!("### {entry_type}\n\n"));
+        for item in items {
+            let desc = if let Some(scope) = &item.scope {
+                format!("**{scope}**: {}", item.description)
+            } else {
+                item.description.clone()
+            };
+            let line = if item.commit_sha.is_empty() {
+                format!("- {desc}")
+            } else {
+                format!("- {desc} [{}]", item.commit_sha)
+            };
+            out.push_str(&line);
+            out.push('\n');
+        }
+        out.push('\n');
+    }
+
+    out.trim_end().to_string()
 }
 
 #[cfg(test)]

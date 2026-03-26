@@ -513,14 +513,69 @@ impl GitHubOperations for GitHubClient {
     #[instrument(skip(self))]
     async fn search_pull_requests(
         &self,
-        _owner: &str,
-        _repo: &str,
-        _query: &str,
+        owner: &str,
+        repo: &str,
+        query: &str,
     ) -> CoreResult<Vec<PullRequest>> {
-        Err(CoreError::not_supported(
-            "search_pull_requests",
-            "not yet implemented in GitHubClient",
-        ))
+        info!(
+            "Searching pull requests for {}/{} with query: {}",
+            owner, repo, query
+        );
+
+        // Determine desired state from the query.  Default to "open" if
+        // not specified, which matches the most common usage pattern.
+        let state = if query.contains("is:closed") {
+            "closed"
+        } else if query.contains("is:all") {
+            "all"
+        } else {
+            "open"
+        };
+
+        // Extract the head-branch prefix filter, e.g. `head:release/v*` → `"release/v"`.
+        // The trailing `*` is a glob wildcard; we strip it and use starts_with matching.
+        let head_prefix: Option<&str> = query
+            .split_whitespace()
+            .find_map(|token| token.strip_prefix("head:").map(|p| p.trim_end_matches('*')));
+
+        let installation = self.installation().await?;
+        let mut all_prs: Vec<PullRequest> = Vec::new();
+        let mut page: Option<u32> = None;
+
+        loop {
+            let response = installation
+                .list_pull_requests(owner, repo, Some(state), page)
+                .await
+                .map_err(map_sdk_error)?;
+
+            let has_next = response.has_next();
+            let next_page_num = response.next_page_number();
+
+            for sdk_pr in response.items {
+                // Filter by head branch prefix when specified.
+                if let Some(prefix) = head_prefix {
+                    if !sdk_pr.head.branch_ref.starts_with(prefix) {
+                        continue;
+                    }
+                }
+                all_prs.push(convert_sdk_pr_to_release_regent_pr(sdk_pr)?);
+            }
+
+            if has_next {
+                page = next_page_num;
+            } else {
+                break;
+            }
+        }
+
+        debug!(
+            owner,
+            repo,
+            query,
+            count = all_prs.len(),
+            "search_pull_requests complete"
+        );
+        Ok(all_prs)
     }
 
     #[instrument(skip(self, params))]
@@ -551,6 +606,45 @@ impl GitHubOperations for GitHubClient {
             .map_err(map_sdk_error)?;
 
         Ok(convert_sdk_release_to_release_regent_release(sdk_release))
+    }
+
+    async fn create_branch(
+        &self,
+        owner: &str,
+        repo: &str,
+        branch_name: &str,
+        sha: &str,
+    ) -> CoreResult<()> {
+        info!("Creating branch {branch_name} at {sha} for {owner}/{repo}");
+
+        let installation = self.installation().await?;
+
+        installation
+            .create_branch(owner, repo, branch_name, sha)
+            .await
+            .map_err(|e| {
+                // HTTP 422 from GitHub means "Reference already exists"
+                if let github_bot_sdk::error::ApiError::HttpError { status: 422, .. } = &e {
+                    CoreError::conflict(format!("branch '{branch_name}' already exists"))
+                } else {
+                    map_sdk_error(e)
+                }
+            })?;
+
+        Ok(())
+    }
+
+    async fn delete_branch(&self, owner: &str, repo: &str, branch_name: &str) -> CoreResult<()> {
+        info!("Deleting branch {branch_name} for {owner}/{repo}");
+
+        let installation = self.installation().await?;
+
+        installation
+            .delete_git_ref(owner, repo, &format!("heads/{branch_name}"))
+            .await
+            .map_err(map_sdk_error)?;
+
+        Ok(())
     }
 }
 
