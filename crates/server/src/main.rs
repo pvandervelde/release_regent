@@ -47,7 +47,7 @@ use github_bot_sdk::{
     webhook::{WebhookReceiver, WebhookRequest, WebhookResponse},
 };
 use release_regent_core::{run_event_loop, MergedPullRequestHandler};
-use release_regent_core::{CoreResult, traits::event_source::ProcessingEvent};
+use release_regent_core::{traits::event_source::ProcessingEvent, CoreResult};
 use std::{collections::HashMap, sync::Arc};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
@@ -75,10 +75,7 @@ struct NoopMergedPRHandler;
 
 #[async_trait::async_trait]
 impl MergedPullRequestHandler for NoopMergedPRHandler {
-    async fn handle_merged_pull_request(
-        &self,
-        event: &ProcessingEvent,
-    ) -> CoreResult<()> {
+    async fn handle_merged_pull_request(&self, event: &ProcessingEvent) -> CoreResult<()> {
         info!(
             event_id = %event.event_id,
             "PullRequestMerged handler not yet wired in server — event skipped"

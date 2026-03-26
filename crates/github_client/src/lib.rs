@@ -534,11 +534,9 @@ impl GitHubOperations for GitHubClient {
 
         // Extract the head-branch prefix filter, e.g. `head:release/v*` → `"release/v"`.
         // The trailing `*` is a glob wildcard; we strip it and use starts_with matching.
-        let head_prefix: Option<&str> = query.split_whitespace().find_map(|token| {
-            token
-                .strip_prefix("head:")
-                .map(|p| p.trim_end_matches('*'))
-        });
+        let head_prefix: Option<&str> = query
+            .split_whitespace()
+            .find_map(|token| token.strip_prefix("head:").map(|p| p.trim_end_matches('*')));
 
         let installation = self.installation().await?;
         let mut all_prs: Vec<PullRequest> = Vec::new();
