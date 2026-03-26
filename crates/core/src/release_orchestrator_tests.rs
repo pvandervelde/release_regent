@@ -809,3 +809,125 @@ fn test_merge_changelog_sections_returns_existing_when_no_new_entries() {
     let merged = merge_changelog_sections(&existing, &new_section);
     assert_eq!(merged, existing);
 }
+
+/// `merge_changelog_sections` preserves a section header from `new_section`
+/// when that header does not exist in the existing section.
+///
+/// Regression guard for the data-integrity bug where `### Breaking Changes`
+/// entries appended from the new changelog lost their heading.
+#[test]
+fn test_merge_changelog_sections_preserves_new_section_headers() {
+    let sha_old = "1111111111111111111111111111111111111111";
+    let sha_new = "2222222222222222222222222222222222222222";
+
+    let existing = format!("### Fixed\n\n- fix: old fix [{sha_old}]");
+    let new_section = format!(
+        "### Fixed\n\n- fix: old fix [{sha_old}]\n### Breaking Changes\n\n- breaking: new thing [{sha_new}]"
+    );
+
+    let merged = merge_changelog_sections(&existing, &new_section);
+
+    assert!(
+        merged.contains("### Breaking Changes"),
+        "new section header should be preserved; merged:\n{merged}"
+    );
+    assert!(
+        merged.contains("new thing"),
+        "entry under new header should be present; merged:\n{merged}"
+    );
+    // The duplicate sha_old entry must not be duplicated.
+    assert_eq!(
+        merged.matches(sha_old).count(),
+        1,
+        "old SHA should appear exactly once; merged:\n{merged}"
+    );
+}
+
+/// When `search_pull_requests` returns multiple open release PRs the
+/// orchestrator selects the highest-versioned one, not the first match.
+#[tokio::test]
+async fn test_orchestrate_selects_highest_version_when_multiple_release_prs_exist() {
+    // GitHub happens to return the lower-versioned PR first.
+    let older_pr = make_open_release_pr(10, "release/v1.0.0", None);
+    let newer_pr = make_open_release_pr(20, "release/v2.0.0", None);
+
+    let github = TestGitHub::new()
+        .with_search_results(vec![older_pr, newer_pr])
+        .await;
+
+    let orchestrator = ReleaseOrchestrator::new(default_config(), &github);
+
+    // New version is 1.5.0 — lower than v2.0.0 (the highest existing PR).
+    // Expected outcome: NoOp because the highest existing PR (v2.0.0) > v1.5.0.
+    let result = orchestrator
+        .orchestrate(
+            "testorg",
+            "testrepo",
+            &ver(1, 5, 0),
+            "- feat: something [cccccccccccccccccccccccccccccccccccccccc]",
+            "main",
+            "sha010",
+            "corr-010",
+        )
+        .await
+        .expect("orchestrate should succeed");
+
+    assert!(
+        matches!(result, OrchestratorResult::NoOp { .. }),
+        "expected NoOp because v2.0.0 > v1.5.0, got {result:?}"
+    );
+
+    // Nothing should be mutated.
+    assert!(github.created_branches().await.is_empty());
+    assert!(github.created_prs().await.is_empty());
+}
+
+/// In the equal-version update path, `update_pull_request` is NOT called with
+/// a title when the rendered title matches the existing PR title.
+#[tokio::test]
+async fn test_update_release_pr_does_not_patch_title_when_unchanged() {
+    let version = ver(1, 0, 0);
+    let config = default_config();
+
+    // The default title template is "chore(release): {version_tag}".
+    // For v1.0.0 this produces "chore(release): v1.0.0".
+    let rendered_title = config
+        .title_template
+        .replace("{version}", "1.0.0")
+        .replace("{version_tag}", "v1.0.0");
+
+    let existing_body = "## Changelog\n\n- fix: old fix [aabbccddeeff00112233445566778899aabbccdd]";
+    let mut existing_pr = make_open_release_pr(42, "release/v1.0.0", Some(existing_body));
+    // Use the exact title the orchestrator would render — no title change expected.
+    existing_pr.title = rendered_title;
+
+    let github = TestGitHub::new()
+        .with_search_results(vec![existing_pr.clone()])
+        .await
+        .with_pr_by_number(existing_pr)
+        .await;
+
+    let orchestrator = ReleaseOrchestrator::new(config, &github);
+
+    orchestrator
+        .orchestrate(
+            "testorg",
+            "testrepo",
+            &version,
+            "- feat: new feature [1122334455667788990011223344556677889900]",
+            "main",
+            "sha011",
+            "corr-011",
+        )
+        .await
+        .expect("orchestrate should succeed");
+
+    let updates = github.updated_prs().await;
+    assert_eq!(updates.len(), 1);
+    // Title field should be None because it has not changed.
+    assert!(
+        updates[0].1.is_none(),
+        "title should not be patched when unchanged; got {:?}",
+        updates[0].1
+    );
+}

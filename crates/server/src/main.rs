@@ -46,7 +46,8 @@ use github_bot_sdk::{
     events::{EventProcessor, ProcessorConfig},
     webhook::{WebhookReceiver, WebhookRequest, WebhookResponse},
 };
-use release_regent_core::run_event_loop;
+use release_regent_core::{run_event_loop, MergedPullRequestHandler};
+use release_regent_core::{CoreResult, traits::event_source::ProcessingEvent};
 use std::{collections::HashMap, sync::Arc};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
@@ -63,6 +64,28 @@ use handler::WebhookSecretProvider;
 /// Requests larger than this limit are rejected by the `DefaultBodyLimit` Axum
 /// layer before the signature validator even runs.
 const MAX_BODY_BYTES: usize = 10 * 1024 * 1024;
+
+/// Placeholder `MergedPullRequestHandler` used until the full processor is wired.
+///
+/// When the GitHub client and configuration provider are fully configured in the
+/// server binary (a subsequent task), this will be replaced by a real
+/// `ReleaseRegentProcessor` instance.  Until then this stub ensures the server
+/// compiles and routes events safely without taking any action on them.
+struct NoopMergedPRHandler;
+
+#[async_trait::async_trait]
+impl MergedPullRequestHandler for NoopMergedPRHandler {
+    async fn handle_merged_pull_request(
+        &self,
+        event: &ProcessingEvent,
+    ) -> CoreResult<()> {
+        info!(
+            event_id = %event.event_id,
+            "PullRequestMerged handler not yet wired in server — event skipped"
+        );
+        Ok(())
+    }
+}
 
 /// Application state cloned into every Axum request handler.
 #[derive(Clone)]
@@ -253,7 +276,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // cancelled, processing each `ProcessingEvent` from the mpsc channel.
     let loop_token = shutdown_token.clone();
     let event_loop_handle = tokio::spawn(async move {
-        if let Err(e) = run_event_loop(&event_source, loop_token).await {
+        let handler = NoopMergedPRHandler;
+        if let Err(e) = run_event_loop(&event_source, &handler, loop_token).await {
             error!(error = %e, "Event loop exited with error");
         }
         info!("Event loop stopped");

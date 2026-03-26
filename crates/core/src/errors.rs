@@ -496,7 +496,12 @@ impl CoreError {
     pub fn is_retryable(&self) -> bool {
         matches!(
             self,
-            Self::Network { .. } | Self::RateLimit { .. } | Self::Timeout { .. }
+            Self::Network { .. }
+                | Self::RateLimit { .. }
+                | Self::Timeout { .. }
+                // Conflict signals a concurrent modification; the caller should
+                // re-fetch and retry (see module-level doc comment).
+                | Self::Conflict { .. }
         )
     }
 
@@ -681,10 +686,13 @@ mod tests {
         let rate_limit_error = CoreError::rate_limit("Too many requests");
         let timeout_error = CoreError::timeout("Operation timed out", 5000);
         let config_error = CoreError::config("Invalid configuration");
+        let conflict_error = CoreError::conflict("concurrent modification");
 
         assert!(network_error.is_retryable());
         assert!(rate_limit_error.is_retryable());
         assert!(timeout_error.is_retryable());
+        // Conflict must be retryable: the doc comment says "re-fetch and retry".
+        assert!(conflict_error.is_retryable());
         assert!(!config_error.is_retryable());
     }
 

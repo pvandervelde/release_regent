@@ -280,13 +280,18 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
             query, "search_pull_requests returned PRs"
         );
 
-        for pr in prs {
-            if let Some(version) = self.parse_version_from_branch(&pr.head.ref_name) {
-                return Ok(Some((pr, version)));
-            }
-        }
+        // Select the highest-versioned match so that, if two release PRs coexist
+        // (e.g. after a partial rename failure), we operate on the most recent one
+        // rather than whatever GitHub happens to return first.
+        let best = prs
+            .into_iter()
+            .filter_map(|pr| {
+                self.parse_version_from_branch(&pr.head.ref_name)
+                    .map(|version| (pr, version))
+            })
+            .max_by(|(_, va), (_, vb)| va.compare_precedence(vb));
 
-        Ok(None)
+        Ok(best)
     }
 
     /// Create a new release branch and pull request.
@@ -372,13 +377,21 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
         let new_body = self.render_body(&merged_changelog);
         let new_title = self.render_title(version);
 
+        // Only send the title when it has actually changed; avoids a spurious
+        // PR timeline entry on the equal-version (changelog-only) update path.
+        let title_update = if new_title == fresh_pr.title {
+            None
+        } else {
+            Some(new_title)
+        };
+
         let updated = self
             .github
             .update_pull_request(
                 owner,
                 repo,
                 fresh_pr.number,
-                Some(new_title),
+                title_update,
                 Some(new_body),
                 None,
             )
@@ -458,7 +471,7 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
     }
 
     /// Construct the canonical release branch name, e.g. `"release/v1.2.3"`.
-    pub fn make_branch_name(&self, version: &SemanticVersion) -> String {
+    pub(crate) fn make_branch_name(&self, version: &SemanticVersion) -> String {
         format!(
             "{}/{}",
             self.config.branch_prefix,
@@ -468,7 +481,7 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
 
     /// Construct a timestamped fallback branch name used when the canonical
     /// branch already exists, e.g. `"release/v1.2.3-1711234567"`.
-    pub fn make_fallback_branch_name(&self, version: &SemanticVersion) -> String {
+    pub(crate) fn make_fallback_branch_name(&self, version: &SemanticVersion) -> String {
         let ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())
@@ -570,17 +583,39 @@ fn merge_changelog_sections(existing_section: &str, new_section: &str) -> String
     let existing_shas: std::collections::HashSet<&str> =
         existing_section.lines().filter_map(extract_sha).collect();
 
-    // Collect new commit lines whose SHA is not already present.
-    let new_lines: Vec<&str> = new_section
+    // Collect section headers (`### …`) already present in the existing section
+    // so we can detect entirely new sub-sections in the incoming changelog.
+    let existing_headers: std::collections::HashSet<&str> = existing_section
         .lines()
-        .filter(|l| {
-            if let Some(sha) = extract_sha(l) {
-                !existing_shas.contains(sha)
-            } else {
-                false // skip non-commit lines from the new section
-            }
-        })
+        .filter(|l| l.starts_with("###"))
         .collect();
+
+    // Walk new_section line-by-line. For each commit line whose SHA is not yet
+    // in the existing section, include it. If that commit's sub-section heading
+    // is absent from the existing section, prepend the heading so the appended
+    // entries retain their categorical context.
+    let mut new_lines: Vec<&str> = Vec::new();
+    let mut current_header: Option<&str> = None;
+    let mut header_emitted = false;
+
+    for line in new_section.lines() {
+        if line.starts_with("###") {
+            current_header = Some(line);
+            header_emitted = false;
+        } else if let Some(sha) = extract_sha(line) {
+            if !existing_shas.contains(sha) {
+                // Emit the section header once before the first new entry
+                // when the header itself is absent from the existing section.
+                if let Some(h) = current_header {
+                    if !existing_headers.contains(h) && !header_emitted {
+                        new_lines.push(h);
+                        header_emitted = true;
+                    }
+                }
+                new_lines.push(line);
+            }
+        }
+    }
 
     if new_lines.is_empty() {
         return existing_section.to_string();

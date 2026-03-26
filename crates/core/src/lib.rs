@@ -214,6 +214,54 @@ pub use errors::{CoreError, CoreResult};
 pub use traits::{ConfigurationProvider, GitHubOperations, GitOperations, VersionCalculator};
 
 // ─────────────────────────────────────────────────────────────────────────────
+// MergedPullRequestHandler — event handler trait
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Handles `PullRequestMerged` events received by the event loop.
+///
+/// The trait decouples [`run_event_loop`] from the concrete
+/// [`ReleaseRegentProcessor`] type so that tests can inject lightweight
+/// no-op or spy implementations without wiring up the full dependency graph.
+///
+/// [`ReleaseRegentProcessor`] provides the production implementation.  For
+/// tests and environments where the processor is not yet wired (e.g. the
+/// server before GitHub credentials are fully configured), a simple no-op
+/// implementation that returns `Ok(())` is sufficient.
+#[async_trait::async_trait]
+pub trait MergedPullRequestHandler: Send + Sync {
+    /// Process a single `PullRequestMerged` event.
+    ///
+    /// Returns `Ok(())` on success.  Any `Err` returned here is treated as a
+    /// processing failure by the event loop: the event will be rejected
+    /// (permanently if the error is not retryable) and the loop will continue.
+    async fn handle_merged_pull_request(
+        &self,
+        event: &traits::event_source::ProcessingEvent,
+    ) -> CoreResult<()>;
+}
+
+#[async_trait::async_trait]
+impl<G, C, V> MergedPullRequestHandler for ReleaseRegentProcessor<G, C, V>
+where
+    G: GitHubOperations + Send + Sync,
+    C: ConfigurationProvider + Send + Sync,
+    V: VersionCalculator + Send + Sync,
+{
+    async fn handle_merged_pull_request(
+        &self,
+        event: &traits::event_source::ProcessingEvent,
+    ) -> CoreResult<()> {
+        match self.handle_merged_pull_request(event).await {
+            Ok(result) => {
+                tracing::info!(result = ?result, "Release orchestration completed");
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // run_event_loop — public API
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -251,19 +299,22 @@ pub use traits::{ConfigurationProvider, GitHubOperations, GitOperations, Version
 /// # Examples
 ///
 /// ```rust,ignore
-/// use release_regent_core::run_event_loop;
+/// use release_regent_core::{run_event_loop, MergedPullRequestHandler};
 /// use tokio_util::sync::CancellationToken;
 ///
 /// let token = CancellationToken::new();
 /// let source = MyEventSource::new();
-/// run_event_loop(&source, token).await?;
+/// let processor = build_processor();  // implements MergedPullRequestHandler
+/// run_event_loop(&source, &processor, token).await?;
 /// ```
-pub async fn run_event_loop<S>(
+pub async fn run_event_loop<S, H>(
     source: &S,
+    handler: &H,
     token: tokio_util::sync::CancellationToken,
 ) -> CoreResult<()>
 where
     S: traits::event_source::EventSource,
+    H: MergedPullRequestHandler,
 {
     use tracing::Instrument as _;
     use traits::event_source::EventType;
@@ -291,9 +342,9 @@ where
                                     "{}/{}",
                                     event.repository.owner, event.repository.name
                                 ),
-                                "Pull request merged — release orchestrator not yet wired"
+                                "Pull request merged — orchestrating release PR"
                             );
-                            Ok(())
+                            handler.handle_merged_pull_request(&event).await
                         }
                         EventType::ReleasePrMerged => {
                             tracing::info!(

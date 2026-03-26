@@ -13,8 +13,44 @@ use traits::event_source::{
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Inline test double (avoids cross-crate type identity issues)
+// Inline test doubles (avoids cross-crate type identity issues)
 // ─────────────────────────────────────────────────────────────────────────────
+
+/// No-op `MergedPullRequestHandler` for loop-infrastructure tests that do not
+/// exercise the processor itself.  Always returns `Ok(())`.
+struct NoopMergedPRHandler;
+
+#[async_trait]
+impl MergedPullRequestHandler for NoopMergedPRHandler {
+    async fn handle_merged_pull_request(&self, _event: &ProcessingEvent) -> CoreResult<()> {
+        Ok(())
+    }
+}
+
+/// Spy `MergedPullRequestHandler` that records every event it receives so
+/// tests can verify the loop actually invokes the handler.
+#[derive(Clone, Default)]
+struct SpyMergedPRHandler {
+    received: Arc<Mutex<Vec<String>>>,
+}
+
+impl SpyMergedPRHandler {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    async fn received_event_ids(&self) -> Vec<String> {
+        self.received.lock().await.clone()
+    }
+}
+
+#[async_trait]
+impl MergedPullRequestHandler for SpyMergedPRHandler {
+    async fn handle_merged_pull_request(&self, event: &ProcessingEvent) -> CoreResult<()> {
+        self.received.lock().await.push(event.event_id.clone());
+        Ok(())
+    }
+}
 
 /// Minimal in-process `EventSource` for unit tests in this crate.
 ///
@@ -167,7 +203,7 @@ async fn test_run_event_loop_exits_immediately_when_token_precancelled() {
         EventType::PullRequestMerged,
     )]);
 
-    let result = run_event_loop(&source, token).await;
+    let result = run_event_loop(&source, &NoopMergedPRHandler, token).await;
     assert!(result.is_ok());
     // Event was never consumed because the token was already cancelled.
     assert_eq!(source.remaining_count().await, 1);
@@ -185,8 +221,9 @@ async fn test_run_event_loop_acknowledges_pull_request_merged_event() {
     let source_for_loop = source.clone();
     let loop_token = token.clone();
 
-    let loop_handle =
-        tokio::spawn(async move { run_event_loop(&source_for_loop, loop_token).await });
+    let loop_handle = tokio::spawn(async move {
+        run_event_loop(&source_for_loop, &NoopMergedPRHandler, loop_token).await
+    });
 
     let acked = wait_for_acks(&source, 1, &token).await;
     loop_handle.await.unwrap().unwrap();
@@ -205,8 +242,9 @@ async fn test_run_event_loop_acknowledges_release_pr_merged_event() {
     let source_for_loop = source.clone();
     let loop_token = token.clone();
 
-    let loop_handle =
-        tokio::spawn(async move { run_event_loop(&source_for_loop, loop_token).await });
+    let loop_handle = tokio::spawn(async move {
+        run_event_loop(&source_for_loop, &NoopMergedPRHandler, loop_token).await
+    });
 
     let acked = wait_for_acks(&source, 1, &token).await;
     loop_handle.await.unwrap().unwrap();
@@ -225,8 +263,9 @@ async fn test_run_event_loop_acknowledges_pr_comment_event() {
     let source_for_loop = source.clone();
     let loop_token = token.clone();
 
-    let loop_handle =
-        tokio::spawn(async move { run_event_loop(&source_for_loop, loop_token).await });
+    let loop_handle = tokio::spawn(async move {
+        run_event_loop(&source_for_loop, &NoopMergedPRHandler, loop_token).await
+    });
 
     let acked = wait_for_acks(&source, 1, &token).await;
     loop_handle.await.unwrap().unwrap();
@@ -245,8 +284,9 @@ async fn test_run_event_loop_acknowledges_unknown_event_type() {
     let source_for_loop = source.clone();
     let loop_token = token.clone();
 
-    let loop_handle =
-        tokio::spawn(async move { run_event_loop(&source_for_loop, loop_token).await });
+    let loop_handle = tokio::spawn(async move {
+        run_event_loop(&source_for_loop, &NoopMergedPRHandler, loop_token).await
+    });
 
     let acked = wait_for_acks(&source, 1, &token).await;
     loop_handle.await.unwrap().unwrap();
@@ -266,8 +306,9 @@ async fn test_run_event_loop_processes_multiple_events_in_order() {
     let source_for_loop = source.clone();
     let loop_token = token.clone();
 
-    let loop_handle =
-        tokio::spawn(async move { run_event_loop(&source_for_loop, loop_token).await });
+    let loop_handle = tokio::spawn(async move {
+        run_event_loop(&source_for_loop, &NoopMergedPRHandler, loop_token).await
+    });
 
     let acked = wait_for_acks(&source, 3, &token).await;
     loop_handle.await.unwrap().unwrap();
@@ -288,8 +329,9 @@ async fn test_run_event_loop_continues_after_source_error() {
     let source_for_loop = source.clone();
     let loop_token = token.clone();
 
-    let loop_handle =
-        tokio::spawn(async move { run_event_loop(&source_for_loop, loop_token).await });
+    let loop_handle = tokio::spawn(async move {
+        run_event_loop(&source_for_loop, &NoopMergedPRHandler, loop_token).await
+    });
 
     let acked = wait_for_acks(&source, 1, &token).await;
     loop_handle.await.unwrap().unwrap();
@@ -305,8 +347,9 @@ async fn test_run_event_loop_empty_source_exits_cleanly() {
     let source_for_loop = source.clone();
     let loop_token = token.clone();
 
-    let loop_handle =
-        tokio::spawn(async move { run_event_loop(&source_for_loop, loop_token).await });
+    let loop_handle = tokio::spawn(async move {
+        run_event_loop(&source_for_loop, &NoopMergedPRHandler, loop_token).await
+    });
 
     // Nothing to wait for; cancel immediately and let the loop exit cleanly.
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -324,6 +367,89 @@ async fn test_run_event_loop_empty_source_exits_cleanly() {
 // Using cross-crate mocks from `release_regent_testing` in this file causes
 // E0277 (cross-crate type identity) so all three trait doubles are defined
 // inline here.
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Event loop wiring test — verifies handler is called for PullRequestMerged
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// `run_event_loop` invokes the `MergedPullRequestHandler` for every
+/// `PullRequestMerged` event and does NOT invoke it for other event types.
+#[tokio::test]
+async fn test_run_event_loop_calls_handler_for_pull_request_merged_events() {
+    let token = CancellationToken::new();
+    let source = TestEventSource::new(vec![
+        make_test_event("evt-pr-a", EventType::PullRequestMerged),
+        make_test_event("evt-pr-b", EventType::PullRequestMerged),
+        make_test_event("evt-release", EventType::ReleasePrMerged),
+    ]);
+    let source_for_loop = source.clone();
+    let loop_token = token.clone();
+
+    let handler = SpyMergedPRHandler::new();
+    let handler_for_loop = handler.clone();
+
+    let loop_handle = tokio::spawn(async move {
+        run_event_loop(&source_for_loop, &handler_for_loop, loop_token).await
+    });
+
+    let acked = wait_for_acks(&source, 3, &token).await;
+    loop_handle.await.unwrap().unwrap();
+
+    // All three events must be acknowledged.
+    assert_eq!(acked.len(), 3);
+
+    // The handler should have been called only for the two PullRequestMerged events.
+    let handled = handler.received_event_ids().await;
+    assert_eq!(handled, vec!["evt-pr-a", "evt-pr-b"]);
+}
+
+/// A `PullRequestMerged` event whose handler returns an error is rejected.
+#[tokio::test]
+async fn test_run_event_loop_rejects_event_when_handler_fails() {
+    #[derive(Clone)]
+    struct FailingHandler;
+
+    #[async_trait]
+    impl MergedPullRequestHandler for FailingHandler {
+        async fn handle_merged_pull_request(&self, _event: &ProcessingEvent) -> CoreResult<()> {
+            Err(CoreError::invalid_input("pr", "simulated handler failure"))
+        }
+    }
+
+    let token = CancellationToken::new();
+    let source = TestEventSource::new(vec![make_test_event(
+        "evt-fail",
+        EventType::PullRequestMerged,
+    )]);
+    let source_for_loop = source.clone();
+    let loop_token = token.clone();
+
+    let loop_handle =
+        tokio::spawn(
+            async move { run_event_loop(&source_for_loop, &FailingHandler, loop_token).await },
+        );
+
+    // Wait for the rejection to land.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if !source.rejected_ids().await.is_empty() {
+            break;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    token.cancel();
+    loop_handle.await.unwrap().unwrap();
+
+    let rejected = source.rejected_ids().await;
+    assert_eq!(rejected.len(), 1);
+    assert_eq!(rejected[0].0, "evt-fail");
+    // InvalidInput is not retryable → permanent = true.
+    assert!(rejected[0].1, "expected permanent rejection");
+    assert!(source.acknowledged_ids().await.is_empty());
+}
 
 use std::collections::HashMap;
 use traits::{
