@@ -765,6 +765,16 @@ impl GitHubOperations for TestGitHubForLib {
     async fn delete_branch(&self, _owner: &str, _repo: &str, _branch_name: &str) -> CoreResult<()> {
         Ok(())
     }
+
+    async fn create_issue_comment(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _issue_number: u64,
+        _body: &str,
+    ) -> CoreResult<()> {
+        Ok(())
+    }
 }
 
 // ── TestConfigForLib ────────────────────────────────────────────────────────

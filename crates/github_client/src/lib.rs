@@ -646,6 +646,33 @@ impl GitHubOperations for GitHubClient {
 
         Ok(())
     }
+
+    async fn create_issue_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        issue_number: u64,
+        body: &str,
+    ) -> CoreResult<()> {
+        info!(
+            owner,
+            repo,
+            issue_number,
+            "Creating issue comment"
+        );
+
+        let installation = self.installation().await?;
+        let request = github_bot_sdk::client::CreateCommentRequest {
+            body: body.to_string(),
+        };
+
+        installation
+            .create_issue_comment(owner, repo, issue_number, request)
+            .await
+            .map_err(map_sdk_error)?;
+
+        Ok(())
+    }
 }
 
 // ============================================================================
