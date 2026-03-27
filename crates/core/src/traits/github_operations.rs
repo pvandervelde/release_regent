@@ -337,6 +337,28 @@ pub trait GitHubOperations: GitOperations + Send + Sync {
     /// - `CoreError::NotFound` - Branch does not exist
     /// - `CoreError::GitHub` - API communication failed
     async fn delete_branch(&self, owner: &str, repo: &str, branch_name: &str) -> CoreResult<()>;
+
+    /// Post a comment on an issue or pull request
+    ///
+    /// # Parameters
+    /// - `owner`: Repository owner name
+    /// - `repo`: Repository name
+    /// - `issue_number`: Issue or pull request number to comment on
+    /// - `body`: Comment body (Markdown supported)
+    ///
+    /// # Returns
+    /// `Ok(())` on success
+    ///
+    /// # Errors
+    /// - `CoreError::NotFound` - Issue or PR does not exist
+    /// - `CoreError::GitHub` - API communication failed
+    async fn create_issue_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        issue_number: u64,
+        body: &str,
+    ) -> CoreResult<()>;
 }
 
 // Note: Git commit information is now provided by GitOperations trait
