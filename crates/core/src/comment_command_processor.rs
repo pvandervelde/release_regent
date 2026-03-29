@@ -41,10 +41,7 @@ use tracing::{debug, info, warn, Instrument};
 
 use crate::{
     release_orchestrator::{OrchestratorConfig, ReleaseOrchestrator},
-    traits::{
-        event_source::ProcessingEvent,
-        github_operations::GitHubOperations,
-    },
+    traits::{event_source::ProcessingEvent, github_operations::GitHubOperations},
     versioning::{resolve_current_version, SemanticVersion, VersionCalculator},
     CoreResult,
 };
@@ -141,7 +138,6 @@ impl<'a, G: GitHubOperations + Send + Sync> CommentCommandProcessor<'a, G> {
     }
 
     async fn process_inner(&self, event: &ProcessingEvent) -> CoreResult<()> {
-
         if !self.config.allow_override {
             debug!(
                 event_id = %event.event_id,
@@ -229,7 +225,9 @@ impl<'a, G: GitHubOperations + Send + Sync> CommentCommandProcessor<'a, G> {
                 "❌ **Release Regent**: @{commenter_login} — only collaborators with \
                  write access (or above) may use Release Regent commands."
             );
-            return self.post_comment(owner, repo, issue_number, &rejection).await;
+            return self
+                .post_comment(owner, repo, issue_number, &rejection)
+                .await;
         }
 
         let command = parse_comment_command(&comment_body);
@@ -294,9 +292,7 @@ impl<'a, G: GitHubOperations + Send + Sync> CommentCommandProcessor<'a, G> {
                     current = %current,
                     "Rejecting !set-version: not greater than current released version"
                 );
-                return self
-                    .post_comment(owner, repo, pr_number, &rejection)
-                    .await;
+                return self.post_comment(owner, repo, pr_number, &rejection).await;
             }
         }
 
@@ -318,9 +314,7 @@ impl<'a, G: GitHubOperations + Send + Sync> CommentCommandProcessor<'a, G> {
                 pinned = %pinned_version,
                 "Rejecting !set-version: version is below minimum (0.0.1)"
             );
-            return self
-                .post_comment(owner, repo, pr_number, &rejection)
-                .await;
+            return self.post_comment(owner, repo, pr_number, &rejection).await;
         }
 
         info!(

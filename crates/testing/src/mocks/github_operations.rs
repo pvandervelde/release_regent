@@ -909,8 +909,10 @@ impl GitHubOperations for MockGitHubOperations {
         body: &str,
     ) -> CoreResult<()> {
         let method = "create_issue_comment";
-        let params_str =
-            format!("owner={owner}, repo={repo}, issue={issue_number}, body_len={}", body.len());
+        let params_str = format!(
+            "owner={owner}, repo={repo}, issue={issue_number}, body_len={}",
+            body.len()
+        );
 
         self.check_quota().await?;
         self.simulate_latency().await;
