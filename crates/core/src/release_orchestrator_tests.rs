@@ -361,6 +361,15 @@ impl GitHubOperations for TestGitHub {
     ) -> CoreResult<()> {
         Ok(())
     }
+
+    async fn get_collaborator_permission(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _username: &str,
+    ) -> CoreResult<crate::traits::github_operations::CollaboratorPermission> {
+        Ok(crate::traits::github_operations::CollaboratorPermission::Write)
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

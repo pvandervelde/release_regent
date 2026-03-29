@@ -15,8 +15,9 @@ use release_regent_core::{
             GitUser as GitOpsUser, ListTagsOptions, TagSortOrder,
         },
         github_operations::{
-            CreatePullRequestParams, CreateReleaseParams, GitHubOperations, GitUser as GitHubUser,
-            PullRequest, PullRequestBranch, Release, Repository, Tag, UpdateReleaseParams,
+            CollaboratorPermission, CreatePullRequestParams, CreateReleaseParams, GitHubOperations,
+            GitUser as GitHubUser, PullRequest, PullRequestBranch, Release, Repository, Tag,
+            UpdateReleaseParams,
         },
     },
     CoreError, CoreResult,
@@ -654,12 +655,7 @@ impl GitHubOperations for GitHubClient {
         issue_number: u64,
         body: &str,
     ) -> CoreResult<()> {
-        info!(
-            owner,
-            repo,
-            issue_number,
-            "Creating issue comment"
-        );
+        info!(owner, repo, issue_number, "Creating issue comment");
 
         let installation = self.installation().await?;
         let request = github_bot_sdk::client::CreateCommentRequest {
@@ -672,6 +668,36 @@ impl GitHubOperations for GitHubClient {
             .map_err(map_sdk_error)?;
 
         Ok(())
+    }
+
+    async fn get_collaborator_permission(
+        &self,
+        owner: &str,
+        repo: &str,
+        username: &str,
+    ) -> CoreResult<CollaboratorPermission> {
+        use release_regent_core::traits::github_operations::CollaboratorPermission;
+
+        info!(owner, repo, username, "Checking collaborator permission");
+
+        let installation = self.installation().await?;
+        let path = format!("/repos/{owner}/{repo}/collaborators/{username}/permission");
+        let response = installation.get(&path).await.map_err(map_sdk_error)?;
+        let body: serde_json::Value = response.json().await.map_err(|e| CoreError::github(e))?;
+
+        let permission_str = body
+            .get("permission")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("none");
+
+        Ok(match permission_str {
+            "admin" => CollaboratorPermission::Admin,
+            "maintain" => CollaboratorPermission::Maintain,
+            "write" => CollaboratorPermission::Write,
+            "triage" => CollaboratorPermission::Triage,
+            "read" => CollaboratorPermission::Read,
+            _ => CollaboratorPermission::None,
+        })
     }
 }
 

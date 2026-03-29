@@ -1,13 +1,17 @@
 use super::*;
-use crate::traits::{
-    git_operations::{
-        GetCommitsOptions, GitCommit, GitOperations, GitRepository, GitTag, GitTagType,
-        ListTagsOptions,
+use crate::{
+    traits::{
+        git_operations::{
+            GetCommitsOptions, GitCommit, GitOperations, GitRepository, GitTag, GitTagType,
+            ListTagsOptions,
+        },
+        github_operations::{
+            CollaboratorPermission, CreatePullRequestParams, CreateReleaseParams, GitHubOperations,
+            GitUser as GitHubUser, PullRequest, PullRequestBranch, Release, Repository, Tag,
+            UpdateReleaseParams,
+        },
     },
-    github_operations::{
-        CreatePullRequestParams, CreateReleaseParams, GitHubOperations, GitUser as GitHubUser,
-        PullRequest, PullRequestBranch, Release, Repository, Tag, UpdateReleaseParams,
-    },
+    CoreError,
 };
 use async_trait::async_trait;
 use chrono::Utc;
@@ -39,6 +43,9 @@ struct TestState {
     created_branches: Vec<(String, String)>,
     /// Sequential PR number returned by `create_pull_request`.
     next_pr_number: u64,
+    /// Collaborator permission returned by `get_collaborator_permission`.
+    /// `None` defaults to `CollaboratorPermission::Write`.
+    commenter_permission: Option<CollaboratorPermission>,
 }
 
 #[derive(Clone, Default)]
@@ -77,6 +84,12 @@ impl TestGitHub {
     /// Make the next `create_branch` call fail with `CoreError::Conflict`.
     async fn with_next_create_branch_conflict(self) -> Self {
         self.state.lock().await.next_create_branch_conflict = true;
+        self
+    }
+
+    /// Pre-set the collaborator permission returned for any username.
+    async fn with_commenter_permission(self, permission: CollaboratorPermission) -> Self {
+        self.state.lock().await.commenter_permission = Some(permission);
         self
     }
 
@@ -338,6 +351,21 @@ impl GitHubOperations for TestGitHub {
             .push((issue_number, body.to_string()));
         Ok(())
     }
+
+    async fn get_collaborator_permission(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _username: &str,
+    ) -> CoreResult<CollaboratorPermission> {
+        Ok(self
+            .state
+            .lock()
+            .await
+            .commenter_permission
+            .clone()
+            .unwrap_or(CollaboratorPermission::Write))
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -421,7 +449,10 @@ fn test_event(pr_number: u64, comment_body: &str, pr_state: &str) -> ProcessingE
                 "state": pr_state
             },
             "comment": {
-                "body": comment_body
+                "body": comment_body,
+                "user": {
+                    "login": "test-user"
+                }
             }
         }),
         received_at: Utc::now(),
@@ -753,39 +784,48 @@ async fn test_process_set_version_zero_zero_zero_rejected_when_no_tags() {
 }
 
 #[tokio::test]
-async fn test_process_release_bump_returns_not_supported_error() {
+async fn test_process_release_bump_posts_informational_comment_and_acknowledges() {
     // !release bump commands are a stub until the design is completed.
+    // The user should receive an informational comment and the event is acknowledged (Ok).
     let github = TestGitHub::new();
     let processor = CommentCommandProcessor::new(default_config(true), &github);
 
     let event = test_event(42, "!release major", "open");
     let result = processor.process(&event).await;
 
-    assert!(result.is_err());
-    let err = result.unwrap_err();
-    assert!(matches!(err, CoreError::NotSupported { .. }));
-    assert!(github.issue_comments().await.is_empty());
+    assert!(result.is_ok(), "expected Ok, got: {result:?}");
+    let comments = github.issue_comments().await;
+    assert_eq!(comments.len(), 1, "expected one informational comment");
+    assert_eq!(comments[0].0, 42);
+    assert!(
+        comments[0].1.contains("not yet"),
+        "comment should mention feature is not yet available: {}",
+        comments[0].1
+    );
+    // No release PR should have been created.
+    assert!(github.created_prs().await.is_empty());
 }
 
 #[tokio::test]
-async fn test_process_release_bump_minor_also_returns_not_supported() {
+async fn test_process_release_bump_minor_also_posts_informational_comment() {
     let github = TestGitHub::new();
     let processor = CommentCommandProcessor::new(default_config(true), &github);
 
     let event = test_event(42, "!release minor", "open");
     let result = processor.process(&event).await;
 
-    assert!(result.is_err());
-    assert!(matches!(
-        result.unwrap_err(),
-        CoreError::NotSupported { .. }
-    ));
+    assert!(result.is_ok());
+    let comments = github.issue_comments().await;
+    assert_eq!(comments.len(), 1);
+    assert!(comments[0].1.contains("not yet"));
 }
 
 #[tokio::test]
-async fn test_process_idempotent_same_comment_twice_produces_same_release_pr_state() {
+async fn test_process_repeated_calls_both_succeed() {
     // Processing !set-version 1.5.0 twice: both calls should succeed and
-    // both should trigger orchestration (creating the same release PR).
+    // trigger orchestration. In production the second call would find the
+    // existing branch/PR and update it (orchestrator idempotency); here both
+    // create a new PR in the test double.
     let github = TestGitHub::new()
         .with_tags(vec![make_semver_tag("v1.0.0")])
         .await
@@ -802,4 +842,29 @@ async fn test_process_idempotent_same_comment_twice_produces_same_release_pr_sta
     assert!(r2.is_ok());
     // Both calls should have invoked orchestration.
     assert_eq!(github.created_prs().await.len(), 2);
+}
+
+#[tokio::test]
+async fn test_process_unauthorized_commenter_gets_rejection_comment() {
+    // A read-only collaborator may not issue commands. The processor should
+    // post a rejection comment and return Ok (acknowledged, not retried).
+    let github = TestGitHub::new()
+        .with_commenter_permission(CollaboratorPermission::Read)
+        .await;
+    let processor = CommentCommandProcessor::new(default_config(true), &github);
+
+    let event = test_event(42, "!set-version 2.0.0", "open");
+    let result = processor.process(&event).await;
+
+    assert!(result.is_ok(), "expected Ok, got: {result:?}");
+    let comments = github.issue_comments().await;
+    assert_eq!(comments.len(), 1, "expected one rejection comment");
+    assert_eq!(comments[0].0, 42);
+    assert!(
+        comments[0].1.contains("write access"),
+        "rejection should mention write access, got: {}",
+        comments[0].1
+    );
+    // No release PR should have been created.
+    assert!(github.created_prs().await.is_empty());
 }

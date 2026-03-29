@@ -6,11 +6,11 @@
 //!
 //! ## Recognised Commands
 //!
-//! | Command                       | Condition               | Effect                                        |
-//! |-------------------------------|-------------------------|-----------------------------------------------|
-//! | `!set-version X.Y.Z`          | version > current tag   | Invokes `ReleaseOrchestrator` with pinned ver |
-//! | `!set-version X.Y.Z`          | version ≤ current tag   | Posts rejection comment; acknowledges event   |
-//! | `!release major/minor/patch`  | always (stub)           | Returns `CoreError::NotSupported`             |
+//! | Command                       | Condition               | Effect                                                         |
+//! |-------------------------------|-------------------------|----------------------------------------------------------------|
+//! | `!set-version X.Y.Z`          | version > current tag   | Invokes `ReleaseOrchestrator` with pinned ver                  |
+//! | `!set-version X.Y.Z`          | version ≤ current tag   | Posts rejection comment; acknowledges event                    |
+//! | `!release major/minor/patch`  | always (stub)           | Posts "not yet supported" comment; acknowledges event          |
 //!
 //! ## Guards
 //!
@@ -37,13 +37,16 @@
 
 use std::cmp::Ordering;
 
-use tracing::{debug, info, warn};
+use tracing::{debug, info, warn, Instrument};
 
 use crate::{
     release_orchestrator::{OrchestratorConfig, ReleaseOrchestrator},
-    traits::{event_source::ProcessingEvent, github_operations::GitHubOperations},
+    traits::{
+        event_source::ProcessingEvent,
+        github_operations::GitHubOperations,
+    },
     versioning::{resolve_current_version, SemanticVersion, VersionCalculator},
-    CoreError, CoreResult,
+    CoreResult,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -70,8 +73,8 @@ pub enum CommentCommand {
     /// `!release major|minor|patch` — override the minimum bump dimension.
     ///
     /// **Note**: this variant is recognised by the parser but the processor
-    /// returns [`CoreError::NotSupported`] until the bump-override design is
-    /// completed.
+    /// posts an informational comment and acknowledges the event until the
+    /// bump-override design is completed.
     ReleaseBump(BumpKind),
     /// No recognised command was found in the comment body.
     Unknown,
@@ -119,14 +122,11 @@ impl<'a, G: GitHubOperations + Send + Sync> CommentCommandProcessor<'a, G> {
     ///
     /// Returns `Ok(())` for all non-action-producing cases—unknown command,
     /// disabled override, closed PR, or validation rejections—so the event loop
-    /// acknowledges rather than retries.  Only GitHub API failures and the
-    /// `!release` stub propagate as errors.
+    /// acknowledges rather than retries.  Only GitHub API failures propagate
+    /// as errors.
     ///
     /// # Errors
     ///
-    /// - [`CoreError::NotSupported`] — `!release` bump override is a stub
-    ///   (not yet implemented).  The event loop treats this as a permanent
-    ///   failure and rejects the event without retrying.
     /// - [`CoreError::GitHub`] / [`CoreError::Network`] — a GitHub API call
     ///   failed; propagated so the event loop can retry if transient.
     pub async fn process(&self, event: &ProcessingEvent) -> CoreResult<()> {
@@ -137,7 +137,10 @@ impl<'a, G: GitHubOperations + Send + Sync> CommentCommandProcessor<'a, G> {
             owner = %event.repository.owner,
             repo = %event.repository.name,
         );
-        let _enter = span.enter();
+        self.process_inner(event).instrument(span).await
+    }
+
+    async fn process_inner(&self, event: &ProcessingEvent) -> CoreResult<()> {
 
         if !self.config.allow_override {
             debug!(
@@ -195,6 +198,40 @@ impl<'a, G: GitHubOperations + Send + Sync> CommentCommandProcessor<'a, G> {
         };
         let comment_body = comment_body_str.to_string();
 
+        // Extract the commenter's GitHub login for the authorization check below.
+        let Some(commenter_login) = event
+            .payload
+            .get("comment")
+            .and_then(|c| c.get("user"))
+            .and_then(|u| u.get("login"))
+            .and_then(serde_json::Value::as_str)
+        else {
+            debug!(
+                event_id = %event.event_id,
+                "payload missing comment.user.login — ignoring"
+            );
+            return Ok(());
+        };
+
+        // Only collaborators with write access or above may issue commands.
+        let permission = self
+            .github
+            .get_collaborator_permission(owner, repo, commenter_login)
+            .await?;
+        if !permission.can_issue_commands() {
+            warn!(
+                event_id = %event.event_id,
+                commenter_login,
+                ?permission,
+                "Command rejected: commenter has insufficient permission"
+            );
+            let rejection = format!(
+                "❌ **Release Regent**: @{commenter_login} — only collaborators with \
+                 write access (or above) may use Release Regent commands."
+            );
+            return self.post_comment(owner, repo, issue_number, &rejection).await;
+        }
+
         let command = parse_comment_command(&comment_body);
         debug!(
             event_id = %event.event_id,
@@ -204,12 +241,13 @@ impl<'a, G: GitHubOperations + Send + Sync> CommentCommandProcessor<'a, G> {
 
         match command {
             CommentCommand::Unknown => Ok(()),
-            CommentCommand::ReleaseBump(_kind) => Err(CoreError::not_supported(
-                "!release bump override",
-                "!release major/minor/patch is not yet fully implemented; \
-                 the bump-override design (label persistence, precedence rules) \
-                 must be completed before this command can be processed",
-            )),
+            CommentCommand::ReleaseBump(_kind) => {
+                // The !release bump design is not yet complete. Post an informational
+                // comment so the user gets feedback and acknowledge the event (Ok).
+                let body = "ℹ️ **Release Regent**: `!release` bump overrides are not yet \
+                             supported. This command will be available in a future release.";
+                self.post_comment(owner, repo, issue_number, body).await
+            }
             CommentCommand::SetVersion(pinned_version) => {
                 self.handle_set_version(
                     owner,
@@ -229,7 +267,8 @@ impl<'a, G: GitHubOperations + Send + Sync> CommentCommandProcessor<'a, G> {
     ///
     /// Validates the pinned version against the current released version, then
     /// invokes the [`ReleaseOrchestrator`] with the pinned version.  Validation
-    /// failures post a rejection comment and return `Ok(())`.
+    /// failures post a rejection comment and return `Ok(())` so the event is
+    /// acknowledged (not retried).
     async fn handle_set_version(
         &self,
         owner: &str,
@@ -256,7 +295,7 @@ impl<'a, G: GitHubOperations + Send + Sync> CommentCommandProcessor<'a, G> {
                     "Rejecting !set-version: not greater than current released version"
                 );
                 return self
-                    .post_rejection_comment(owner, repo, pr_number, &rejection)
+                    .post_comment(owner, repo, pr_number, &rejection)
                     .await;
             }
         }
@@ -280,7 +319,7 @@ impl<'a, G: GitHubOperations + Send + Sync> CommentCommandProcessor<'a, G> {
                 "Rejecting !set-version: version is below minimum (0.0.1)"
             );
             return self
-                .post_rejection_comment(owner, repo, pr_number, &rejection)
+                .post_comment(owner, repo, pr_number, &rejection)
                 .await;
         }
 
@@ -303,7 +342,7 @@ impl<'a, G: GitHubOperations + Send + Sync> CommentCommandProcessor<'a, G> {
                 owner,
                 repo,
                 pinned_version,
-                "", // no new changelog entries for a direct version pin
+                "Version pinned via PR comment override.",
                 &base_branch,
                 &base_sha,
                 correlation_id,
@@ -312,18 +351,29 @@ impl<'a, G: GitHubOperations + Send + Sync> CommentCommandProcessor<'a, G> {
             .map(|_| ())
     }
 
-    /// Post a rejection comment on the PR and return `Ok(())` so the event is
-    /// acknowledged (not retried).
-    async fn post_rejection_comment(
+    /// Post a comment on the PR as a best-effort operation.
+    ///
+    /// If the GitHub API call fails the error is logged as a warning and
+    /// `Ok(())` is returned, so the event is acknowledged rather than retried.
+    async fn post_comment(
         &self,
         owner: &str,
         repo: &str,
         pr_number: u64,
         body: &str,
     ) -> CoreResult<()> {
-        self.github
+        if let Err(e) = self
+            .github
             .create_issue_comment(owner, repo, pr_number, body)
             .await
+        {
+            warn!(
+                pr_number,
+                error = %e,
+                "Failed to post comment on PR; event will still be acknowledged"
+            );
+        }
+        Ok(())
     }
 }
 
@@ -369,8 +419,10 @@ pub fn parse_comment_command(body: &str) -> CommentCommand {
         let trimmed = line.trim();
         let lower = trimmed.to_lowercase();
 
-        if let Some(rest) = lower.strip_prefix("!set-version") {
-            let version_str = rest.trim();
+        if lower.starts_with("!set-version") {
+            // Slice the version argument from the *original* trimmed line so that
+            // pre-release/build identifiers (e.g. "2.0.0-RC.1") are not lowercased.
+            let version_str = trimmed["!set-version".len()..].trim();
             // Strip an optional leading "v" that developers sometimes include.
             let version_str = version_str.strip_prefix('v').unwrap_or(version_str);
             if let Ok(v) = VersionCalculator::parse_version(version_str) {
@@ -380,8 +432,11 @@ pub fn parse_comment_command(body: &str) -> CommentCommand {
             continue;
         }
 
-        if let Some(rest) = lower.strip_prefix("!release") {
-            return match rest.trim() {
+        if lower.starts_with("!release") {
+            // Extract the bump dimension from the original trimmed line and
+            // lowercase only that part for case-insensitive matching.
+            let rest = trimmed["!release".len()..].trim().to_lowercase();
+            return match rest.as_str() {
                 "major" => CommentCommand::ReleaseBump(BumpKind::Major),
                 "minor" => CommentCommand::ReleaseBump(BumpKind::Minor),
                 "patch" => CommentCommand::ReleaseBump(BumpKind::Patch),
