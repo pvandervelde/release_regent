@@ -696,7 +696,19 @@ impl GitHubOperations for GitHubClient {
             "write" => CollaboratorPermission::Write,
             "triage" => CollaboratorPermission::Triage,
             "read" => CollaboratorPermission::Read,
-            _ => CollaboratorPermission::None,
+            "none" => CollaboratorPermission::None,
+            other => {
+                warn!(
+                    owner,
+                    repo,
+                    username,
+                    permission = other,
+                    "Unrecognised GitHub collaborator permission string — \
+                     treating as None; if this is a new GitHub permission level \
+                     the CollaboratorPermission enum must be updated"
+                );
+                CollaboratorPermission::None
+            }
         })
     }
 }

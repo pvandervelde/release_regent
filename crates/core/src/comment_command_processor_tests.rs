@@ -868,3 +868,54 @@ async fn test_process_unauthorized_commenter_gets_rejection_comment() {
     // No release PR should have been created.
     assert!(github.created_prs().await.is_empty());
 }
+
+#[tokio::test]
+async fn test_process_triage_collaborator_gets_rejection_comment() {
+    // Triage collaborators cannot push; they must also not be able to issue commands.
+    let github = TestGitHub::new()
+        .with_commenter_permission(CollaboratorPermission::Triage)
+        .await;
+    let processor = CommentCommandProcessor::new(default_config(true), &github);
+
+    let event = test_event(42, "!set-version 2.0.0", "open");
+    let result = processor.process(&event).await;
+
+    assert!(result.is_ok(), "expected Ok, got: {result:?}");
+    let comments = github.issue_comments().await;
+    assert_eq!(comments.len(), 1, "expected one rejection comment");
+    assert!(comments[0].1.contains("write access"));
+    assert!(github.created_prs().await.is_empty());
+}
+
+#[tokio::test]
+async fn test_process_no_access_user_gets_rejection_comment() {
+    // A user with no repository access must be rejected.
+    let github = TestGitHub::new()
+        .with_commenter_permission(CollaboratorPermission::None)
+        .await;
+    let processor = CommentCommandProcessor::new(default_config(true), &github);
+
+    let event = test_event(42, "!set-version 2.0.0", "open");
+    let result = processor.process(&event).await;
+
+    assert!(result.is_ok(), "expected Ok, got: {result:?}");
+    let comments = github.issue_comments().await;
+    assert_eq!(comments.len(), 1, "expected one rejection comment");
+    assert!(comments[0].1.contains("write access"));
+    assert!(github.created_prs().await.is_empty());
+}
+
+#[tokio::test]
+async fn test_process_release_bare_no_argument_is_noop() {
+    // `!release` typed alone (no major/minor/patch) parses as Unknown —
+    // just silently acknowledge with no comment or PR creation.
+    let github = TestGitHub::new();
+    let processor = CommentCommandProcessor::new(default_config(true), &github);
+
+    let event = test_event(42, "!release", "open");
+    let result = processor.process(&event).await;
+
+    assert!(result.is_ok());
+    assert!(github.issue_comments().await.is_empty());
+    assert!(github.created_prs().await.is_empty());
+}
