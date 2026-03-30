@@ -351,6 +351,25 @@ impl GitHubOperations for TestGitHub {
             .push(branch_name.to_string());
         Ok(())
     }
+
+    async fn create_issue_comment(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _issue_number: u64,
+        _body: &str,
+    ) -> CoreResult<()> {
+        Ok(())
+    }
+
+    async fn get_collaborator_permission(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _username: &str,
+    ) -> CoreResult<crate::traits::github_operations::CollaboratorPermission> {
+        Ok(crate::traits::github_operations::CollaboratorPermission::Write)
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

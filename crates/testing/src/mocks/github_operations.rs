@@ -900,6 +900,58 @@ impl GitHubOperations for MockGitHubOperations {
             .await;
         Ok(())
     }
+
+    async fn create_issue_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        issue_number: u64,
+        body: &str,
+    ) -> CoreResult<()> {
+        let method = "create_issue_comment";
+        let params_str = format!(
+            "owner={owner}, repo={repo}, issue={issue_number}, body_len={}",
+            body.len()
+        );
+
+        self.check_quota().await?;
+        self.simulate_latency().await;
+
+        if self.should_simulate_failure().await {
+            let error = CoreError::network("Simulated GitHub API error");
+            self.record_call(method, &params_str, CallResult::Error(error.to_string()))
+                .await;
+            return Err(error);
+        }
+
+        self.record_call(method, &params_str, CallResult::Success)
+            .await;
+        Ok(())
+    }
+
+    async fn get_collaborator_permission(
+        &self,
+        owner: &str,
+        repo: &str,
+        username: &str,
+    ) -> CoreResult<CollaboratorPermission> {
+        let method = "get_collaborator_permission";
+        let params_str = format!("owner={owner}, repo={repo}, username={username}");
+
+        self.check_quota().await?;
+        self.simulate_latency().await;
+
+        if self.should_simulate_failure().await {
+            let error = CoreError::network("Simulated GitHub API error");
+            self.record_call(method, &params_str, CallResult::Error(error.to_string()))
+                .await;
+            return Err(error);
+        }
+
+        self.record_call(method, &params_str, CallResult::Success)
+            .await;
+        Ok(CollaboratorPermission::Write)
+    }
 }
 
 /// `GitOperations` implementation for `MockGitHubOperations`

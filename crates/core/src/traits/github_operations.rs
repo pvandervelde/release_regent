@@ -337,6 +337,51 @@ pub trait GitHubOperations: GitOperations + Send + Sync {
     /// - `CoreError::NotFound` - Branch does not exist
     /// - `CoreError::GitHub` - API communication failed
     async fn delete_branch(&self, owner: &str, repo: &str, branch_name: &str) -> CoreResult<()>;
+
+    /// Get the permission level a specific user has on a repository
+    ///
+    /// Used to authorise PR comment commands: only collaborators with `Write`,
+    /// `Maintain`, or `Admin` access may issue commands.
+    ///
+    /// # Parameters
+    /// - `owner`: Repository owner name
+    /// - `repo`: Repository name
+    /// - `username`: GitHub login of the user to check
+    ///
+    /// # Returns
+    /// The user's [`CollaboratorPermission`] level
+    ///
+    /// # Errors
+    /// - `CoreError::GitHub` - API communication failed
+    /// - `CoreError::NotFound` - User is not a collaborator on the repository
+    async fn get_collaborator_permission(
+        &self,
+        owner: &str,
+        repo: &str,
+        username: &str,
+    ) -> CoreResult<CollaboratorPermission>;
+
+    /// Post a comment on an issue or pull request
+    ///
+    /// # Parameters
+    /// - `owner`: Repository owner name
+    /// - `repo`: Repository name
+    /// - `issue_number`: Issue or pull request number to comment on
+    /// - `body`: Comment body (Markdown supported)
+    ///
+    /// # Returns
+    /// `Ok(())` on success
+    ///
+    /// # Errors
+    /// - `CoreError::NotFound` - Issue or PR does not exist
+    /// - `CoreError::GitHub` - API communication failed
+    async fn create_issue_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        issue_number: u64,
+        body: &str,
+    ) -> CoreResult<()>;
 }
 
 // Note: Git commit information is now provided by GitOperations trait
@@ -503,4 +548,41 @@ pub struct UpdateReleaseParams {
     pub name: Option<String>,
     /// Whether this is a pre-release
     pub prerelease: Option<bool>,
+}
+
+/// The level of access a GitHub user has to a repository.
+///
+/// Returned by [`GitHubOperations::get_collaborator_permission`] and used
+/// to gate PR comment commands: only collaborators with `Write`, `Maintain`,
+/// or `Admin` access may issue version-override commands.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CollaboratorPermission {
+    /// Repository administrator — full access including destructive actions.
+    Admin,
+    /// Maintain access — can push, manage branches, and change some settings.
+    Maintain,
+    /// Write access — can push to branches and merge pull requests.
+    Write,
+    /// Triage access — can manage issues and PRs but cannot push.
+    Triage,
+    /// Read-only access.
+    Read,
+    /// No access (user is not a collaborator on the repository).
+    None,
+}
+
+impl CollaboratorPermission {
+    /// Returns `true` if this permission level is sufficient to issue
+    /// PR comment version-override commands.
+    ///
+    /// Requires at least `Write` access (`Write`, `Maintain`, or `Admin`).
+    #[must_use]
+    pub fn can_issue_commands(&self) -> bool {
+        matches!(
+            self,
+            CollaboratorPermission::Admin
+                | CollaboratorPermission::Maintain
+                | CollaboratorPermission::Write
+        )
+    }
 }

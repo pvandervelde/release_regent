@@ -204,6 +204,7 @@
 //! - **Audit Logging**: Structured logging with correlation IDs for security monitoring
 
 pub mod changelog;
+pub mod comment_command_processor;
 pub mod config;
 pub mod errors;
 pub mod release_orchestrator;
@@ -238,6 +239,18 @@ pub trait MergedPullRequestHandler: Send + Sync {
         &self,
         event: &traits::event_source::ProcessingEvent,
     ) -> CoreResult<()>;
+
+    /// Process a single `PullRequestCommentReceived` event.
+    ///
+    /// The default implementation is a no-op that acknowledges the event
+    /// without taking any action.  Override in the production processor to
+    /// invoke [`comment_command_processor::CommentCommandProcessor`].
+    async fn handle_pr_comment(
+        &self,
+        _event: &traits::event_source::ProcessingEvent,
+    ) -> CoreResult<()> {
+        Ok(())
+    }
 }
 
 #[async_trait::async_trait]
@@ -258,6 +271,35 @@ where
             }
             Err(e) => Err(e),
         }
+    }
+
+    async fn handle_pr_comment(
+        &self,
+        event: &traits::event_source::ProcessingEvent,
+    ) -> CoreResult<()> {
+        use comment_command_processor::{CommentCommandConfig, CommentCommandProcessor};
+        use traits::configuration_provider::LoadOptions;
+
+        let owner = &event.repository.owner;
+        let repo = &event.repository.name;
+
+        let repo_config = self
+            .configuration_provider
+            .get_merged_config(owner, repo, LoadOptions::default())
+            .await?;
+
+        let config = CommentCommandConfig {
+            orchestrator_config: release_orchestrator::OrchestratorConfig {
+                branch_prefix: "release".to_string(),
+                title_template: repo_config.release_pr.title_template.clone(),
+                changelog_header: "## Changelog".to_string(),
+            },
+            allow_override: repo_config.versioning.allow_override,
+        };
+
+        CommentCommandProcessor::new(config, &self.github_operations)
+            .process(event)
+            .await
     }
 }
 
@@ -360,9 +402,9 @@ where
                         EventType::PullRequestCommentReceived => {
                             tracing::debug!(
                                 event_id = %event.event_id,
-                                "Pull request comment received — no handler yet"
+                                "Pull request comment received — dispatching to comment handler"
                             );
-                            Ok(())
+                            handler.handle_pr_comment(&event).await
                         }
                         EventType::Unknown(raw) => {
                             tracing::debug!(
