@@ -23,7 +23,7 @@ use release_regent_core::{
     CoreError, CoreResult,
 };
 use std::time::Duration as StdDuration;
-use tracing::{debug, info, instrument};
+use tracing::{debug, info, instrument, warn};
 
 pub mod errors;
 pub use errors::{Error, GitHubResult};
