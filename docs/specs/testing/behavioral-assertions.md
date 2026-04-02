@@ -198,18 +198,167 @@ This document defines testable behavioral assertions for Release Regent that ser
 
 **BA-18**: Failed GitHub API calls must retry with exponential backoff up to 5 times.
 
-*Retry Parameters*:
+## PR Comment Command Assertions
 
-- Base delay: 100ms
-- Backoff multiplier: 2x
-- Maximum delay: 30 seconds
-- Jitter: ±25% random variation
-- Maximum attempts: 5
+### Bump-Floor Override (`!release major|minor|patch`)
 
-*Eligible Errors*: Network timeouts, HTTP 429 (rate limited), HTTP 502/503 (server errors)
-*Non-Eligible Errors*: HTTP 401/403 (auth), HTTP 404 (not found), HTTP 422 (validation)
+**BA-19**: A `!release major` command on an open PR must apply label `rr:override-major` to the
+**PR the comment was posted on** (the feature PR), not to the release PR.
 
-**BA-19**: Malformed commit messages must not block release PR creation for valid commits.
+*Preconditions*: `allow_override = true`; commented-upon PR is open; commenter has Write access.
+
+*Expected*:
+
+- Label `rr:override-major` is present on the feature PR after the event is processed.
+- Any previously applied `rr:override-minor` or `rr:override-patch` label on that same
+  feature PR is absent.
+- A confirmation comment is posted on the feature PR stating the override intent and
+  explaining it will apply when the PR is merged.
+- No labels are applied to the release PR at this point.
+
+*Logging*: An `info!` event is recorded with `feature_pr_number`, `commenter_login`, and
+`correlation_id`.
+
+**BA-20**: An `rr:override-*` label on a PR that is closed without merging must have no
+effect on any future orchestration run.
+
+*Sequence*:
+
+1. Feature PR #55 receives `!release major` → `rr:override-major` applied to PR #55.
+2. PR #55 is closed without merging.
+3. An unrelated PR #56 merges.
+
+*Expected*:
+
+- `handle_merged_pull_request` reads labels from the **merged PR #56** (not PR #55).
+- No `rr:override-*` label is found on PR #56.
+- Orchestration proceeds with the normally-calculated version; no floor is applied.
+
+**BA-21**: When a PR carrying an `rr:override-*` label is merged, the floor must be applied
+during that merge's orchestration run.
+
+*Preconditions*: Feature PR #55 has label `rr:override-major`; current released version
+is `1.2.3`; PR #55 contains only a `fix:` commit (calculated next version = `1.2.4`).
+
+*Expected after PR #55 merges*:
+
+- `handle_merged_pull_request` reads `rr:override-major` from merged PR #55.
+- Floor = `next_major(1.2.3)` = `2.0.0`.
+- Effective version = `max(1.2.4, 2.0.0)` = `2.0.0`.
+- Orchestrator is called with `2.0.0` (not `1.2.4`).
+- The resulting release PR reflects version `2.0.0`.
+
+**BA-22**: The bump-floor must be a minimum constraint; it must never lower a version that
+conventional commits determine should be higher.
+
+*Scenario*: Merged PR contains `BREAKING CHANGE:` commits (major bump required, calculated
+version = `2.0.0`); PR carries label `rr:override-minor`.
+
+*Expected*: Effective version is `2.0.0` (calculated), not a minor-bumped version. The
+`BREAKING CHANGE:` commits win regardless of the `rr:override-minor` floor.
+
+**BA-23**: An audit comment must be posted on the release PR when a version floor is applied
+during orchestration.
+
+*Preconditions*: Merged PR carries `rr:override-major`; floor raises effective version from
+`1.2.4` to `2.0.0`.
+
+*Expected*: After orchestration, a comment is posted on the resulting release PR starting
+with `🔼 **Release Regent**:` and identifying the source PR number and the version that
+was raised.
+
+*Not expected*: No audit comment is posted when the floor does not change the effective
+version (i.e. `effective_version == calculated_version`).
+
+**BA-24**: A confirmation comment must be posted on the feature PR when an override label is
+recorded.
+
+*Preconditions*: `!release patch` is posted on open feature PR #77.
+
+*Expected*:
+
+- Label `rr:override-patch` is applied to PR #77.
+- A comment is posted on PR #77 starting with `✅ **Release Regent**:` confirming the
+  override and explaining it will be applied when PR #77 is merged.
+
+**BA-25**: Posting a new `!release` command on the same PR replaces any existing override
+label on that PR.
+
+*Preconditions*: Feature PR #55 already has `rr:override-major`.
+
+*Sequence*: Contributor posts `!release minor` on PR #55.
+
+*Expected*:
+
+- `rr:override-minor` is present on PR #55.
+- `rr:override-major` is absent from PR #55.
+- A new confirmation comment is posted on PR #55 noting the replacement.
+
+**BA-26**: A `!set-version` command posted on a non-release PR must be
+rejected with a scope rejection comment; no PR must be modified and the orchestrator must
+not be called.
+
+*Preconditions*:
+
+- `allow_override = true`.
+- Open feature PR #90, head branch `feat/my-feature` (does not start with `release/v`).
+- Commenter has Write access.
+
+*Sequence*: Contributor posts `!set-version 2.0.0` on PR #90.
+
+*Expected*:
+
+- `get_pull_request` is called to retrieve PR #90.
+- A comment is posted on PR #90 containing `⚠️` and instructing the commenter to re-post
+  on the release PR.
+- The `ReleaseOrchestrator` is **not** called.
+- No label is added to or removed from any PR.
+- The event is acknowledged without error.
+
+**BA-27**: A `!release` or `!set-version` command from a user without sufficient repository
+permissions must produce a rejection comment identifying the commenter and must not modify
+any PR or invoke the orchestrator.
+
+*Preconditions*:
+
+- `allow_override = true`.
+- Open feature PR #88; commenter `@someone` has `Read` access (not Write/Maintain/Admin).
+
+*Sequence*: `@someone` posts `!release major` on PR #88.
+
+*Expected*:
+
+- `get_collaborator_permission` is called and returns `Read`.
+- A comment is posted on PR #88 containing `❌` and explaining that only collaborators
+  with Write access or above may use Release Regent commands.
+- No label is added to or removed from any PR.
+- The `ReleaseOrchestrator` is **not** called.
+- The event is acknowledged without error.
+
+**BA-28**: When a release PR is merged, all open PRs bearing `rr:override-*` labels must
+have those labels removed and receive an informational cleanup comment.
+
+*Preconditions*:
+
+- Feature PR #55 has `rr:override-major`.
+- Feature PR #60 has `rr:override-minor`.
+- Release PR (head: `release/v1.3.0`) is open.
+
+*Sequence*: Release PR merges.
+
+*Expected*:
+
+- `handle_merged_pull_request` detects head branch starts with `release/v`.
+- Normal orchestration runs.
+- `search_pull_requests` (or equivalent) is called for open PRs with `rr:override-major`,
+  `rr:override-minor`, and `rr:override-patch` labels.
+- `rr:override-major` is removed from PR #55; a cleanup comment is posted on PR #55.
+- `rr:override-minor` is removed from PR #60; a cleanup comment is posted on PR #60.
+- Cleanup comments contain `ℹ️` and instruct the contributor to re-post `!release` if the
+  intent still applies.
+- Cleanup errors are logged as `warn!` and do **not** fail the event processing.
+
+**BA-29**: Malformed commit messages must not block release PR creation for valid commits.
 
 *Processing Strategy*:
 
@@ -226,7 +375,7 @@ This document defines testable behavioral assertions for Release Regent that ser
 - [def5678] Update docs (by @maintainer)
 ```
 
-**BA-20**: Concurrent webhook processing must not create duplicate release PRs for the same version.
+**BA-30**: Concurrent webhook processing must not create duplicate release PRs for the same version.
 
 *Concurrency Control*:
 
@@ -237,14 +386,14 @@ This document defines testable behavioral assertions for Release Regent that ser
 
 ### Data Integrity
 
-**BA-21**: All operations must be idempotent and safe to retry on failure.
+**BA-31**: All operations must be idempotent and safe to retry on failure.
 
 *PR Creation*: Check for existing PR before creating new one
 *PR Updates*: Use conditional updates with ETags when possible
 *Tag Creation*: Verify tag doesn't exist before creation
 *Release Creation*: Check for existing release before creation
 
-**BA-22**: Error messages must include correlation IDs for troubleshooting.
+**BA-32**: Error messages must include correlation IDs for troubleshooting.
 
 *Correlation ID Format*: `req_{uuid}` (e.g., "req_abc123def456")
 *Propagation*: Pass correlation ID through all operations and log entries
@@ -252,7 +401,7 @@ This document defines testable behavioral assertions for Release Regent that ser
 
 ### Validation and Security
 
-**BA-23**: Version parsing must strictly follow semantic versioning specification.
+**BA-33**: Version parsing must strictly follow semantic versioning specification.
 
 *Valid Formats*:
 
@@ -266,14 +415,14 @@ This document defines testable behavioral assertions for Release Regent that ser
 - `1.2` (missing patch version)
 - `1.2.3.4` (too many components)
 
-**BA-24**: Webhook signature validation must be enforced for all incoming requests.
+**BA-34**: Webhook signature validation must be enforced for all incoming requests.
 
 *Validation Method*: HMAC-SHA256 using configured webhook secret
 *Header*: Verify `X-Hub-Signature-256` header matches computed signature
 *Timing Attack Prevention*: Use constant-time comparison for signature verification
 *Rejection*: Return HTTP 401 for invalid signatures
 
-**BA-25**: Repository configuration must be validated before processing begins.
+**BA-35**: Repository configuration must be validated before processing begins.
 
 *Validation Scope*:
 

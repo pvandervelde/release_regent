@@ -224,7 +224,94 @@
 - All versions must follow semantic versioning specification
 - Next version must be higher than current version
 - Pre-release versions must include appropriate identifiers
-- Version overrides must be explicitly higher than calculated versions
+- `!set-version` overrides must specify a version strictly greater than the current released version
+- `!release` bump-floor overrides raise the effective version to at least the specified bump kind;
+  they never lower a version that conventional commits have already calculated to be higher
+
+### DR-4: PR Comment Commands
+
+**Requirement**: Accept and process version-override commands posted as PR comments.
+
+**Recognised Commands**:
+
+| Command | Effect |
+|---------|--------|
+| `!set-version X.Y.Z` | Only valid on the active release PR (head branch `release/v*`); pins the next release to exactly version `X.Y.Z` and invokes the release orchestrator immediately |
+| `!release major` | Applies a minimum-bump floor label (`rr:override-major`) to the PR the comment was posted on; the floor is evaluated when that PR is merged |
+| `!release minor` | Applies `rr:override-minor` to the commented-upon PR |
+| `!release patch` | Applies `rr:override-patch` to the commented-upon PR |
+
+**Processing Guards**:
+
+- Commands are only processed when `VersioningConfig::allow_override = true`
+- Commenter must have `Write`, `Maintain`, or `Admin` permission on the repository;
+  commands from users with insufficient permission produce a `❌` rejection comment
+  identifying the commenter and explaining the permission requirement
+- Commands on closed or merged PRs are silently ignored
+- `!set-version` is only accepted when posted on the active release PR (head branch
+  matching `release/v*`); if posted on any other open PR, a scope rejection comment is
+  posted and the event is acknowledged without modifying any PR
+
+**Persistence of `!release` overrides**:
+
+- The override label is applied to the **commented-upon PR** (the feature PR), not to
+  the release PR
+- When a PR carrying an `rr:override-*` label is merged (`PullRequestMerged`), the
+  floor is read from that PR and applied during orchestration
+- If the PR is closed without merging, the label remains on the closed PR and is never
+  consumed — it has no effect on future merges
+- **When the release PR is merged** (head branch `release/v*`), all open PRs bearing
+  `rr:override-*` labels have those labels removed and receive an informational comment
+  explaining that the override was cleared because a release was published. Overrides are
+  scoped to one release cycle; contributors must re-post `!release` if the intent still
+  applies to the next release.
+- Posting a new `!release` command on the same PR replaces the previous override label
+- Operators may cancel an override early by manually removing the `rr:override-*` label
+  from the feature PR in the GitHub UI
+
+**Audit trail**:
+
+- A **confirmation comment** is posted on the feature PR when an override label is
+  recorded, explaining the intent and its scope
+- An **audit comment** is posted on the **release PR** when a floor is actually applied
+  during orchestration, identifying the source PR and explaining the version change
+- A **cleanup comment** is posted on each open feature PR whose override label is cleared
+  when a release PR merges, explaining that the override was scoped to the completed
+  release cycle and instructing the contributor to re-post if still needed
+
+**Validation Rules**:
+
+- `!set-version` version string must be valid semver and strictly greater than the
+  current released version (`>= 0.0.1` when no released version exists); `!set-version`
+  must be posted on the release PR or it is rejected with a scope rejection comment
+- `!release` bump kind must be one of `major`, `minor`, or `patch` (case-insensitive)
+
+### DR-5: Override Floor Computation
+
+**Requirement**: When a `rr:override-*` label is present on the merged PR, compute the
+effective version as the maximum of the conventionally-calculated version and the floor
+version.
+
+**Computation**:
+
+Given `current_version` (latest semver tag) and `calculated_version` (from conventional
+commits on the merged PR):
+
+- `rr:override-major` floor → `floor_version = current_version.next_major()`
+- `rr:override-minor` floor → `floor_version = current_version.next_minor()`
+- `rr:override-patch` floor → `floor_version = current_version.next_patch()`
+- `effective_version = max(calculated_version, floor_version)`
+
+**Precedence Rules**:
+
+1. The floor is a minimum — it can never reduce a version that conventional commits have
+   computed to be higher
+2. `BREAKING CHANGE:` commits always produce a major increment regardless of floor
+3. `!set-version` is restricted to the release PR: it invokes the orchestrator with a
+   specific version immediately when posted on a `release/v*` branch PR; it is rejected
+   with a scope rejection comment when posted on any other PR; any `rr:override-*`
+   labels on other open PRs are unaffected and will still apply their floors when those
+   PRs eventually merge
 
 ## Integration Requirements
 
