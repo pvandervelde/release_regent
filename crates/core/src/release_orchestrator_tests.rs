@@ -370,10 +370,36 @@ impl GitHubOperations for TestGitHub {
     ) -> CoreResult<crate::traits::github_operations::CollaboratorPermission> {
         Ok(crate::traits::github_operations::CollaboratorPermission::Write)
     }
-}
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Test helpers
+    async fn add_labels(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _issue_number: u64,
+        _labels: &[&str],
+    ) -> CoreResult<()> {
+        Ok(())
+    }
+
+    async fn remove_label(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _issue_number: u64,
+        _label_name: &str,
+    ) -> CoreResult<()> {
+        Ok(())
+    }
+
+    async fn list_pr_labels(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _issue_number: u64,
+    ) -> CoreResult<Vec<crate::traits::github_operations::Label>> {
+        Ok(vec![])
+    }
+}
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn stub_repo(owner: &str, repo: &str) -> Repository {

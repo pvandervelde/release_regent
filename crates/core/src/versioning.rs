@@ -127,11 +127,39 @@
 //! assert!(VersionCalculator::parse_version("1.2.3-").is_err()); // Empty prerelease
 //! ```
 
+use std::cmp::Ordering;
+use std::fmt;
+
 use crate::traits::git_operations::{GitTag, ListTagsOptions};
 use crate::{CoreError, CoreResult};
 use serde::{Deserialize, Serialize};
-use std::fmt;
 use tracing::{debug, info};
+
+/// Which conventional-commit bump dimension the user requests via an `!release`
+/// override command.
+///
+/// This is a versioning concept shared between
+/// [`crate::comment_command_processor`] (command dispatch) and
+/// [`apply_bump_floor`] (floor computation). Keeping it here avoids any
+/// cyclic module dependency.
+///
+/// # Examples
+///
+/// ```
+/// use release_regent_core::versioning::BumpKind;
+///
+/// let floor = BumpKind::Major;
+/// assert_eq!(floor, BumpKind::Major);
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BumpKind {
+    /// Force at least a major version bump.
+    Major,
+    /// Force at least a minor version bump.
+    Minor,
+    /// Force at least a patch version bump.
+    Patch,
+}
 
 /// Conventional commit information
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -197,15 +225,87 @@ impl SemanticVersion {
         self.prerelease.is_some()
     }
 
+    /// Compute the next major version (`x+1.0.0`), discarding pre-release and
+    /// build metadata from the current version.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use release_regent_core::versioning::SemanticVersion;
+    ///
+    /// let v = SemanticVersion { major: 1, minor: 2, patch: 3,
+    ///                            prerelease: None, build: None };
+    /// assert_eq!(v.next_major().to_string(), "2.0.0");
+    ///
+    /// // Pre-release is discarded.
+    /// let pre = SemanticVersion { major: 1, minor: 0, patch: 0,
+    ///                              prerelease: Some("rc.1".to_string()), build: None };
+    /// assert_eq!(pre.next_major().to_string(), "2.0.0");
+    /// ```
+    #[must_use]
+    pub fn next_major(&self) -> SemanticVersion {
+        SemanticVersion {
+            major: self.major + 1,
+            minor: 0,
+            patch: 0,
+            prerelease: None,
+            build: None,
+        }
+    }
+
+    /// Compute the next minor version (`x.y+1.0`), discarding pre-release and
+    /// build metadata from the current version.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use release_regent_core::versioning::SemanticVersion;
+    ///
+    /// let v = SemanticVersion { major: 1, minor: 2, patch: 3,
+    ///                            prerelease: None, build: None };
+    /// assert_eq!(v.next_minor().to_string(), "1.3.0");
+    /// ```
+    #[must_use]
+    pub fn next_minor(&self) -> SemanticVersion {
+        SemanticVersion {
+            major: self.major,
+            minor: self.minor + 1,
+            patch: 0,
+            prerelease: None,
+            build: None,
+        }
+    }
+
+    /// Compute the next patch version (`x.y.z+1`), discarding pre-release and
+    /// build metadata from the current version.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use release_regent_core::versioning::SemanticVersion;
+    ///
+    /// let v = SemanticVersion { major: 1, minor: 2, patch: 3,
+    ///                            prerelease: None, build: None };
+    /// assert_eq!(v.next_patch().to_string(), "1.2.4");
+    /// ```
+    #[must_use]
+    pub fn next_patch(&self) -> SemanticVersion {
+        SemanticVersion {
+            major: self.major,
+            minor: self.minor,
+            patch: self.patch + 1,
+            prerelease: None,
+            build: None,
+        }
+    }
+
     /// Check if this version has build metadata
     pub fn has_build_metadata(&self) -> bool {
         self.build.is_some()
     }
 
     /// Compare versions ignoring build metadata (as per semver spec)
-    pub fn compare_precedence(&self, other: &Self) -> std::cmp::Ordering {
-        use std::cmp::Ordering;
-
+    pub fn compare_precedence(&self, other: &Self) -> Ordering {
         // Compare major.minor.patch first
         match (self.major, self.minor, self.patch).cmp(&(other.major, other.minor, other.patch)) {
             Ordering::Equal => {
@@ -544,6 +644,70 @@ impl VersionCalculator {
     }
 }
 
+/// Apply a minimum-bump floor to a calculated semantic version.
+///
+/// Computes the version that `floor` would produce from `current`
+/// (`current.next_major()`, `current.next_minor()`, or `current.next_patch()`),
+/// then returns whichever of `calculated` and `floor_version` is the greater
+/// according to semver precedence.
+///
+/// This is a pure function with no I/O and no side effects.
+///
+/// # Arguments
+///
+/// * `current` — the highest released version tag at the time the feature PR
+///   was merged (the baseline from which the floor is computed).
+/// * `calculated` — the version that conventional-commit analysis produced
+///   before any floor is applied.
+/// * `floor` — the minimum bump dimension requested via `!release`.
+///
+/// # Returns
+///
+/// `max(calculated, floor_version)` by semver precedence.
+///
+/// # Examples
+///
+/// ```
+/// use release_regent_core::versioning::{apply_bump_floor, BumpKind, SemanticVersion};
+///
+/// let current    = SemanticVersion { major: 1, minor: 2, patch: 3,
+///                                    prerelease: None, build: None };
+/// let calculated = SemanticVersion { major: 1, minor: 2, patch: 4,
+///                                    prerelease: None, build: None };
+///
+/// // !release major → floor = 2.0.0, which is greater than 1.2.4.
+/// let effective = apply_bump_floor(&current, &calculated, BumpKind::Major);
+/// assert_eq!(effective.to_string(), "2.0.0");
+///
+/// // !release patch → floor = 1.2.4, which equals the calculated version.
+/// let effective = apply_bump_floor(&current, &calculated, BumpKind::Patch);
+/// assert_eq!(effective.to_string(), "1.2.4");
+///
+/// // If conventional commits already force a higher version, the floor
+/// // has no effect.
+/// let major_calc = SemanticVersion { major: 2, minor: 0, patch: 0,
+///                                    prerelease: None, build: None };
+/// let effective  = apply_bump_floor(&current, &major_calc, BumpKind::Minor);
+/// assert_eq!(effective.to_string(), "2.0.0");
+/// ```
+#[must_use]
+pub fn apply_bump_floor(
+    current: &SemanticVersion,
+    calculated: &SemanticVersion,
+    floor: BumpKind,
+) -> SemanticVersion {
+    let floor_version = match floor {
+        BumpKind::Major => current.next_major(),
+        BumpKind::Minor => current.next_minor(),
+        BumpKind::Patch => current.next_patch(),
+    };
+
+    match calculated.compare_precedence(&floor_version) {
+        Ordering::Less => floor_version,
+        _ => calculated.clone(),
+    }
+}
+
 /// Compare two semver pre-release strings following the semver 2.0 specification (§11.4).
 ///
 /// Each dot-separated identifier is compared pairwise from left to right:
@@ -554,9 +718,7 @@ impl VersionCalculator {
 ///
 /// When all compared pairs are equal, the version with more identifiers is `Greater`
 /// (e.g. `alpha.1 > alpha` per §11.4.4).
-fn compare_prerelease(a: &str, b: &str) -> std::cmp::Ordering {
-    use std::cmp::Ordering;
-
+fn compare_prerelease(a: &str, b: &str) -> Ordering {
     let mut a_ids = a.split('.');
     let mut b_ids = b.split('.');
 

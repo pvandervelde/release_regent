@@ -290,7 +290,7 @@ where
 
         let config = CommentCommandConfig {
             orchestrator_config: release_orchestrator::OrchestratorConfig {
-                branch_prefix: "release".to_string(),
+                branch_prefix: release_orchestrator::OrchestratorConfig::default().branch_prefix,
                 title_template: repo_config.release_pr.title_template.clone(),
                 changelog_header: "## Changelog".to_string(),
             },
@@ -693,34 +693,234 @@ where
 
         // Build orchestrator config honouring the repository PR title template.
         let orch_config = release_orchestrator::OrchestratorConfig {
-            branch_prefix: "release".to_string(),
+            branch_prefix: release_orchestrator::OrchestratorConfig::default().branch_prefix,
             title_template: repo_config.release_pr.title_template.clone(),
             changelog_header: "## Changelog".to_string(),
         };
 
+        // Determine whether the merged PR is itself a release PR by checking
+        // whether its head branch starts with the configured release prefix + "/v".
+        let merged_pr_head_ref = event
+            .payload
+            .get("pull_request")
+            .and_then(|pr| pr.get("head"))
+            .and_then(|h| h.get("ref"))
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let release_head_prefix = format!("{}/v", orch_config.branch_prefix);
+        let is_release_pr = merged_pr_head_ref.starts_with(&release_head_prefix);
+
+        // Resolve the merged PR number (needed to read override labels on the
+        // feature-PR path, and logged for diagnostics on the release-PR path).
+        let merged_pr_number: u64 = event
+            .payload
+            .get("pull_request")
+            .and_then(|pr| pr.get("number"))
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+
         let orchestrator =
             release_orchestrator::ReleaseOrchestrator::new(orch_config, &self.github_operations);
 
-        tracing::info!(
-            owner = %owner,
-            repo = %repo,
-            version = %calc_result.next_version,
-            base_branch = %base_branch,
-            correlation_id = %correlation_id,
-            "Orchestrating release PR for merged pull request"
-        );
+        if is_release_pr {
+            // ── Release PR path ─────────────────────────────────────────────
+            tracing::info!(
+                owner = %owner,
+                repo = %repo,
+                version = %calc_result.next_version,
+                base_branch = %base_branch,
+                correlation_id = %correlation_id,
+                "Orchestrating for merged release PR"
+            );
 
-        orchestrator
-            .orchestrate(
-                owner,
-                repo,
-                &calc_result.next_version,
-                &changelog,
-                &base_branch,
-                &base_sha,
-                correlation_id,
-            )
-            .await
+            let orch_result = orchestrator
+                .orchestrate(
+                    owner,
+                    repo,
+                    &calc_result.next_version,
+                    &changelog,
+                    &base_branch,
+                    &base_sha,
+                    correlation_id,
+                )
+                .await?;
+
+            // After a release is published, clear stale rr:override-* labels
+            // from any open feature PRs. These overrides were scoped to this
+            // release cycle; contributors must re-post !release if still needed.
+            use comment_command_processor::ALL_OVERRIDE_LABELS;
+            for &label_name in ALL_OVERRIDE_LABELS {
+                let query = format!("is:open label:{label_name}");
+                match self
+                    .github_operations
+                    .search_pull_requests(owner, repo, &query)
+                    .await
+                {
+                    Ok(stale_prs) => {
+                        for stale_pr in stale_prs {
+                            if let Err(e) = self
+                                .github_operations
+                                .remove_label(owner, repo, stale_pr.number, label_name)
+                                .await
+                            {
+                                tracing::warn!(
+                                    error = %e,
+                                    pr = stale_pr.number,
+                                    label = label_name,
+                                    correlation_id = %correlation_id,
+                                    "Failed to remove stale override label; continuing"
+                                );
+                            }
+                            let kind_str = label_name
+                                .strip_prefix("rr:override-")
+                                .unwrap_or(label_name);
+                            let cleanup_body = format!(
+                                "ℹ️ **Release Regent**: The `!release {kind_str}` override on \
+                                 this PR has been cleared because a new release was published \
+                                 before this PR merged. If the work in this PR still warrants \
+                                 a minimum bump for the next release, please re-post your \
+                                 `!release` command."
+                            );
+                            if let Err(e) = self
+                                .github_operations
+                                .create_issue_comment(owner, repo, stale_pr.number, &cleanup_body)
+                                .await
+                            {
+                                tracing::warn!(
+                                    error = %e,
+                                    pr = stale_pr.number,
+                                    correlation_id = %correlation_id,
+                                    "Failed to post stale-override cleanup comment; continuing"
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            label = label_name,
+                            correlation_id = %correlation_id,
+                            "Failed to search for PRs with stale override label; continuing"
+                        );
+                    }
+                }
+            }
+
+            Ok(orch_result)
+        } else {
+            // ── Feature PR path ─────────────────────────────────────────────
+            // Read any rr:override-* label from the merged PR and apply it as
+            // a minimum-bump floor before calling the orchestrator.
+            let labels = if merged_pr_number > 0 {
+                self.github_operations
+                    .list_pr_labels(owner, repo, merged_pr_number)
+                    .await
+                    .unwrap_or_else(|e| {
+                        tracing::warn!(
+                            error = %e,
+                            merged_pr = merged_pr_number,
+                            correlation_id = %correlation_id,
+                            "Failed to read override labels from merged PR; proceeding without floor"
+                        );
+                        vec![]
+                    })
+            } else {
+                vec![]
+            };
+
+            use comment_command_processor::{
+                OVERRIDE_LABEL_MAJOR, OVERRIDE_LABEL_MINOR, OVERRIDE_LABEL_PATCH,
+            };
+            use versioning::BumpKind;
+            let floor_kind: Option<BumpKind> = labels.iter().find_map(|l| match l.name.as_str() {
+                OVERRIDE_LABEL_MAJOR => Some(BumpKind::Major),
+                OVERRIDE_LABEL_MINOR => Some(BumpKind::Minor),
+                OVERRIDE_LABEL_PATCH => Some(BumpKind::Patch),
+                _ => None,
+            });
+
+            let effective_version =
+                if let (Some(ref floor), Some(ref current)) = (&floor_kind, &current_version) {
+                    versioning::apply_bump_floor(current, &calc_result.next_version, floor.clone())
+                } else {
+                    calc_result.next_version.clone()
+                };
+
+            tracing::debug!(
+                owner = %owner,
+                repo = %repo,
+                calculated = %calc_result.next_version,
+                effective = %effective_version,
+                floor = ?floor_kind,
+                correlation_id = %correlation_id,
+                "Resolved effective release version after bump-floor check"
+            );
+
+            tracing::info!(
+                owner = %owner,
+                repo = %repo,
+                version = %effective_version,
+                base_branch = %base_branch,
+                correlation_id = %correlation_id,
+                "Orchestrating release PR for merged pull request"
+            );
+
+            let orch_result = orchestrator
+                .orchestrate(
+                    owner,
+                    repo,
+                    &effective_version,
+                    &changelog,
+                    &base_branch,
+                    &base_sha,
+                    correlation_id,
+                )
+                .await?;
+
+            // Post an audit comment on the release PR when the floor was applied.
+            if effective_version != calc_result.next_version {
+                let kind_str = match floor_kind
+                    .as_ref()
+                    .expect("floor_kind is Some when versions differ")
+                {
+                    BumpKind::Major => "major",
+                    BumpKind::Minor => "minor",
+                    BumpKind::Patch => "patch",
+                };
+                let release_pr_number = match &orch_result {
+                    release_orchestrator::OrchestratorResult::Created { pr, .. } => Some(pr.number),
+                    release_orchestrator::OrchestratorResult::Updated { pr } => Some(pr.number),
+                    release_orchestrator::OrchestratorResult::Renamed { pr } => Some(pr.number),
+                    release_orchestrator::OrchestratorResult::NoOp { pr } => Some(pr.number),
+                };
+                if let Some(release_pr) = release_pr_number {
+                    let audit_body = format!(
+                        "🔼 **Release Regent**: Version floor applied from `!release {kind_str}` \
+                         override on PR #{merged_pr_number}. The calculated version was \
+                         `{calc}` but was raised to `{eff}` to satisfy the requested \
+                         minimum {kind_str} bump.",
+                        calc = calc_result.next_version,
+                        eff = effective_version,
+                    );
+                    if let Err(e) = self
+                        .github_operations
+                        .create_issue_comment(owner, repo, release_pr, &audit_body)
+                        .await
+                    {
+                        tracing::warn!(
+                            error = %e,
+                            release_pr,
+                            merged_pr = merged_pr_number,
+                            correlation_id = %correlation_id,
+                            "Failed to post bump-floor audit comment; continuing"
+                        );
+                    }
+                }
+            }
+
+            Ok(orch_result)
+        }
     }
 }
 

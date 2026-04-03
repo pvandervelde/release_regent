@@ -7,7 +7,7 @@ use crate::{
         },
         github_operations::{
             CollaboratorPermission, CreatePullRequestParams, CreateReleaseParams, GitHubOperations,
-            GitUser as GitHubUser, PullRequest, PullRequestBranch, Release, Repository, Tag,
+            GitUser as GitHubUser, Label, PullRequest, PullRequestBranch, Release, Repository, Tag,
             UpdateReleaseParams,
         },
     },
@@ -46,6 +46,8 @@ struct TestState {
     /// Collaborator permission returned by `get_collaborator_permission`.
     /// `None` defaults to `CollaboratorPermission::Write`.
     commenter_permission: Option<CollaboratorPermission>,
+    /// Labels keyed by PR/issue number for `list_pr_labels`.
+    pr_labels: HashMap<u64, Vec<Label>>,
 }
 
 #[derive(Clone, Default)]
@@ -58,6 +60,7 @@ impl TestGitHub {
         Self {
             state: Arc::new(Mutex::new(TestState {
                 next_pr_number: 200,
+                pr_labels: HashMap::new(),
                 ..Default::default()
             })),
         }
@@ -90,6 +93,12 @@ impl TestGitHub {
     /// Pre-set the collaborator permission returned for any username.
     async fn with_commenter_permission(self, permission: CollaboratorPermission) -> Self {
         self.state.lock().await.commenter_permission = Some(permission);
+        self
+    }
+
+    /// Pre-populate labels for a specific PR/issue number.
+    async fn with_pr_labels(self, pr_number: u64, labels: Vec<Label>) -> Self {
+        self.state.lock().await.pr_labels.insert(pr_number, labels);
         self
     }
 
@@ -366,6 +375,58 @@ impl GitHubOperations for TestGitHub {
             .clone()
             .unwrap_or(CollaboratorPermission::Write))
     }
+
+    async fn add_labels(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        pr_number: u64,
+        labels: &[&str],
+    ) -> CoreResult<()> {
+        let mut st = self.state.lock().await;
+        let entry = st.pr_labels.entry(pr_number).or_default();
+        for &name in labels {
+            if !entry.iter().any(|l| l.name == name) {
+                entry.push(Label {
+                    id: entry.len() as u64 + 1,
+                    name: name.to_string(),
+                    color: "ededed".to_string(),
+                    description: None,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    async fn remove_label(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        pr_number: u64,
+        label_name: &str,
+    ) -> CoreResult<()> {
+        let mut st = self.state.lock().await;
+        if let Some(labels) = st.pr_labels.get_mut(&pr_number) {
+            labels.retain(|l| l.name != label_name);
+        }
+        Ok(())
+    }
+
+    async fn list_pr_labels(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        pr_number: u64,
+    ) -> CoreResult<Vec<Label>> {
+        Ok(self
+            .state
+            .lock()
+            .await
+            .pr_labels
+            .get(&pr_number)
+            .cloned()
+            .unwrap_or_default())
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -410,6 +471,32 @@ fn make_open_pr(number: u64, base_sha: &str) -> PullRequest {
         user: stub_user(),
         head: PullRequestBranch {
             ref_name: "feat/my-feature".to_string(),
+            sha: "headsha".to_string(),
+            repo: stub_repo("acme", "app"),
+        },
+        base: PullRequestBranch {
+            ref_name: "main".to_string(),
+            sha: base_sha.to_string(),
+            repo: r,
+        },
+    }
+}
+
+fn make_release_pr(number: u64, base_sha: &str) -> PullRequest {
+    let now = Utc::now();
+    let r = stub_repo("acme", "app");
+    PullRequest {
+        number,
+        title: "release: v1.0.0".to_string(),
+        body: None,
+        state: "open".to_string(),
+        draft: false,
+        created_at: now,
+        updated_at: now,
+        merged_at: None,
+        user: stub_user(),
+        head: PullRequestBranch {
+            ref_name: "release/v1.0.0".to_string(),
             sha: "headsha".to_string(),
             repo: stub_repo("acme", "app"),
         },
@@ -673,7 +760,7 @@ async fn test_process_set_version_accepted_when_greater_than_current_released_ta
     let github = TestGitHub::new()
         .with_tags(vec![make_semver_tag("v1.0.0")])
         .await
-        .with_pr(make_open_pr(42, "deadbeef"))
+        .with_pr(make_release_pr(42, "deadbeef"))
         .await;
 
     let processor = CommentCommandProcessor::new(default_config(true), &github);
@@ -695,7 +782,7 @@ async fn test_process_set_version_accepted_when_no_existing_tags_first_release_p
     let github = TestGitHub::new()
         .with_tags(vec![])
         .await
-        .with_pr(make_open_pr(42, "deadbeef"))
+        .with_pr(make_release_pr(42, "deadbeef"))
         .await;
 
     let processor = CommentCommandProcessor::new(default_config(true), &github);
@@ -716,7 +803,7 @@ async fn test_process_set_version_accepted_when_no_tags_and_version_is_zero_zero
     let github = TestGitHub::new()
         .with_tags(vec![])
         .await
-        .with_pr(make_open_pr(42, "deadbeef"))
+        .with_pr(make_release_pr(42, "deadbeef"))
         .await;
 
     let processor = CommentCommandProcessor::new(default_config(true), &github);
@@ -732,6 +819,8 @@ async fn test_process_set_version_rejected_when_equal_to_current_tag_posts_rejec
     // Pinned == current released → rejected.
     let github = TestGitHub::new()
         .with_tags(vec![make_semver_tag("v1.0.0")])
+        .await
+        .with_pr(make_release_pr(42, "deadbeef"))
         .await;
 
     let processor = CommentCommandProcessor::new(default_config(true), &github);
@@ -754,6 +843,8 @@ async fn test_process_set_version_rejected_when_lower_than_current_tag_posts_rej
     // Pinned < current released → rejected.
     let github = TestGitHub::new()
         .with_tags(vec![make_semver_tag("v2.0.0")])
+        .await
+        .with_pr(make_release_pr(42, "deadbeef"))
         .await;
 
     let processor = CommentCommandProcessor::new(default_config(true), &github);
@@ -770,7 +861,11 @@ async fn test_process_set_version_rejected_when_lower_than_current_tag_posts_rej
 #[tokio::test]
 async fn test_process_set_version_zero_zero_zero_rejected_when_no_tags() {
     // 0.0.0 is below the minimum (0.0.1) even with no existing tags.
-    let github = TestGitHub::new().with_tags(vec![]).await;
+    let github = TestGitHub::new()
+        .with_tags(vec![])
+        .await
+        .with_pr(make_release_pr(42, "deadbeef"))
+        .await;
 
     let processor = CommentCommandProcessor::new(default_config(true), &github);
     let event = test_event(42, "!set-version 0.0.0", "open");
@@ -784,9 +879,9 @@ async fn test_process_set_version_zero_zero_zero_rejected_when_no_tags() {
 }
 
 #[tokio::test]
-async fn test_process_release_bump_posts_informational_comment_and_acknowledges() {
-    // !release bump commands are a stub until the design is completed.
-    // The user should receive an informational comment and the event is acknowledged (Ok).
+async fn test_process_release_bump_applies_label_and_posts_confirmation() {
+    // !release major must apply rr:override-major to the feature PR and post
+    // a confirmation comment. No release PR should be created at this point.
     let github = TestGitHub::new();
     let processor = CommentCommandProcessor::new(default_config(true), &github);
 
@@ -794,20 +889,39 @@ async fn test_process_release_bump_posts_informational_comment_and_acknowledges(
     let result = processor.process(&event).await;
 
     assert!(result.is_ok(), "expected Ok, got: {result:?}");
+    // A confirmation comment should be posted on the feature PR.
     let comments = github.issue_comments().await;
-    assert_eq!(comments.len(), 1, "expected one informational comment");
+    assert_eq!(comments.len(), 1, "expected one confirmation comment");
     assert_eq!(comments[0].0, 42);
     assert!(
-        comments[0].1.contains("not yet"),
-        "comment should mention feature is not yet available: {}",
+        comments[0].1.contains("override recorded"),
+        "comment should confirm the override, got: {}",
         comments[0].1
+    );
+    assert!(
+        comments[0].1.contains("major"),
+        "comment should mention the bump kind, got: {}",
+        comments[0].1
+    );
+    // Label must be applied to the feature PR.
+    let labels = github
+        .state
+        .lock()
+        .await
+        .pr_labels
+        .get(&42)
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        labels.iter().any(|l| l.name == "rr:override-major"),
+        "expected rr:override-major label, got: {labels:?}"
     );
     // No release PR should have been created.
     assert!(github.created_prs().await.is_empty());
 }
 
 #[tokio::test]
-async fn test_process_release_bump_minor_also_posts_informational_comment() {
+async fn test_process_release_bump_minor_applies_label_and_posts_confirmation() {
     let github = TestGitHub::new();
     let processor = CommentCommandProcessor::new(default_config(true), &github);
 
@@ -817,7 +931,17 @@ async fn test_process_release_bump_minor_also_posts_informational_comment() {
     assert!(result.is_ok());
     let comments = github.issue_comments().await;
     assert_eq!(comments.len(), 1);
-    assert!(comments[0].1.contains("not yet"));
+    assert!(comments[0].1.contains("override recorded"));
+    assert!(comments[0].1.contains("minor"));
+    let labels = github
+        .state
+        .lock()
+        .await
+        .pr_labels
+        .get(&42)
+        .cloned()
+        .unwrap_or_default();
+    assert!(labels.iter().any(|l| l.name == "rr:override-minor"));
 }
 
 #[tokio::test]
@@ -829,7 +953,7 @@ async fn test_process_repeated_calls_both_succeed() {
     let github = TestGitHub::new()
         .with_tags(vec![make_semver_tag("v1.0.0")])
         .await
-        .with_pr(make_open_pr(42, "deadbeef"))
+        .with_pr(make_release_pr(42, "deadbeef"))
         .await;
 
     let processor = CommentCommandProcessor::new(default_config(true), &github);
@@ -918,4 +1042,80 @@ async fn test_process_release_bare_no_argument_is_noop() {
     assert!(result.is_ok());
     assert!(github.issue_comments().await.is_empty());
     assert!(github.created_prs().await.is_empty());
+}
+
+#[tokio::test]
+async fn test_process_release_bump_replaces_existing_override_label() {
+    // BA-25: posting !release minor on a PR that already has rr:override-major
+    // should replace the label and mention the replacement in the comment.
+    let existing_label = Label {
+        id: 1,
+        name: "rr:override-major".to_string(),
+        color: "ededed".to_string(),
+        description: None,
+    };
+    let github = TestGitHub::new()
+        .with_pr_labels(55, vec![existing_label])
+        .await;
+    let processor = CommentCommandProcessor::new(default_config(true), &github);
+
+    let event = test_event(55, "!release minor", "open");
+    let result = processor.process(&event).await;
+
+    assert!(result.is_ok(), "expected Ok, got: {result:?}");
+    // rr:override-minor must be present; rr:override-major must be absent.
+    let labels = github
+        .state
+        .lock()
+        .await
+        .pr_labels
+        .get(&55)
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        labels.iter().any(|l| l.name == "rr:override-minor"),
+        "expected rr:override-minor after replacement, got: {labels:?}"
+    );
+    assert!(
+        !labels.iter().any(|l| l.name == "rr:override-major"),
+        "rr:override-major should have been removed, got: {labels:?}"
+    );
+    let comments = github.issue_comments().await;
+    assert_eq!(comments.len(), 1);
+    assert!(
+        comments[0].1.contains("replacing"),
+        "confirmation comment should mention replacement, got: {}",
+        comments[0].1
+    );
+}
+
+#[tokio::test]
+async fn test_process_set_version_rejected_when_on_non_release_pr_branch() {
+    // BA-26: !set-version on a feature PR (head branch does not start with
+    // "release/v") must post a scope rejection comment and not call the orchestrator.
+    let feature_pr = make_open_pr(90, "abc123"); // head branch: feat/my-feature
+    let github = TestGitHub::new()
+        .with_tags(vec![make_semver_tag("v1.0.0")])
+        .await
+        .with_pr(feature_pr)
+        .await;
+
+    let processor = CommentCommandProcessor::new(default_config(true), &github);
+    let event = test_event(90, "!set-version 2.0.0", "open");
+    let result = processor.process(&event).await;
+
+    assert!(result.is_ok(), "expected Ok, got: {result:?}");
+    let comments = github.issue_comments().await;
+    assert_eq!(comments.len(), 1, "expected one scope rejection comment");
+    assert_eq!(comments[0].0, 90);
+    assert!(
+        comments[0].1.contains("release PR"),
+        "rejection comment should mention release PR, got: {}",
+        comments[0].1
+    );
+    // Orchestrator must not have been called.
+    assert!(
+        github.created_prs().await.is_empty(),
+        "orchestrator must not be called on scope rejection"
+    );
 }

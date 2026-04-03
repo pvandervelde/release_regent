@@ -16,7 +16,7 @@ use release_regent_core::{
         },
         github_operations::{
             CollaboratorPermission, CreatePullRequestParams, CreateReleaseParams, GitHubOperations,
-            GitUser as GitHubUser, PullRequest, PullRequestBranch, Release, Repository, Tag,
+            GitUser as GitHubUser, Label, PullRequest, PullRequestBranch, Release, Repository, Tag,
             UpdateReleaseParams,
         },
     },
@@ -710,6 +710,78 @@ impl GitHubOperations for GitHubClient {
                 CollaboratorPermission::None
             }
         })
+    }
+
+    async fn add_labels(
+        &self,
+        owner: &str,
+        repo: &str,
+        issue_number: u64,
+        labels: &[&str],
+    ) -> CoreResult<()> {
+        info!(owner, repo, issue_number, "Adding labels");
+
+        let installation = self.installation().await?;
+        let path = format!("/repos/{owner}/{repo}/issues/{issue_number}/labels");
+        let body = serde_json::json!({ "labels": labels });
+        installation
+            .post(&path, &body)
+            .await
+            .map_err(map_sdk_error)?;
+        Ok(())
+    }
+
+    async fn remove_label(
+        &self,
+        owner: &str,
+        repo: &str,
+        issue_number: u64,
+        label_name: &str,
+    ) -> CoreResult<()> {
+        info!(
+            owner,
+            repo,
+            issue_number,
+            label = label_name,
+            "Removing label"
+        );
+
+        let installation = self.installation().await?;
+        // GitHub returns 404 when the label is not on the issue; treat that as Ok.
+        let encoded = label_name.replace(':', "%3A");
+        let path = format!("/repos/{owner}/{repo}/issues/{issue_number}/labels/{encoded}");
+        match installation.delete(&path).await {
+            Ok(_) => Ok(()),
+            Err(github_bot_sdk::error::ApiError::HttpError { status: 404, .. }) => Ok(()),
+            Err(e) => Err(map_sdk_error(e)),
+        }
+    }
+
+    async fn list_pr_labels(
+        &self,
+        owner: &str,
+        repo: &str,
+        issue_number: u64,
+    ) -> CoreResult<Vec<Label>> {
+        info!(owner, repo, issue_number, "Listing PR labels");
+
+        let installation = self.installation().await?;
+        let path = format!("/repos/{owner}/{repo}/issues/{issue_number}/labels");
+        let response = installation.get(&path).await.map_err(map_sdk_error)?;
+        let raw: Vec<serde_json::Value> =
+            response.json().await.map_err(|e| CoreError::github(e))?;
+
+        let labels = raw
+            .into_iter()
+            .map(|v| Label {
+                id: v["id"].as_u64().unwrap_or(0),
+                name: v["name"].as_str().unwrap_or("").to_string(),
+                color: v["color"].as_str().unwrap_or("").to_string(),
+                description: v["description"].as_str().map(str::to_string),
+            })
+            .collect();
+
+        Ok(labels)
     }
 }
 

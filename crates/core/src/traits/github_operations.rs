@@ -49,6 +49,84 @@ use serde::{Deserialize, Serialize};
 /// The authentication mechanism is implementation-specific.
 #[async_trait]
 pub trait GitHubOperations: GitOperations + Send + Sync {
+    /// Add one or more labels to an issue or pull request.
+    ///
+    /// The operation is idempotent: if a label is already present on the
+    /// issue/PR it is **not** added a second time and no error is returned.
+    ///
+    /// # Parameters
+    /// - `owner`: Repository owner name
+    /// - `repo`: Repository name
+    /// - `issue_number`: Issue or pull request number
+    /// - `labels`: Slice of label name strings to add
+    ///
+    /// # Returns
+    /// `Ok(())` on success (whether or not labels were already present).
+    ///
+    /// # Errors
+    /// - `CoreError::NotFound` — the issue/PR does not exist
+    /// - `CoreError::GitHub` — the API call failed for any other reason
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// github.add_labels("owner", "repo", 42, &["rr:override-major"]).await?;
+    /// ```
+    async fn add_labels(
+        &self,
+        owner: &str,
+        repo: &str,
+        issue_number: u64,
+        labels: &[&str],
+    ) -> CoreResult<()>;
+
+    /// Create a new branch pointing to the given commit SHA
+    ///
+    /// Creates a new Git branch (ref) in the repository at the specified commit.
+    ///
+    /// # Parameters
+    /// - `owner`: Repository owner name
+    /// - `repo`: Repository name
+    /// - `branch_name`: Name of the new branch (without `refs/heads/` prefix)
+    /// - `sha`: Commit SHA the branch should initially point to
+    ///
+    /// # Returns
+    /// `Ok(())` on success
+    ///
+    /// # Errors
+    /// - `CoreError::Conflict` - A branch with this name already exists (HTTP 422)
+    /// - `CoreError::GitHub` - API communication failed
+    /// - `CoreError::InvalidInput` - Invalid branch name or SHA
+    async fn create_branch(
+        &self,
+        owner: &str,
+        repo: &str,
+        branch_name: &str,
+        sha: &str,
+    ) -> CoreResult<()>;
+
+    /// Post a comment on an issue or pull request
+    ///
+    /// # Parameters
+    /// - `owner`: Repository owner name
+    /// - `repo`: Repository name
+    /// - `issue_number`: Issue or pull request number to comment on
+    /// - `body`: Comment body (Markdown supported)
+    ///
+    /// # Returns
+    /// `Ok(())` on success
+    ///
+    /// # Errors
+    /// - `CoreError::NotFound` - Issue or PR does not exist
+    /// - `CoreError::GitHub` - API communication failed
+    async fn create_issue_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        issue_number: u64,
+        body: &str,
+    ) -> CoreResult<()>;
+
     /// Create a new pull request
     ///
     /// # Parameters
@@ -118,6 +196,47 @@ pub trait GitHubOperations: GitOperations + Send + Sync {
         tagger: Option<GitUser>,
     ) -> CoreResult<Tag>;
 
+    /// Delete a branch
+    ///
+    /// Removes the named branch (ref) from the repository. This is a destructive
+    /// operation; the commits remain accessible through other refs or by SHA.
+    ///
+    /// # Parameters
+    /// - `owner`: Repository owner name
+    /// - `repo`: Repository name
+    /// - `branch_name`: Name of the branch to delete (without `refs/heads/` prefix)
+    ///
+    /// # Returns
+    /// `Ok(())` on success
+    ///
+    /// # Errors
+    /// - `CoreError::NotFound` - Branch does not exist
+    /// - `CoreError::GitHub` - API communication failed
+    async fn delete_branch(&self, owner: &str, repo: &str, branch_name: &str) -> CoreResult<()>;
+
+    /// Get the permission level a specific user has on a repository
+    ///
+    /// Used to authorise PR comment commands: only collaborators with `Write`,
+    /// `Maintain`, or `Admin` access may issue commands.
+    ///
+    /// # Parameters
+    /// - `owner`: Repository owner name
+    /// - `repo`: Repository name
+    /// - `username`: GitHub login of the user to check
+    ///
+    /// # Returns
+    /// The user's [`CollaboratorPermission`] level
+    ///
+    /// # Errors
+    /// - `CoreError::GitHub` - API communication failed
+    /// - `CoreError::NotFound` - User is not a collaborator on the repository
+    async fn get_collaborator_permission(
+        &self,
+        owner: &str,
+        repo: &str,
+        username: &str,
+    ) -> CoreResult<CollaboratorPermission>;
+
     /// Get the latest release (non-draft, non-prerelease)
     ///
     /// # Parameters
@@ -169,27 +288,34 @@ pub trait GitHubOperations: GitOperations + Send + Sync {
     /// - `CoreError::NotSupported` - Release not found
     async fn get_release_by_tag(&self, owner: &str, repo: &str, tag: &str) -> CoreResult<Release>;
 
-    /// List releases in a repository
+    /// List all labels currently applied to an issue or pull request.
+    ///
+    /// Returns an empty vector when no labels are present.
     ///
     /// # Parameters
     /// - `owner`: Repository owner name
     /// - `repo`: Repository name
-    /// - `per_page`: Number of releases per page (max 100)
-    /// - `page`: Page number to retrieve (1-based)
+    /// - `issue_number`: Issue or pull request number
     ///
     /// # Returns
-    /// List of releases ordered by creation date (newest first)
+    /// All labels currently applied to the issue/PR.
     ///
     /// # Errors
-    /// - `CoreError::GitHub` - API communication failed
-    /// - `CoreError::InvalidInput` - Invalid pagination parameters
-    async fn list_releases(
+    /// - `CoreError::NotFound` — the issue/PR does not exist
+    /// - `CoreError::GitHub` — the API call failed for any other reason
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// let labels = github.list_pr_labels("owner", "repo", 42).await?;
+    /// let has_override = labels.iter().any(|l| l.name == "rr:override-major");
+    /// ```
+    async fn list_pr_labels(
         &self,
         owner: &str,
         repo: &str,
-        per_page: Option<u8>,
-        page: Option<u32>,
-    ) -> CoreResult<Vec<Release>>;
+        issue_number: u64,
+    ) -> CoreResult<Vec<Label>>;
 
     /// List pull requests in a repository
     ///
@@ -221,12 +347,68 @@ pub trait GitHubOperations: GitOperations + Send + Sync {
         page: Option<u32>,
     ) -> CoreResult<Vec<PullRequest>>;
 
+    /// List releases in a repository
+    ///
+    /// # Parameters
+    /// - `owner`: Repository owner name
+    /// - `repo`: Repository name
+    /// - `per_page`: Number of releases per page (max 100)
+    /// - `page`: Page number to retrieve (1-based)
+    ///
+    /// # Returns
+    /// List of releases ordered by creation date (newest first)
+    ///
+    /// # Errors
+    /// - `CoreError::GitHub` - API communication failed
+    /// - `CoreError::InvalidInput` - Invalid pagination parameters
+    async fn list_releases(
+        &self,
+        owner: &str,
+        repo: &str,
+        per_page: Option<u8>,
+        page: Option<u32>,
+    ) -> CoreResult<Vec<Release>>;
+
+    /// Remove a single label from an issue or pull request.
+    ///
+    /// The operation is idempotent: if the label is not currently applied to
+    /// the issue/PR, `Ok(())` is returned (GitHub 404 on the label is treated
+    /// as success). A 404 on the *issue/PR itself* is still an error.
+    ///
+    /// # Parameters
+    /// - `owner`: Repository owner name
+    /// - `repo`: Repository name
+    /// - `issue_number`: Issue or pull request number
+    /// - `label_name`: Name of the label to remove
+    ///
+    /// # Returns
+    /// `Ok(())` on success or when the label was not present.
+    ///
+    /// # Errors
+    /// - `CoreError::NotFound` — the issue/PR does not exist
+    /// - `CoreError::GitHub` — the API call failed for any other reason
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// // Idempotent: succeeds even if the label is absent.
+    /// github.remove_label("owner", "repo", 42, "rr:override-major").await?;
+    /// ```
+    async fn remove_label(
+        &self,
+        owner: &str,
+        repo: &str,
+        issue_number: u64,
+        label_name: &str,
+    ) -> CoreResult<()>;
+
     /// Search pull requests using GitHub search query syntax
     ///
     /// Supports a subset of GitHub search qualifiers:
     /// - `is:open` / `is:closed` / `is:merged` — filter by state
     /// - `head:BRANCH` or `head:PREFIX*` — filter by head branch (glob prefix with `*`)
     /// - `base:BRANCH` — filter by exact base branch name
+    /// - `label:NAME` — filter by label name (exact match)
     ///
     /// # Parameters
     /// - `owner`: Repository owner name
@@ -294,94 +476,6 @@ pub trait GitHubOperations: GitOperations + Send + Sync {
         release_id: u64,
         params: UpdateReleaseParams,
     ) -> CoreResult<Release>;
-
-    /// Create a new branch pointing to the given commit SHA
-    ///
-    /// Creates a new Git branch (ref) in the repository at the specified commit.
-    ///
-    /// # Parameters
-    /// - `owner`: Repository owner name
-    /// - `repo`: Repository name
-    /// - `branch_name`: Name of the new branch (without `refs/heads/` prefix)
-    /// - `sha`: Commit SHA the branch should initially point to
-    ///
-    /// # Returns
-    /// `Ok(())` on success
-    ///
-    /// # Errors
-    /// - `CoreError::Conflict` - A branch with this name already exists (HTTP 422)
-    /// - `CoreError::GitHub` - API communication failed
-    /// - `CoreError::InvalidInput` - Invalid branch name or SHA
-    async fn create_branch(
-        &self,
-        owner: &str,
-        repo: &str,
-        branch_name: &str,
-        sha: &str,
-    ) -> CoreResult<()>;
-
-    /// Delete a branch
-    ///
-    /// Removes the named branch (ref) from the repository. This is a destructive
-    /// operation; the commits remain accessible through other refs or by SHA.
-    ///
-    /// # Parameters
-    /// - `owner`: Repository owner name
-    /// - `repo`: Repository name
-    /// - `branch_name`: Name of the branch to delete (without `refs/heads/` prefix)
-    ///
-    /// # Returns
-    /// `Ok(())` on success
-    ///
-    /// # Errors
-    /// - `CoreError::NotFound` - Branch does not exist
-    /// - `CoreError::GitHub` - API communication failed
-    async fn delete_branch(&self, owner: &str, repo: &str, branch_name: &str) -> CoreResult<()>;
-
-    /// Get the permission level a specific user has on a repository
-    ///
-    /// Used to authorise PR comment commands: only collaborators with `Write`,
-    /// `Maintain`, or `Admin` access may issue commands.
-    ///
-    /// # Parameters
-    /// - `owner`: Repository owner name
-    /// - `repo`: Repository name
-    /// - `username`: GitHub login of the user to check
-    ///
-    /// # Returns
-    /// The user's [`CollaboratorPermission`] level
-    ///
-    /// # Errors
-    /// - `CoreError::GitHub` - API communication failed
-    /// - `CoreError::NotFound` - User is not a collaborator on the repository
-    async fn get_collaborator_permission(
-        &self,
-        owner: &str,
-        repo: &str,
-        username: &str,
-    ) -> CoreResult<CollaboratorPermission>;
-
-    /// Post a comment on an issue or pull request
-    ///
-    /// # Parameters
-    /// - `owner`: Repository owner name
-    /// - `repo`: Repository name
-    /// - `issue_number`: Issue or pull request number to comment on
-    /// - `body`: Comment body (Markdown supported)
-    ///
-    /// # Returns
-    /// `Ok(())` on success
-    ///
-    /// # Errors
-    /// - `CoreError::NotFound` - Issue or PR does not exist
-    /// - `CoreError::GitHub` - API communication failed
-    async fn create_issue_comment(
-        &self,
-        owner: &str,
-        repo: &str,
-        issue_number: u64,
-        body: &str,
-    ) -> CoreResult<()>;
 }
 
 // Note: Git commit information is now provided by GitOperations trait
@@ -432,6 +526,19 @@ pub struct GitUser {
     pub login: Option<String>,
     /// User name
     pub name: String,
+}
+
+/// A GitHub label applied to an issue or pull request.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Label {
+    /// Label ID
+    pub id: u64,
+    /// Label name (e.g. `rr:override-major`)
+    pub name: String,
+    /// Label colour as a 6-character hex string without the leading `#`
+    pub color: String,
+    /// Optional human-readable description
+    pub description: Option<String>,
 }
 
 /// Pull request information
