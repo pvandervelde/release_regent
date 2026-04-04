@@ -50,6 +50,10 @@ struct TestState {
     commenter_permission: Option<CollaboratorPermission>,
     /// Labels keyed by PR/issue number for `list_pr_labels`.
     pr_labels: HashMap<u64, Vec<Label>>,
+    /// When `true`, the next `add_labels` call returns a `CoreError::GitHub` error.
+    next_add_labels_error: bool,
+    /// When `true`, every `remove_label` call returns a `CoreError::Network` error.
+    all_remove_label_network_error: bool,
 }
 
 #[derive(Clone, Default)]
@@ -107,6 +111,18 @@ impl TestGitHub {
     /// Pre-populate labels for a specific PR/issue number.
     async fn with_pr_labels(self, pr_number: u64, labels: Vec<Label>) -> Self {
         self.state.lock().await.pr_labels.insert(pr_number, labels);
+        self
+    }
+
+    /// Make the next `add_labels` call return a `CoreError::GitHub` error.
+    async fn with_next_add_labels_error(self) -> Self {
+        self.state.lock().await.next_add_labels_error = true;
+        self
+    }
+
+    /// Make all `remove_label` calls return a `CoreError::Network` error.
+    async fn with_all_remove_label_network_error(self) -> Self {
+        self.state.lock().await.all_remove_label_network_error = true;
         self
     }
 
@@ -399,6 +415,13 @@ impl GitHubOperations for TestGitHub {
         labels: &[&str],
     ) -> CoreResult<()> {
         let mut st = self.state.lock().await;
+        if st.next_add_labels_error {
+            st.next_add_labels_error = false;
+            return Err(CoreError::github(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "Simulated add_labels failure",
+            )));
+        }
         let entry = st.pr_labels.entry(pr_number).or_default();
         for &name in labels {
             if !entry.iter().any(|l| l.name == name) {
@@ -421,6 +444,9 @@ impl GitHubOperations for TestGitHub {
         label_name: &str,
     ) -> CoreResult<()> {
         let mut st = self.state.lock().await;
+        if st.all_remove_label_network_error {
+            return Err(CoreError::network("Simulated remove_label network failure"));
+        }
         if let Some(labels) = st.pr_labels.get_mut(&pr_number) {
             labels.retain(|l| l.name != label_name);
         }
@@ -1387,5 +1413,193 @@ async fn test_process_set_version_proceeds_with_empty_changelog_when_search_fail
         comments[0].1.contains('✅'),
         "expected ✅ confirmation even after search failure, got: {}",
         comments[0].1
+    );
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// handle_release_bump error-path tests (spec §9 Minor #4)
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// When `add_labels` fails with a GitHub error, the error is propagated so
+/// the event loop can schedule a retry.
+#[tokio::test]
+async fn test_handle_release_bump_add_labels_failure_propagates_error() {
+    let github = TestGitHub::new().with_next_add_labels_error().await;
+    let processor = CommentCommandProcessor::new(default_config(true), &github);
+
+    let event = test_event(77, "!release major", "open");
+    let result = processor.process(&event).await;
+
+    // The error must be propagated (not swallowed as Ok).
+    assert!(
+        result.is_err(),
+        "expected Err when add_labels fails, got: {result:?}"
+    );
+    // No confirmation comment should have been posted.
+    assert!(
+        github.issue_comments().await.is_empty(),
+        "no confirmation comment should be posted when add_labels fails"
+    );
+}
+
+/// When `remove_label` fails with a network error, the failure is logged as a
+/// warning but `add_labels` is still called and a confirmation is still posted.
+#[tokio::test]
+async fn test_handle_release_bump_remove_label_failure_still_adds_new_label() {
+    // Pre-populate an existing override label so the remove path is exercised.
+    let existing_label = Label {
+        id: 1,
+        name: "rr:override-minor".to_string(),
+        color: "ededed".to_string(),
+        description: None,
+    };
+    let github = TestGitHub::new()
+        .with_pr_labels(33, vec![existing_label])
+        .await
+        .with_all_remove_label_network_error()
+        .await;
+    let processor = CommentCommandProcessor::new(default_config(true), &github);
+
+    let event = test_event(33, "!release major", "open");
+    let result = processor.process(&event).await;
+
+    // Despite remove_label failing, the overall operation should succeed.
+    assert!(
+        result.is_ok(),
+        "expected Ok even when remove_label fails, got: {result:?}"
+    );
+    // A confirmation comment must still be posted.
+    let comments = github.issue_comments().await;
+    assert_eq!(
+        comments.len(),
+        1,
+        "expected one confirmation comment despite remove_label failure"
+    );
+    assert!(
+        comments[0].1.contains("override recorded"),
+        "confirmation comment should confirm override, got: {}",
+        comments[0].1
+    );
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// handle_set_version scope guard edge cases (spec §9 Minor #7)
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// `!set-version` posted on a PR whose head branch starts with `release/` but
+/// does NOT include a `/v` prefix (e.g. `release/some-branch`) must be rejected
+/// with a scope-guard comment. Only `release/v*` branches are accepted.
+#[tokio::test]
+async fn test_process_set_version_rejected_on_release_branch_without_v_prefix() {
+    // Build a PR whose head branch is "release/some-branch" (no "/v").
+    let now = Utc::now();
+    let r = stub_repo("acme", "app");
+    let non_versioned_release_pr = PullRequest {
+        number: 55,
+        title: "release: some-branch".to_string(),
+        body: None,
+        state: "open".to_string(),
+        draft: false,
+        created_at: now,
+        updated_at: now,
+        merged_at: None,
+        user: stub_user(),
+        head: PullRequestBranch {
+            ref_name: "release/some-branch".to_string(), // starts with "release/" but no "/v"
+            sha: "headsha".to_string(),
+            repo: stub_repo("acme", "app"),
+        },
+        base: PullRequestBranch {
+            ref_name: "main".to_string(),
+            sha: "basesha".to_string(),
+            repo: r,
+        },
+    };
+    let github = TestGitHub::new()
+        .with_tags(vec![make_semver_tag("v1.0.0")])
+        .await
+        .with_pr(non_versioned_release_pr)
+        .await;
+
+    let processor = CommentCommandProcessor::new(default_config(true), &github);
+    let event = test_event(55, "!set-version 2.0.0", "open");
+    let result = processor.process(&event).await;
+
+    assert!(
+        result.is_ok(),
+        "expected Ok (acknowledged), got: {result:?}"
+    );
+    let comments = github.issue_comments().await;
+    assert_eq!(
+        comments.len(),
+        1,
+        "expected one scope-rejection comment, got {comments:?}"
+    );
+    assert_eq!(comments[0].0, 55, "comment should be on PR #55");
+    assert!(
+        comments[0].1.contains("release PR"),
+        "rejection comment should mention release PR, got: {}",
+        comments[0].1
+    );
+    // Orchestrator must not have been called.
+    assert!(
+        github.created_prs().await.is_empty(),
+        "orchestrator must not be called on scope rejection"
+    );
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// handle_release_bump same-override repost test (spec §9 Minor #8)
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// When the same `!release patch` override is posted a second time on a PR
+/// that already carries `rr:override-patch`, the confirmation comment must use
+/// "replacing" wording to confirm re-application.
+#[tokio::test]
+async fn test_process_release_bump_same_override_reposted_shows_replacing_confirmation() {
+    let existing_patch_label = Label {
+        id: 1,
+        name: "rr:override-patch".to_string(),
+        color: "ededed".to_string(),
+        description: None,
+    };
+    let github = TestGitHub::new()
+        .with_pr_labels(66, vec![existing_patch_label])
+        .await;
+    let processor = CommentCommandProcessor::new(default_config(true), &github);
+
+    // Post `!release patch` again on a PR that already has rr:override-patch.
+    let event = test_event(66, "!release patch", "open");
+    let result = processor.process(&event).await;
+
+    assert!(result.is_ok(), "expected Ok, got: {result:?}");
+    let comments = github.issue_comments().await;
+    assert_eq!(
+        comments.len(),
+        1,
+        "expected one confirmation comment, got {comments:?}"
+    );
+    assert!(
+        comments[0].1.contains("replacing"),
+        "confirmation should mention 'replacing' when same override is reposted, got: {}",
+        comments[0].1
+    );
+    assert!(
+        comments[0].1.contains("patch"),
+        "confirmation should mention the bump kind, got: {}",
+        comments[0].1
+    );
+    // rr:override-patch must still be present after re-application.
+    let labels = github
+        .state
+        .lock()
+        .await
+        .pr_labels
+        .get(&66)
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        labels.iter().any(|l| l.name == "rr:override-patch"),
+        "rr:override-patch must be re-applied after repost, got: {labels:?}"
     );
 }

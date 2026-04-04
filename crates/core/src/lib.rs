@@ -815,16 +815,7 @@ where
             let labels = if merged_pr_number > 0 {
                 self.github_operations
                     .list_pr_labels(owner, repo, merged_pr_number)
-                    .await
-                    .unwrap_or_else(|e| {
-                        tracing::warn!(
-                            error = %e,
-                            merged_pr = merged_pr_number,
-                            correlation_id = %correlation_id,
-                            "Failed to read override labels from merged PR; proceeding without floor"
-                        );
-                        vec![]
-                    })
+                    .await?
             } else {
                 vec![]
             };

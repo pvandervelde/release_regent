@@ -39,13 +39,13 @@ use std::cmp::Ordering;
 
 use tracing::{debug, info, warn, Instrument};
 
+pub use crate::versioning::BumpKind;
 use crate::{
     release_orchestrator::{OrchestratorConfig, ReleaseOrchestrator},
     traits::{event_source::ProcessingEvent, github_operations::GitHubOperations},
     versioning::{resolve_current_version, SemanticVersion, VersionCalculator},
     CoreResult,
 };
-pub use crate::versioning::BumpKind;
 
 // ─────────────────────────────────────────────────────────────────────────────────
 // Label constants
@@ -242,14 +242,8 @@ impl<'a, G: GitHubOperations + Send + Sync> CommentCommandProcessor<'a, G> {
         match command {
             CommentCommand::Unknown => Ok(()),
             CommentCommand::ReleaseBump(kind) => {
-                self.handle_release_bump(
-                    owner,
-                    repo,
-                    issue_number,
-                    &kind,
-                    &event.correlation_id,
-                )
-                .await
+                self.handle_release_bump(owner, repo, issue_number, &kind, &event.correlation_id)
+                    .await
             }
             CommentCommand::SetVersion(pinned_version) => {
                 self.handle_set_version(
@@ -290,14 +284,11 @@ impl<'a, G: GitHubOperations + Send + Sync> CommentCommandProcessor<'a, G> {
 
         // Read current labels to detect a replacement (used in the confirmation
         // message).  Propagate errors so transient API failures cause a retry.
-        let current_labels = self
-            .github
-            .list_pr_labels(owner, repo, pr_number)
-            .await?;
+        let current_labels = self.github.list_pr_labels(owner, repo, pr_number).await?;
 
         let replaced_kind: Option<&str> = ALL_OVERRIDE_LABELS
             .iter()
-            .find(|&&l| l != new_label && current_labels.iter().any(|cl| cl.name == l))
+            .find(|&&l| current_labels.iter().any(|cl| cl.name == l))
             .copied();
 
         // Remove all existing override labels (idempotent; 404 → Ok).
@@ -336,9 +327,7 @@ impl<'a, G: GitHubOperations + Send + Sync> CommentCommandProcessor<'a, G> {
             BumpKind::Patch => "patch",
         };
         let body = if let Some(old_label) = replaced_kind {
-            let old_kind = old_label
-                .strip_prefix("rr:override-")
-                .unwrap_or(old_label);
+            let old_kind = old_label.strip_prefix("rr:override-").unwrap_or(old_label);
             format!(
                 "✅ **Release Regent**: `!release {kind_str}` override recorded \
                  (replacing previous `!release {old_kind}` override). When this PR \
@@ -460,7 +449,8 @@ impl<'a, G: GitHubOperations + Send + Sync> CommentCommandProcessor<'a, G> {
             .await?;
 
         let confirmation = Self::format_set_version_confirmation(pinned_version, &orch_result);
-        self.post_comment(owner, repo, pr_number, &confirmation).await
+        self.post_comment(owner, repo, pr_number, &confirmation)
+            .await
     }
 
     /// Fetch the changelog from the current open release PR, if one exists.
