@@ -510,9 +510,12 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
 
     /// Extract the changelog section from a PR body.
     ///
-    /// Returns everything between `## Changelog` (or the configured header) and
-    /// the next `##` heading (or end of string), trimmed.
+    /// Returns everything between the configured changelog header and the next
+    /// `##` heading (or end of string), trimmed.  Delegates to the public free
+    /// function [`extract_changelog_from_pr_body`].
     fn extract_changelog_from_body<'b>(&self, body: &'b str) -> &'b str {
+        // The free function returns an owned String; we extract a static slice
+        // from `body` directly to preserve the borrow lifetime.
         let header = &self.config.changelog_header;
         let Some(after_header) = body
             .find(header.as_str())
@@ -551,6 +554,51 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
         let version_str = branch.strip_prefix(&prefix)?;
         crate::versioning::VersionCalculator::parse_version(version_str).ok()
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Public free function: changelog extraction
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Extract the changelog section from a PR body string.
+///
+/// Scans `body` for the first occurrence of `changelog_header` (e.g.
+/// `"## Changelog"`) and returns the text between that header and the next
+/// `##` heading — or the end of the string if no further heading exists — with
+/// surrounding whitespace trimmed.
+///
+/// Returns an empty string when `changelog_header` is not found in `body`.
+///
+/// # Parameters
+///
+/// - `body`: The full PR body (markdown string) to scan.
+/// - `changelog_header`: The exact header string used to delimit the changelog
+///   section.  Must match the value used when creating release PRs (default:
+///   `"## Changelog"`).
+///
+/// # Examples
+///
+/// ```rust
+/// use release_regent_core::release_orchestrator::extract_changelog_from_pr_body;
+///
+/// let body = "## Changelog\n\n- feat: add widget [abc123]\n\n## Notes\n\nSee wiki.";
+/// let changelog = extract_changelog_from_pr_body(body, "## Changelog");
+/// assert_eq!(changelog, "- feat: add widget [abc123]");
+///
+/// let missing = extract_changelog_from_pr_body("No header here.", "## Changelog");
+/// assert_eq!(missing, "");
+/// ```
+#[must_use]
+pub fn extract_changelog_from_pr_body(body: &str, changelog_header: &str) -> String {
+    let Some(after_header) = body
+        .find(changelog_header)
+        .map(|i| &body[i + changelog_header.len()..])
+    else {
+        return String::new();
+    };
+
+    let end = after_header.find("\n##").unwrap_or(after_header.len());
+    after_header[..end].trim().to_string()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

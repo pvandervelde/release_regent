@@ -919,6 +919,31 @@ where
                 }
             }
 
+            // ── Consume override label: remove from the now-merged feature PR ──
+            //
+            // Remove all rr:override-* labels from the feature PR that was just
+            // merged. This is idempotent (remove_label treats 404 as Ok) and
+            // runs unconditionally to clean up any label that may have been
+            // applied by a previous `!release` command on this PR.
+            if floor_kind.is_some() {
+                use comment_command_processor::ALL_OVERRIDE_LABELS;
+                for &label in ALL_OVERRIDE_LABELS {
+                    if let Err(e) = self
+                        .github_operations
+                        .remove_label(owner, repo, merged_pr_number, label)
+                        .await
+                    {
+                        tracing::warn!(
+                            error = %e,
+                            merged_pr = merged_pr_number,
+                            label,
+                            correlation_id = %correlation_id,
+                            "Failed to remove consumed override label; continuing"
+                        );
+                    }
+                }
+            }
+
             Ok(orch_result)
         }
     }
