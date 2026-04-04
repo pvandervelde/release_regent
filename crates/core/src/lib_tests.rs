@@ -1358,6 +1358,15 @@ async fn test_handle_merged_feature_pr_with_override_major_label_applies_floor()
         "audit comment should mention effective version 2.0.0, got: {}",
         audit.1
     );
+
+    // The consumed override label must be removed from the merged feature PR.
+    let removed = github.removed_labels.lock().await;
+    assert!(
+        removed
+            .iter()
+            .any(|(pr, label)| *pr == 7 && label == "rr:override-major"),
+        "expected rr:override-major to be removed from merged feature PR #7, got: {removed:?}"
+    );
 }
 
 /// When the merged feature PR has no override labels, the calculated version
@@ -1505,5 +1514,164 @@ async fn test_handle_merged_release_pr_clears_stale_override_labels_from_open_pr
             .iter()
             .any(|(_, body)| body.contains("cleared because a new release was published")),
         "cleanup comment should explain why the label was cleared"
+    );
+}
+
+/// When the merged feature PR carries an `rr:override-minor` label, the
+/// calculated patch version is raised to the next minor version.
+#[tokio::test]
+async fn test_handle_merged_feature_pr_with_override_minor_label_applies_floor() {
+    // Current released tag: v1.2.3  →  current_version = Some(1.2.3)
+    // Version calculator produces 1.2.4 (patch bump).
+    // Floor = Minor  →  apply_bump_floor(1.2.3, 1.2.4, Minor) = 1.3.0
+    let tag = GitTag {
+        name: "v1.2.3".to_string(),
+        target_sha: "a".repeat(40),
+        tag_type: GitTagType::Lightweight,
+        message: None,
+        tagger: None,
+        created_at: None,
+    };
+    let override_label = Label {
+        id: 2,
+        name: "rr:override-minor".to_string(),
+        color: "0075ca".to_string(),
+        description: None,
+    };
+    let github = TestGitHubForLib::new_empty()
+        .with_tags(vec![tag])
+        .with_pr_labels(10, vec![override_label]);
+
+    let config = TestConfigForLib;
+    let version_calc = TestVersionCalcForLib::returning("1.2.4");
+
+    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc);
+
+    let event = ProcessingEvent {
+        event_id: "evt-minor-floor".into(),
+        correlation_id: "corr-minor-floor".into(),
+        event_type: EventType::PullRequestMerged,
+        repository: RepositoryInfo {
+            owner: "acme".into(),
+            name: "app".into(),
+            default_branch: "main".into(),
+        },
+        payload: serde_json::json!({
+            "pull_request": {
+                "head": { "ref": "feat/minor-feature" },
+                "base": { "ref": "main" },
+                "number": 10,
+                "merge_commit_sha": "e".repeat(40)
+            }
+        }),
+        received_at: Utc::now(),
+        source: EventSourceKind::Webhook,
+    };
+
+    let result = processor.handle_merged_pull_request(&event).await.unwrap();
+
+    // Release PR must be at 1.3.0 (minor floor applied), not 1.2.4.
+    match &result {
+        release_orchestrator::OrchestratorResult::Created { branch_name, .. } => {
+            assert!(
+                branch_name.contains("1.3.0"),
+                "branch should reference 1.3.0 (minor floor applied), got: {branch_name}"
+            );
+        }
+        other => panic!("expected Created, got {other:?}"),
+    }
+
+    // The consumed rr:override-minor label must be removed from PR #10 (task 9.20.5).
+    let removed = github.removed_labels.lock().await;
+    assert!(
+        removed
+            .iter()
+            .any(|(pr, label)| *pr == 10 && label == "rr:override-minor"),
+        "expected rr:override-minor to be removed from merged PR #10, got: {removed:?}"
+    );
+}
+
+/// When the merged feature PR has `rr:override-patch` and the calculated version
+/// is already a minor bump (which exceeds the patch floor), the calculated version
+/// is used unchanged and the label is still removed.
+#[tokio::test]
+async fn test_handle_merged_feature_pr_with_patch_floor_no_effect_when_calculated_exceeds() {
+    // Current released tag: v1.2.3  →  current_version = Some(1.2.3)
+    // Version calculator produces 1.3.0 (minor bump).
+    // Floor = Patch  →  floor_version = 1.2.4, which is LESS than 1.3.0.
+    // Effective = max(1.3.0, 1.2.4) = 1.3.0 (unchanged).
+    let tag = GitTag {
+        name: "v1.2.3".to_string(),
+        target_sha: "a".repeat(40),
+        tag_type: GitTagType::Lightweight,
+        message: None,
+        tagger: None,
+        created_at: None,
+    };
+    let override_label = Label {
+        id: 3,
+        name: "rr:override-patch".to_string(),
+        color: "e4e669".to_string(),
+        description: None,
+    };
+    let github = TestGitHubForLib::new_empty()
+        .with_tags(vec![tag])
+        .with_pr_labels(11, vec![override_label]);
+
+    let config = TestConfigForLib;
+    let version_calc = TestVersionCalcForLib::returning("1.3.0");
+
+    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc);
+
+    let event = ProcessingEvent {
+        event_id: "evt-patch-floor".into(),
+        correlation_id: "corr-patch-floor".into(),
+        event_type: EventType::PullRequestMerged,
+        repository: RepositoryInfo {
+            owner: "acme".into(),
+            name: "app".into(),
+            default_branch: "main".into(),
+        },
+        payload: serde_json::json!({
+            "pull_request": {
+                "head": { "ref": "feat/patch-feature" },
+                "base": { "ref": "main" },
+                "number": 11,
+                "merge_commit_sha": "f".repeat(40)
+            }
+        }),
+        received_at: Utc::now(),
+        source: EventSourceKind::Webhook,
+    };
+
+    let result = processor.handle_merged_pull_request(&event).await.unwrap();
+
+    // Release PR must be at 1.3.0 (patch floor has no effect on a minor bump).
+    match &result {
+        release_orchestrator::OrchestratorResult::Created { branch_name, .. } => {
+            assert!(
+                branch_name.contains("1.3.0"),
+                "branch should remain 1.3.0 (patch floor has no effect), got: {branch_name}"
+            );
+        }
+        other => panic!("expected Created, got {other:?}"),
+    }
+
+    // No audit comment should be posted because the floor had no effect.
+    let comments = github.issue_comments.lock().await;
+    assert!(
+        comments
+            .iter()
+            .all(|(_, body)| !body.contains("Version floor applied")),
+        "no audit comment should be posted when floor has no effect"
+    );
+
+    // Even though the floor had no effect, the label must still be removed (task 9.20.5).
+    let removed = github.removed_labels.lock().await;
+    assert!(
+        removed
+            .iter()
+            .any(|(pr, label)| *pr == 11 && label == "rr:override-patch"),
+        "expected rr:override-patch to be removed from merged PR #11, got: {removed:?}"
     );
 }

@@ -33,6 +33,8 @@ struct TestState {
     prs_by_number: HashMap<u64, PullRequest>,
     /// PRs returned by `search_pull_requests` (drives `ReleaseOrchestrator`).
     search_results: Vec<PullRequest>,
+    /// When `true`, `search_pull_requests` returns a `CoreError::Network` error.
+    search_returns_error: bool,
     /// Whether the next `create_branch` call should return `CoreError::Conflict`.
     next_create_branch_conflict: bool,
     /// Recorded `create_issue_comment` calls: `(issue_number, body)`.
@@ -81,6 +83,12 @@ impl TestGitHub {
     /// Pre-load search results for `ReleaseOrchestrator::search_for_existing_release_pr`.
     async fn with_search_results(self, prs: Vec<PullRequest>) -> Self {
         self.state.lock().await.search_results = prs;
+        self
+    }
+
+    /// Make all `search_pull_requests` calls return a network error.
+    async fn with_search_error(self) -> Self {
+        self.state.lock().await.search_returns_error = true;
         self
     }
 
@@ -276,7 +284,14 @@ impl GitHubOperations for TestGitHub {
         _repo: &str,
         _query: &str,
     ) -> CoreResult<Vec<PullRequest>> {
-        Ok(self.state.lock().await.search_results.clone())
+        let mut st = self.state.lock().await;
+        if st.search_returns_error {
+            // One-shot: fail once, then succeed on subsequent calls so the
+            // orchestrator's internal search can still work.
+            st.search_returns_error = false;
+            return Err(CoreError::network("Simulated search_pull_requests failure"));
+        }
+        Ok(st.search_results.clone())
     }
 
     async fn update_pull_request(
@@ -503,6 +518,40 @@ fn make_release_pr(number: u64, base_sha: &str) -> PullRequest {
         base: PullRequestBranch {
             ref_name: "main".to_string(),
             sha: base_sha.to_string(),
+            repo: r,
+        },
+    }
+}
+
+/// Build a release PR whose head branch is `release/v{version}` and whose body
+/// contains a `## Changelog` section with `changelog_content`.
+fn make_release_pr_with_changelog(
+    number: u64,
+    version: &str,
+    changelog_content: &str,
+) -> PullRequest {
+    let now = Utc::now();
+    let r = stub_repo("acme", "app");
+    PullRequest {
+        number,
+        title: format!("release: v{version}"),
+        body: Some(format!(
+            "## Changelog\n\n{changelog_content}\n\n## Notes\n\nAutomated."
+        )),
+        state: "open".to_string(),
+        draft: false,
+        created_at: now,
+        updated_at: now,
+        merged_at: None,
+        user: stub_user(),
+        head: PullRequestBranch {
+            ref_name: format!("release/v{version}"),
+            sha: "headsha".to_string(),
+            repo: stub_repo("acme", "app"),
+        },
+        base: PullRequestBranch {
+            ref_name: "main".to_string(),
+            sha: "basesha".to_string(),
             repo: r,
         },
     }
@@ -768,8 +817,19 @@ async fn test_process_set_version_accepted_when_greater_than_current_released_ta
     let result = processor.process(&event).await;
 
     assert!(result.is_ok());
-    // No rejection comment should have been posted.
-    assert!(github.issue_comments().await.is_empty());
+    // A ✅ confirmation comment must be posted after successful orchestration.
+    let comments = github.issue_comments().await;
+    assert_eq!(
+        comments.len(),
+        1,
+        "expected one confirmation comment, got {comments:?}"
+    );
+    assert_eq!(comments[0].0, 42);
+    assert!(
+        comments[0].1.contains('✅'),
+        "expected confirmation (✅), got: {}",
+        comments[0].1
+    );
     // The orchestrator should have created a new release PR.
     let prs = github.created_prs().await;
     assert_eq!(prs.len(), 1);
@@ -791,7 +851,14 @@ async fn test_process_set_version_accepted_when_no_existing_tags_first_release_p
     let result = processor.process(&event).await;
 
     assert!(result.is_ok());
-    assert!(github.issue_comments().await.is_empty());
+    // A ✅ confirmation comment must be posted after successful orchestration.
+    let comments = github.issue_comments().await;
+    assert_eq!(
+        comments.len(),
+        1,
+        "expected one confirmation comment, got {comments:?}"
+    );
+    assert!(comments[0].1.contains('✅'));
     let prs = github.created_prs().await;
     assert_eq!(prs.len(), 1);
     assert!(prs[0].head.starts_with("release/v1.0.0"));
@@ -811,7 +878,14 @@ async fn test_process_set_version_accepted_when_no_tags_and_version_is_zero_zero
     let result = processor.process(&event).await;
 
     assert!(result.is_ok());
-    assert!(github.issue_comments().await.is_empty());
+    // A ✅ confirmation comment must be posted after successful orchestration.
+    let comments = github.issue_comments().await;
+    assert_eq!(
+        comments.len(),
+        1,
+        "expected one confirmation comment, got {comments:?}"
+    );
+    assert!(comments[0].1.contains('✅'));
 }
 
 #[tokio::test]
@@ -1117,5 +1191,201 @@ async fn test_process_set_version_rejected_when_on_non_release_pr_branch() {
     assert!(
         github.created_prs().await.is_empty(),
         "orchestrator must not be called on scope rejection"
+    );
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// !set-version changelog preservation & confirmation tests (task 9.30)
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// BA-28a: !set-version when no existing release PR exists → orchestrator is
+/// called with an empty changelog and a ✅ Created confirmation comment is posted.
+#[tokio::test]
+async fn test_process_set_version_posts_created_confirmation_when_no_existing_release_pr() {
+    // No tags, no existing release PRs → first-release path.
+    // search_results is empty → no existing changelog → orchestrator receives "".
+    let github = TestGitHub::new()
+        .with_tags(vec![])
+        .await
+        .with_pr(make_release_pr(42, "deadbeef"))
+        .await;
+
+    let processor = CommentCommandProcessor::new(default_config(true), &github);
+    let event = test_event(42, "!set-version 1.0.0", "open");
+    let result = processor.process(&event).await;
+
+    assert!(result.is_ok(), "expected Ok, got: {result:?}");
+    let comments = github.issue_comments().await;
+    assert_eq!(
+        comments.len(),
+        1,
+        "expected exactly one confirmation comment"
+    );
+    assert_eq!(comments[0].0, 42, "comment should be on PR 42");
+    assert!(
+        comments[0].1.contains('✅'),
+        "comment should contain ✅, got: {}",
+        comments[0].1
+    );
+    assert!(
+        comments[0].1.contains("1.0.0"),
+        "comment should mention the pinned version, got: {}",
+        comments[0].1
+    );
+    // Release PR must have been created.
+    let prs = github.created_prs().await;
+    assert_eq!(prs.len(), 1, "expected one release PR to be created");
+}
+
+/// BA-28b: !set-version when an existing release PR has the same version →
+/// real changelog is extracted and passed to the orchestrator, ✅ Updated comment.
+#[tokio::test]
+async fn test_process_set_version_preserves_existing_changelog_on_update_path() {
+    // The existing release PR already targets 2.0.0 (same as pinned version).
+    // The orchestrator will update its body and return OrchestratorResult::Updated.
+    let existing_changelog = "- feat: add widget [aabbccdd]";
+    let existing_release_pr = make_release_pr_with_changelog(100, "2.0.0", existing_changelog);
+
+    let github = TestGitHub::new()
+        .with_tags(vec![make_semver_tag("v1.0.0")])
+        .await
+        .with_pr(existing_release_pr.clone())
+        .await
+        .with_search_results(vec![existing_release_pr])
+        .await;
+
+    let processor = CommentCommandProcessor::new(default_config(true), &github);
+    // Set the pinned version to 2.0.0 — same as the existing release PR.
+    let event = test_event(100, "!set-version 2.0.0", "open");
+    let result = processor.process(&event).await;
+
+    assert!(result.is_ok(), "expected Ok, got: {result:?}");
+    let comments = github.issue_comments().await;
+    assert_eq!(comments.len(), 1, "expected one confirmation comment");
+    assert!(
+        comments[0].1.contains('✅'),
+        "expected ✅ confirmation, got: {}",
+        comments[0].1
+    );
+    assert!(
+        comments[0].1.contains("2.0.0"),
+        "comment should mention the version, got: {}",
+        comments[0].1
+    );
+    // Because an existing PR at the same version was found, orchestrate()
+    // updates it rather than creating.  Verify no new PR was created.
+    assert!(
+        github.created_prs().await.is_empty(),
+        "no new PR should be created when updating existing version"
+    );
+}
+
+/// !set-version raises the version on an existing release PR →
+/// real changelog preserved, ✅ Renamed confirmation comment posted.
+#[tokio::test]
+async fn test_process_set_version_posts_renamed_confirmation_when_version_raised() {
+    // Existing release PR is at 1.5.0; pinning to 2.0.0 will trigger a rename.
+    let existing_changelog = "- feat: feature A [11223344]";
+    let existing_release_pr = make_release_pr_with_changelog(101, "1.5.0", existing_changelog);
+
+    let github = TestGitHub::new()
+        .with_tags(vec![make_semver_tag("v1.0.0")])
+        .await
+        .with_pr(existing_release_pr.clone())
+        .await
+        .with_search_results(vec![existing_release_pr])
+        .await;
+
+    let processor = CommentCommandProcessor::new(default_config(true), &github);
+    let event = test_event(101, "!set-version 2.0.0", "open");
+    let result = processor.process(&event).await;
+
+    assert!(result.is_ok(), "expected Ok, got: {result:?}");
+    let comments = github.issue_comments().await;
+    assert_eq!(comments.len(), 1, "expected one confirmation comment");
+    assert!(
+        comments[0].1.contains('✅'),
+        "expected ✅ confirmation, got: {}",
+        comments[0].1
+    );
+    // The rename path closes the old PR and creates a new one at the higher version.
+    let prs = github.created_prs().await;
+    assert_eq!(
+        prs.len(),
+        1,
+        "expected one new release PR created for the renamed version"
+    );
+    assert!(
+        prs[0].head.starts_with("release/v2.0.0"),
+        "new PR should be at v2.0.0, got: {}",
+        prs[0].head
+    );
+}
+
+/// BA-29: !set-version below existing release PR version → orchestrator returns
+/// NoOp, a ⚠️ warning comment is posted, no PR modification occurs.
+#[tokio::test]
+async fn test_process_set_version_posts_noop_warning_when_existing_pr_has_higher_version() {
+    // Existing release PR is at 3.0.0; pinned to 2.0.0 → orchestrator NoOp.
+    let existing_release_pr =
+        make_release_pr_with_changelog(102, "3.0.0", "- feat: big thing [deadbeef]");
+
+    let github = TestGitHub::new()
+        .with_tags(vec![make_semver_tag("v1.0.0")])
+        .await
+        .with_pr(existing_release_pr.clone())
+        .await
+        .with_search_results(vec![existing_release_pr])
+        .await;
+
+    let processor = CommentCommandProcessor::new(default_config(true), &github);
+    let event = test_event(102, "!set-version 2.0.0", "open");
+    let result = processor.process(&event).await;
+
+    assert!(result.is_ok(), "expected Ok, got: {result:?}");
+    let comments = github.issue_comments().await;
+    assert_eq!(comments.len(), 1, "expected one ⚠️ comment");
+    assert!(
+        comments[0].1.contains('⚠'),
+        "expected ⚠️ warning, got: {}",
+        comments[0].1
+    );
+    assert!(
+        comments[0].1.contains("2.0.0"),
+        "comment should mention the attempted version, got: {}",
+        comments[0].1
+    );
+    // No new PR should have been created.
+    assert!(github.created_prs().await.is_empty());
+}
+
+/// When `search_pull_requests` fails during changelog lookup, the fallback is
+/// an empty changelog; orchestration still proceeds and a ✅ comment is posted.
+#[tokio::test]
+async fn test_process_set_version_proceeds_with_empty_changelog_when_search_fails() {
+    let github = TestGitHub::new()
+        .with_tags(vec![])
+        .await
+        .with_pr(make_release_pr(42, "abc123"))
+        .await
+        .with_search_error()
+        .await;
+
+    let processor = CommentCommandProcessor::new(default_config(true), &github);
+    let event = test_event(42, "!set-version 1.0.0", "open");
+    let result = processor.process(&event).await;
+
+    // Must succeed despite search failure.
+    assert!(
+        result.is_ok(),
+        "expected Ok even when search fails, got: {result:?}"
+    );
+    // Must still post a confirmation comment.
+    let comments = github.issue_comments().await;
+    assert_eq!(comments.len(), 1, "expected one confirmation comment");
+    assert!(
+        comments[0].1.contains('✅'),
+        "expected ✅ confirmation even after search failure, got: {}",
+        comments[0].1
     );
 }

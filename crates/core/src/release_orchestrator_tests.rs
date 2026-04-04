@@ -976,3 +976,58 @@ async fn test_update_release_pr_does_not_patch_title_when_unchanged() {
         updates[0].1
     );
 }
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// extract_changelog_from_pr_body — free-function unit tests (task 9.30.1)
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+#[test]
+fn test_extract_changelog_from_pr_body_returns_section_content() {
+    let body = "## Changelog\n\n- feat: add widget [abc123]\n\n## Notes\n\nSee wiki.";
+    let result = extract_changelog_from_pr_body(body, "## Changelog");
+    assert_eq!(result, "- feat: add widget [abc123]");
+}
+
+#[test]
+fn test_extract_changelog_from_pr_body_returns_empty_when_header_not_found() {
+    let body = "# Release v1.0.0\n\nSome description without a changelog header.";
+    let result = extract_changelog_from_pr_body(body, "## Changelog");
+    assert_eq!(result, "");
+}
+
+#[test]
+fn test_extract_changelog_from_pr_body_returns_remainder_when_no_next_heading() {
+    let body = "## Changelog\n\n- fix: patch issue [def456]\n- feat: new thing [ghi789]";
+    let result = extract_changelog_from_pr_body(body, "## Changelog");
+    assert_eq!(
+        result,
+        "- fix: patch issue [def456]\n- feat: new thing [ghi789]"
+    );
+}
+
+#[test]
+fn test_extract_changelog_from_pr_body_trims_surrounding_whitespace() {
+    let body = "## Changelog\n\n\n  - feat: widget [abc]\n\n\n";
+    let result = extract_changelog_from_pr_body(body, "## Changelog");
+    assert_eq!(result, "- feat: widget [abc]");
+}
+
+#[test]
+fn test_extract_changelog_from_pr_body_handles_custom_header() {
+    let body = "## Release Notes\n\n- feat: something\n\n## Changelog\n\n- other";
+    let result = extract_changelog_from_pr_body(body, "## Release Notes");
+    assert_eq!(result, "- feat: something");
+}
+
+#[test]
+fn test_extract_changelog_from_pr_body_empty_section_returns_empty() {
+    let body = "## Changelog\n\n## Notes\n\nSome notes.";
+    let result = extract_changelog_from_pr_body(body, "## Changelog");
+    assert_eq!(result, "");
+}
+
+#[test]
+fn test_extract_changelog_from_pr_body_empty_body_returns_empty() {
+    let result = extract_changelog_from_pr_body("", "## Changelog");
+    assert_eq!(result, "");
+}
