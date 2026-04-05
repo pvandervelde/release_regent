@@ -854,6 +854,13 @@ impl GitHubOperations for MockGitHubOperations {
             return Err(error);
         }
 
+        if let Some(msg) = self.method_errors.get(method) {
+            let error = CoreError::network(msg.clone());
+            self.record_call(method, &params_str, CallResult::Error(error.to_string()))
+                .await;
+            return Err(error);
+        }
+
         let mut state_filter: Option<String> = None;
         let mut head_filter: Option<String> = None;
         let mut base_filter: Option<String> = None;
@@ -901,11 +908,12 @@ impl GitHubOperations for MockGitHubOperations {
             .filter(|pr| {
                 label_filter.as_ref().map_or(true, |l| {
                     let key = format!("{owner}/{repo}/{}", pr.number);
-                    let pr_labels = self.pr_labels.try_read();
-                    pr_labels.as_deref().map_or(false, |map| {
-                        map.get(&key)
-                            .map_or(false, |labels| labels.iter().any(|lbl| lbl.name == *l))
-                    })
+                    // blocking_read() is safe here: this mock is test-only and
+                    // no concurrent writer can be active inside a synchronous
+                    // iterator closure.
+                    let map = self.pr_labels.blocking_read();
+                    map.get(&key)
+                        .map_or(false, |labels| labels.iter().any(|lbl| lbl.name == *l))
                 })
             })
             .collect();
@@ -1046,9 +1054,8 @@ impl GitHubOperations for MockGitHubOperations {
         labels: &[&str],
     ) -> CoreResult<()> {
         let method = "add_labels";
-        let params_str = format!(
-            "owner={owner}, repo={repo}, issue={issue_number}, labels={labels:?}"
-        );
+        let params_str =
+            format!("owner={owner}, repo={repo}, issue={issue_number}, labels={labels:?}");
 
         self.check_quota().await?;
         self.simulate_latency().await;
@@ -1097,9 +1104,8 @@ impl GitHubOperations for MockGitHubOperations {
         label_name: &str,
     ) -> CoreResult<()> {
         let method = "remove_label";
-        let params_str = format!(
-            "owner={owner}, repo={repo}, issue={issue_number}, label={label_name}"
-        );
+        let params_str =
+            format!("owner={owner}, repo={repo}, issue={issue_number}, label={label_name}");
 
         self.check_quota().await?;
         self.simulate_latency().await;
@@ -1138,8 +1144,7 @@ impl GitHubOperations for MockGitHubOperations {
         issue_number: u64,
     ) -> CoreResult<Vec<Label>> {
         let method = "list_pr_labels";
-        let params_str =
-            format!("owner={owner}, repo={repo}, issue={issue_number}");
+        let params_str = format!("owner={owner}, repo={repo}, issue={issue_number}");
 
         self.check_quota().await?;
         self.simulate_latency().await;
@@ -1159,7 +1164,13 @@ impl GitHubOperations for MockGitHubOperations {
         }
 
         let key = format!("{owner}/{repo}/{issue_number}");
-        let labels = self.pr_labels.read().await.get(&key).cloned().unwrap_or_default();
+        let labels = self
+            .pr_labels
+            .read()
+            .await
+            .get(&key)
+            .cloned()
+            .unwrap_or_default();
 
         self.record_call(method, &params_str, CallResult::Success)
             .await;
