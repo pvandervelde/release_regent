@@ -1385,33 +1385,33 @@ async fn test_process_set_version_posts_noop_warning_when_existing_pr_has_higher
     assert!(github.created_prs().await.is_empty());
 }
 
-/// When `search_pull_requests` fails during changelog lookup, the fallback is
-/// an empty changelog; orchestration still proceeds and a ✅ comment is posted.
+/// When the PR body is `None` (no pre-existing changelog content), the
+/// changelog defaults to empty; orchestration still proceeds and a ✅ comment
+/// is posted.  This exercises the `pr.body.as_deref().unwrap_or("")` fallback
+/// that replaced the former `fetch_existing_release_changelog` helper.
 #[tokio::test]
-async fn test_process_set_version_proceeds_with_empty_changelog_when_search_fails() {
+async fn test_process_set_version_proceeds_with_empty_changelog_when_pr_body_is_none() {
     let github = TestGitHub::new()
         .with_tags(vec![])
         .await
-        .with_pr(make_release_pr(42, "abc123"))
-        .await
-        .with_search_error()
+        .with_pr(make_release_pr(42, "abc123")) // body: None
         .await;
 
     let processor = CommentCommandProcessor::new(default_config(true), &github);
     let event = test_event(42, "!set-version 1.0.0", "open");
     let result = processor.process(&event).await;
 
-    // Must succeed despite search failure.
+    // Must succeed even though there is no existing changelog body.
     assert!(
         result.is_ok(),
-        "expected Ok even when search fails, got: {result:?}"
+        "expected Ok when pr.body is None, got: {result:?}"
     );
     // Must still post a confirmation comment.
     let comments = github.issue_comments().await;
     assert_eq!(comments.len(), 1, "expected one confirmation comment");
     assert!(
         comments[0].1.contains('✅'),
-        "expected ✅ confirmation even after search failure, got: {}",
+        "expected ✅ confirmation, got: {}",
         comments[0].1
     );
 }
@@ -1554,9 +1554,9 @@ async fn test_process_set_version_rejected_on_release_branch_without_v_prefix() 
 
 /// When the same `!release patch` override is posted a second time on a PR
 /// that already carries `rr:override-patch`, the confirmation comment must use
-/// "replacing" wording to confirm re-application.
+/// "re-recorded" wording (not "replacing") to confirm idempotent re-application.
 #[tokio::test]
-async fn test_process_release_bump_same_override_reposted_shows_replacing_confirmation() {
+async fn test_process_release_bump_same_override_reposted_shows_rererecorded_confirmation() {
     let existing_patch_label = Label {
         id: 1,
         name: "rr:override-patch".to_string(),
@@ -1580,8 +1580,8 @@ async fn test_process_release_bump_same_override_reposted_shows_replacing_confir
         "expected one confirmation comment, got {comments:?}"
     );
     assert!(
-        comments[0].1.contains("replacing"),
-        "confirmation should mention 'replacing' when same override is reposted, got: {}",
+        comments[0].1.contains("re-recorded"),
+        "confirmation should mention 're-recorded' when same override is reposted, got: {}",
         comments[0].1
     );
     assert!(

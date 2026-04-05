@@ -817,6 +817,11 @@ where
                     .list_pr_labels(owner, repo, merged_pr_number)
                     .await?
             } else {
+                tracing::warn!(
+                    correlation_id = %correlation_id,
+                    "Merged PR payload is missing pull_request.number; \
+                     bump-override floor will not be applied for this release"
+                );
                 vec![]
             };
 

@@ -748,6 +748,10 @@ impl GitHubOperations for GitHubClient {
 
         let installation = self.installation().await?;
         // GitHub returns 404 when the label is not on the issue; treat that as Ok.
+        // ASSUMPTION: label names in this codebase match [a-zA-Z0-9 _.-]+ optionally
+        // prefixed by a namespace with colons (e.g. "rr:override-minor").  Only colons
+        // are percent-encoded here; spaces and other characters are intentionally not
+        // handled because Release Regent's own labels never contain them.
         let encoded = label_name.replace(':', "%3A");
         let path = format!("/repos/{owner}/{repo}/issues/{issue_number}/labels/{encoded}");
         match installation.delete(&path).await {

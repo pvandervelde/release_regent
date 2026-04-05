@@ -59,7 +59,10 @@ pub struct MockGitHubOperations {
     /// Labels keyed `"owner/repo/issue_number"`.  Used by `list_pr_labels`,
     /// `add_labels` (appends), and `remove_label` (removes by name).
     /// The `search_pull_requests` label-filter also reads from this map.
-    pr_labels: HashMap<String, Vec<Label>>,
+    ///
+    /// Wrapped in `Arc<RwLock<...>>` so that the `&self` async-trait methods
+    /// can mutate the map without requiring `&mut self`.
+    pr_labels: Arc<RwLock<HashMap<String, Vec<Label>>>>,
     /// Configurable collaborator permission returned by
     /// `get_collaborator_permission` for any username.
     /// `None` defaults to `CollaboratorPermission::Write`.
@@ -112,7 +115,7 @@ impl MockGitHubOperations {
             tags: HashMap::new(),
             releases: HashMap::new(),
             branches: HashMap::new(),
-            pr_labels: HashMap::new(),
+            pr_labels: Arc::new(RwLock::new(HashMap::new())),
             collaborator_permission: None,
             method_errors: HashMap::new(),
         }
@@ -169,7 +172,7 @@ impl MockGitHubOperations {
             tags: HashMap::new(),
             releases: HashMap::new(),
             branches: HashMap::new(),
-            pr_labels: HashMap::new(),
+            pr_labels: Arc::new(RwLock::new(HashMap::new())),
             collaborator_permission: None,
             method_errors: HashMap::new(),
         }
@@ -307,14 +310,14 @@ impl MockGitHubOperations {
     /// The key is formatted as `"{owner}/{repo}/{issue_number}"` so that
     /// labels can be scoped to a specific repository.
     pub fn with_pr_labels(
-        mut self,
+        self,
         owner: &str,
         repo: &str,
         issue_number: u64,
         labels: Vec<Label>,
     ) -> Self {
         let key = format!("{owner}/{repo}/{issue_number}");
-        self.pr_labels.insert(key, labels);
+        self.pr_labels.blocking_write().insert(key, labels);
         self
     }
 
@@ -898,9 +901,11 @@ impl GitHubOperations for MockGitHubOperations {
             .filter(|pr| {
                 label_filter.as_ref().map_or(true, |l| {
                     let key = format!("{owner}/{repo}/{}", pr.number);
-                    self.pr_labels
-                        .get(&key)
-                        .map_or(false, |labels| labels.iter().any(|lbl| lbl.name == *l))
+                    let pr_labels = self.pr_labels.try_read();
+                    pr_labels.as_deref().map_or(false, |map| {
+                        map.get(&key)
+                            .map_or(false, |labels| labels.iter().any(|lbl| lbl.name == *l))
+                    })
                 })
             })
             .collect();
@@ -1062,6 +1067,23 @@ impl GitHubOperations for MockGitHubOperations {
             return Err(error);
         }
 
+        let key = format!("{owner}/{repo}/{issue_number}");
+        {
+            let mut map = self.pr_labels.write().await;
+            let entry = map.entry(key).or_default();
+            for label_name in labels {
+                // Avoid duplicates — match GitHub's idempotent behaviour.
+                if !entry.iter().any(|l| l.name == *label_name) {
+                    entry.push(Label {
+                        id: 0,
+                        name: label_name.to_string(),
+                        color: String::new(),
+                        description: None,
+                    });
+                }
+            }
+        }
+
         self.record_call(method, &params_str, CallResult::Success)
             .await;
         Ok(())
@@ -1094,6 +1116,14 @@ impl GitHubOperations for MockGitHubOperations {
             self.record_call(method, &params_str, CallResult::Error(error.to_string()))
                 .await;
             return Err(error);
+        }
+
+        let key = format!("{owner}/{repo}/{issue_number}");
+        {
+            let mut map = self.pr_labels.write().await;
+            if let Some(entry) = map.get_mut(&key) {
+                entry.retain(|l| l.name != label_name);
+            }
         }
 
         self.record_call(method, &params_str, CallResult::Success)
@@ -1129,7 +1159,7 @@ impl GitHubOperations for MockGitHubOperations {
         }
 
         let key = format!("{owner}/{repo}/{issue_number}");
-        let labels = self.pr_labels.get(&key).cloned().unwrap_or_default();
+        let labels = self.pr_labels.read().await.get(&key).cloned().unwrap_or_default();
 
         self.record_call(method, &params_str, CallResult::Success)
             .await;

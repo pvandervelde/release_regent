@@ -328,12 +328,23 @@ impl<'a, G: GitHubOperations + Send + Sync> CommentCommandProcessor<'a, G> {
         };
         let body = if let Some(old_label) = replaced_kind {
             let old_kind = old_label.strip_prefix("rr:override-").unwrap_or(old_label);
-            format!(
-                "✅ **Release Regent**: `!release {kind_str}` override recorded \
-                 (replacing previous `!release {old_kind}` override). When this PR \
-                 is merged, the next release version will be bumped by at least one \
-                 {kind_str} increment."
-            )
+            if old_label == new_label {
+                // Same label re-applied: confirm idempotent re-recording.
+                format!(
+                    "✅ **Release Regent**: `!release {kind_str}` override re-recorded \
+                     (the existing `!release {kind_str}` override is unchanged). When this PR \
+                     is merged, the next release version will be bumped by at least one \
+                     {kind_str} increment."
+                )
+            } else {
+                // Different label: replacing a previous override.
+                format!(
+                    "✅ **Release Regent**: `!release {kind_str}` override recorded \
+                     (replacing previous `!release {old_kind}` override). When this PR \
+                     is merged, the next release version will be bumped by at least one \
+                     {kind_str} increment."
+                )
+            }
         } else {
             format!(
                 "✅ **Release Regent**: `!release {kind_str}` override recorded. \
@@ -429,12 +440,17 @@ impl<'a, G: GitHubOperations + Send + Sync> CommentCommandProcessor<'a, G> {
         let base_branch = pr.base.ref_name.clone();
         let base_sha = pr.base.sha.clone();
 
+        // Extract the existing changelog from the PR body that is already in hand.
+        // This avoids a second search_pull_requests call and ensures we read from
+        // exactly the same PR that handle_set_version is operating on, which is
+        // consistent with the orchestrator's PR-selection logic.
+        let existing_changelog = crate::release_orchestrator::extract_changelog_from_pr_body(
+            pr.body.as_deref().unwrap_or(""),
+            &self.config.orchestrator_config.changelog_header,
+        );
+
         let orchestrator =
             ReleaseOrchestrator::new(self.config.orchestrator_config.clone(), self.github);
-
-        let existing_changelog = self
-            .fetch_existing_release_changelog(owner, repo, pr_number, correlation_id)
-            .await;
 
         let orch_result = orchestrator
             .orchestrate(
@@ -448,49 +464,13 @@ impl<'a, G: GitHubOperations + Send + Sync> CommentCommandProcessor<'a, G> {
             )
             .await?;
 
-        let confirmation = Self::format_set_version_confirmation(pinned_version, &orch_result);
+        let confirmation = Self::format_set_version_confirmation(
+            pinned_version,
+            &orch_result,
+            &self.config.orchestrator_config.branch_prefix,
+        );
         self.post_comment(owner, repo, pr_number, &confirmation)
             .await
-    }
-
-    /// Fetch the changelog from the current open release PR, if one exists.
-    ///
-    /// Searches for any open PR whose head branch starts with the release
-    /// branch prefix and extracts the changelog section from its body.
-    /// Returns an empty string when no release PR exists or when the search
-    /// fails (the caller falls back gracefully in both cases).
-    async fn fetch_existing_release_changelog(
-        &self,
-        owner: &str,
-        repo: &str,
-        pr_number: u64,
-        correlation_id: &str,
-    ) -> String {
-        let release_prefix = format!("{}/v", self.config.orchestrator_config.branch_prefix);
-        let query = format!("is:open head:{release_prefix}*");
-        match self.github.search_pull_requests(owner, repo, &query).await {
-            Ok(prs) => prs
-                .iter()
-                .filter(|p| p.head.ref_name.starts_with(&release_prefix))
-                .filter_map(|p| p.body.as_deref())
-                .map(|body| {
-                    crate::release_orchestrator::extract_changelog_from_pr_body(
-                        body,
-                        &self.config.orchestrator_config.changelog_header,
-                    )
-                })
-                .next()
-                .unwrap_or_default(),
-            Err(e) => {
-                warn!(
-                    pr_number,
-                    correlation_id,
-                    error = %e,
-                    "Failed to read existing release PR changelog; proceeding with empty changelog"
-                );
-                String::new()
-            }
-        }
     }
 
     /// Format the confirmation comment posted after a successful `!set-version` run.
@@ -505,6 +485,7 @@ impl<'a, G: GitHubOperations + Send + Sync> CommentCommandProcessor<'a, G> {
     fn format_set_version_confirmation(
         pinned_version: &SemanticVersion,
         result: &crate::release_orchestrator::OrchestratorResult,
+        branch_prefix: &str,
     ) -> String {
         use crate::release_orchestrator::OrchestratorResult;
         match result {
@@ -520,12 +501,22 @@ impl<'a, G: GitHubOperations + Send + Sync> CommentCommandProcessor<'a, G> {
                 "✅ **Release Regent**: Release version `{pinned_version}` is already \
                  the active release PR version. No changes were needed."
             ),
-            OrchestratorResult::NoOp { pr } => format!(
-                "⚠️ **Release Regent**: `!set-version {pinned_version}` was not applied \
-                 — the existing release PR is already at a higher version \
-                 (`{}`). To override, close the existing release PR first.",
-                pr.head.ref_name,
-            ),
+            OrchestratorResult::NoOp { pr } => {
+                // Strip the release branch prefix (e.g. "release/v") to show
+                // a clean version number like "2.0.0" rather than the full
+                // branch name like "release/v2.0.0".
+                let release_v_prefix = format!("{branch_prefix}/v");
+                let version_display = pr
+                    .head
+                    .ref_name
+                    .strip_prefix(&release_v_prefix)
+                    .unwrap_or(&pr.head.ref_name);
+                format!(
+                    "⚠️ **Release Regent**: `!set-version {pinned_version}` was not applied \
+                     — the existing release PR is already at a higher version \
+                     (`{version_display}`). To override, close the existing release PR first."
+                )
+            }
         }
     }
 
