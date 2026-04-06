@@ -39,6 +39,7 @@ use std::cmp::Ordering;
 
 use tracing::{debug, info, warn, Instrument};
 
+pub use crate::versioning::BumpKind;
 use crate::{
     release_orchestrator::{OrchestratorConfig, ReleaseOrchestrator},
     traits::{event_source::ProcessingEvent, github_operations::GitHubOperations},
@@ -46,21 +47,26 @@ use crate::{
     CoreResult,
 };
 
+// ─────────────────────────────────────────────────────────────────────────────────
+// Label constants
+// ─────────────────────────────────────────────────────────────────────────────────
+
+/// GitHub label applied to a feature PR for a `!release major` override.
+pub const OVERRIDE_LABEL_MAJOR: &str = "rr:override-major";
+/// GitHub label applied to a feature PR for a `!release minor` override.
+pub const OVERRIDE_LABEL_MINOR: &str = "rr:override-minor";
+/// GitHub label applied to a feature PR for a `!release patch` override.
+pub const OVERRIDE_LABEL_PATCH: &str = "rr:override-patch";
+/// All three bump-override label names in one slice, useful for iteration.
+pub const ALL_OVERRIDE_LABELS: &[&str] = &[
+    OVERRIDE_LABEL_MAJOR,
+    OVERRIDE_LABEL_MINOR,
+    OVERRIDE_LABEL_PATCH,
+];
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Public types
 // ─────────────────────────────────────────────────────────────────────────────
-
-/// Which conventional-commit bump dimension the user is requesting via
-/// an `!release` override command.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BumpKind {
-    /// Force at least a major version bump.
-    Major,
-    /// Force at least a minor version bump.
-    Minor,
-    /// Force at least a patch version bump.
-    Patch,
-}
 
 /// A command parsed from a pull request comment body.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,10 +74,6 @@ pub enum CommentCommand {
     /// `!set-version X.Y.Z` — pin the next release to exactly this version.
     SetVersion(SemanticVersion),
     /// `!release major|minor|patch` — override the minimum bump dimension.
-    ///
-    /// **Note**: this variant is recognised by the parser but the processor
-    /// posts an informational comment and acknowledges the event until the
-    /// bump-override design is completed.
     ReleaseBump(BumpKind),
     /// No recognised command was found in the comment body.
     Unknown,
@@ -239,12 +241,9 @@ impl<'a, G: GitHubOperations + Send + Sync> CommentCommandProcessor<'a, G> {
 
         match command {
             CommentCommand::Unknown => Ok(()),
-            CommentCommand::ReleaseBump(_kind) => {
-                // The !release bump design is not yet complete. Post an informational
-                // comment so the user gets feedback and acknowledge the event (Ok).
-                let body = "ℹ️ **Release Regent**: `!release` bump overrides are not yet \
-                             supported. This command will be available in a future release.";
-                self.post_comment(owner, repo, issue_number, body).await
+            CommentCommand::ReleaseBump(kind) => {
+                self.handle_release_bump(owner, repo, issue_number, &kind, &event.correlation_id)
+                    .await
             }
             CommentCommand::SetVersion(pinned_version) => {
                 self.handle_set_version(
@@ -261,6 +260,102 @@ impl<'a, G: GitHubOperations + Send + Sync> CommentCommandProcessor<'a, G> {
 
     // ── Private helpers ────────────────────────────────────────────────────
 
+    /// Handle a validated `!release major|minor|patch` command.
+    ///
+    /// Removes any existing `rr:override-*` labels from the commented-upon PR
+    /// (idempotent), applies the new override label, then posts a confirmation
+    /// comment explaining the effect.  All errors from label operations are
+    /// logged as warnings rather than propagated so that a transient GitHub API
+    /// failure does not cause the event to be retried indefinitely.
+    async fn handle_release_bump(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: u64,
+        kind: &BumpKind,
+        correlation_id: &str,
+    ) -> CoreResult<()> {
+        // Determine which label corresponds to this bump kind.
+        let new_label = match kind {
+            BumpKind::Major => OVERRIDE_LABEL_MAJOR,
+            BumpKind::Minor => OVERRIDE_LABEL_MINOR,
+            BumpKind::Patch => OVERRIDE_LABEL_PATCH,
+        };
+
+        // Read current labels to detect a replacement (used in the confirmation
+        // message).  Propagate errors so transient API failures cause a retry.
+        let current_labels = self.github.list_pr_labels(owner, repo, pr_number).await?;
+
+        let replaced_kind: Option<&str> = ALL_OVERRIDE_LABELS
+            .iter()
+            .find(|&&l| current_labels.iter().any(|cl| cl.name == l))
+            .copied();
+
+        // Remove all existing override labels (idempotent; 404 → Ok).
+        for label in ALL_OVERRIDE_LABELS {
+            if let Err(e) = self
+                .github
+                .remove_label(owner, repo, pr_number, label)
+                .await
+            {
+                warn!(
+                    pr_number,
+                    label,
+                    error = %e,
+                    correlation_id,
+                    "Failed to remove existing override label; continuing"
+                );
+            }
+        }
+
+        // Apply the new override label.
+        self.github
+            .add_labels(owner, repo, pr_number, &[new_label])
+            .await?;
+
+        info!(
+            pr_number,
+            label = new_label,
+            correlation_id,
+            "!release override label applied"
+        );
+
+        // Post a confirmation comment.
+        let kind_str = match kind {
+            BumpKind::Major => "major",
+            BumpKind::Minor => "minor",
+            BumpKind::Patch => "patch",
+        };
+        let body = if let Some(old_label) = replaced_kind {
+            let old_kind = old_label.strip_prefix("rr:override-").unwrap_or(old_label);
+            if old_label == new_label {
+                // Same label re-applied: confirm idempotent re-recording.
+                format!(
+                    "✅ **Release Regent**: `!release {kind_str}` override re-recorded \
+                     (the existing `!release {kind_str}` override is unchanged). When this PR \
+                     is merged, the next release version will be bumped by at least one \
+                     {kind_str} increment."
+                )
+            } else {
+                // Different label: replacing a previous override.
+                format!(
+                    "✅ **Release Regent**: `!release {kind_str}` override recorded \
+                     (replacing previous `!release {old_kind}` override). When this PR \
+                     is merged, the next release version will be bumped by at least one \
+                     {kind_str} increment."
+                )
+            }
+        } else {
+            format!(
+                "✅ **Release Regent**: `!release {kind_str}` override recorded. \
+                 When this PR is merged, the next release version will be bumped by \
+                 at least one {kind_str} increment."
+            )
+        };
+
+        self.post_comment(owner, repo, pr_number, &body).await
+    }
+
     /// Handle a validated `!set-version X.Y.Z` command.
     ///
     /// Validates the pinned version against the current released version, then
@@ -275,6 +370,25 @@ impl<'a, G: GitHubOperations + Send + Sync> CommentCommandProcessor<'a, G> {
         pinned_version: &SemanticVersion,
         correlation_id: &str,
     ) -> CoreResult<()> {
+        // Guard: only accept !set-version on the release PR (head branch release/v*).
+        let pr = self.github.get_pull_request(owner, repo, pr_number).await?;
+        let branch_prefix = &self.config.orchestrator_config.branch_prefix;
+        let release_head_prefix = format!("{branch_prefix}/v");
+        if !pr.head.ref_name.starts_with(&release_head_prefix) {
+            let rejection = format!(
+                "⚠️ **Release Regent**: `!set-version` must be posted on the active \
+                 release PR (branch `{branch_prefix}/v*`). Please re-post this \
+                 command on the release PR."
+            );
+            warn!(
+                pr_number,
+                head_branch = %pr.head.ref_name,
+                correlation_id,
+                "!set-version rejected: not on release PR"
+            );
+            return self.post_comment(owner, repo, pr_number, &rejection).await;
+        }
+
         // Resolve the currently released version from Git tags.
         let current_version = resolve_current_version(self.github, owner, repo, false).await?;
 
@@ -323,26 +437,87 @@ impl<'a, G: GitHubOperations + Send + Sync> CommentCommandProcessor<'a, G> {
             "!set-version accepted — invoking release orchestrator"
         );
 
-        // Retrieve the PR to extract the base branch name and SHA.
-        let pr = self.github.get_pull_request(owner, repo, pr_number).await?;
         let base_branch = pr.base.ref_name.clone();
         let base_sha = pr.base.sha.clone();
+
+        // Extract the existing changelog from the PR body that is already in hand.
+        // This avoids a second search_pull_requests call and ensures we read from
+        // exactly the same PR that handle_set_version is operating on, which is
+        // consistent with the orchestrator's PR-selection logic.
+        let existing_changelog = crate::release_orchestrator::extract_changelog_from_pr_body(
+            pr.body.as_deref().unwrap_or(""),
+            &self.config.orchestrator_config.changelog_header,
+        );
 
         let orchestrator =
             ReleaseOrchestrator::new(self.config.orchestrator_config.clone(), self.github);
 
-        orchestrator
+        let orch_result = orchestrator
             .orchestrate(
                 owner,
                 repo,
                 pinned_version,
-                "Version pinned via PR comment override.",
+                &existing_changelog,
                 &base_branch,
                 &base_sha,
                 correlation_id,
             )
+            .await?;
+
+        let confirmation = Self::format_set_version_confirmation(
+            pinned_version,
+            &orch_result,
+            &self.config.orchestrator_config.branch_prefix,
+        );
+        self.post_comment(owner, repo, pr_number, &confirmation)
             .await
-            .map(|_| ())
+    }
+
+    /// Format the confirmation comment posted after a successful `!set-version` run.
+    ///
+    /// The wording varies by orchestration outcome:
+    /// - `Created` / `Renamed` — a new or renamed release PR is now at the
+    ///   pinned version.
+    /// - `Updated` — the existing release PR already had the same version;
+    ///   no version change was needed.
+    /// - `NoOp` — the existing release PR already has a *higher* version;
+    ///   the command was superseded.
+    fn format_set_version_confirmation(
+        pinned_version: &SemanticVersion,
+        result: &crate::release_orchestrator::OrchestratorResult,
+        branch_prefix: &str,
+    ) -> String {
+        use crate::release_orchestrator::OrchestratorResult;
+        match result {
+            OrchestratorResult::Created { .. } => format!(
+                "✅ **Release Regent**: Release version pinned to `{pinned_version}`. \
+                 A new release PR has been created."
+            ),
+            OrchestratorResult::Renamed { .. } => format!(
+                "✅ **Release Regent**: Release version pinned to `{pinned_version}`. \
+                 The release PR has been updated to this version."
+            ),
+            OrchestratorResult::Updated { .. } => format!(
+                "✅ **Release Regent**: Release version `{pinned_version}` is already \
+                 the active release PR version. No changes were needed."
+            ),
+            OrchestratorResult::NoOp { pr } => {
+                // Strip the release branch prefix (e.g. "release/v") to show
+                // a clean version number like "2.0.0" rather than the full
+                // branch name like "release/v2.0.0".
+                let release_v_prefix = format!("{branch_prefix}/v");
+                let version_display = pr
+                    .head
+                    .ref_name
+                    .strip_prefix(&release_v_prefix)
+                    .unwrap_or(&pr.head.ref_name);
+                format!(
+                    "⚠️ **Release Regent**: `!set-version {pinned_version}` was not applied \
+                     — the existing release PR is already at a higher version \
+                     (`{version_display}`). To override, close the existing release PR first."
+                )
+            }
+        }
     }
 
     /// Post a comment on the PR as a best-effort operation.

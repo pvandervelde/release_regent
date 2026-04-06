@@ -900,3 +900,62 @@ async fn test_resolve_current_version_propagates_api_errors() {
 
     assert!(result.is_err());
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// apply_bump_floor — additional unit tests (spec §9)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Spec §9 row: "Floor with pre-release current version"
+/// current=2.0.0-rc.1, calculated=2.0.0, floor=Major → 3.0.0
+///
+/// `next_major()` on a pre-release version strips the pre-release tag and
+/// bumps the major component, so 2.0.0-rc.1 → 3.0.0.  The calculated version
+/// (2.0.0) is less than the floor (3.0.0), so the floor wins.
+#[test]
+fn test_apply_bump_floor_with_prerelease_current_version() {
+    let current = SemanticVersion {
+        major: 2,
+        minor: 0,
+        patch: 0,
+        prerelease: Some("rc.1".to_string()),
+        build: None,
+    };
+    let calculated = SemanticVersion {
+        major: 2,
+        minor: 0,
+        patch: 0,
+        prerelease: None,
+        build: None,
+    };
+
+    let result = apply_bump_floor(&current, &calculated, BumpKind::Major);
+
+    assert_eq!(result.to_string(), "3.0.0");
+}
+
+/// Spec §9 row: "Floor raises patch → minor"
+/// current=1.2.3, calculated=1.2.4 (patch bump), floor=Minor → 1.3.0
+///
+/// The floor version from `next_minor()` is 1.3.0, which exceeds the
+/// calculated patch bump 1.2.4, so the floor is applied.
+#[test]
+fn test_apply_bump_floor_raises_patch_to_minor() {
+    let current = SemanticVersion {
+        major: 1,
+        minor: 2,
+        patch: 3,
+        prerelease: None,
+        build: None,
+    };
+    let calculated = SemanticVersion {
+        major: 1,
+        minor: 2,
+        patch: 4,
+        prerelease: None,
+        build: None,
+    };
+
+    let result = apply_bump_floor(&current, &calculated, BumpKind::Minor);
+
+    assert_eq!(result.to_string(), "1.3.0");
+}

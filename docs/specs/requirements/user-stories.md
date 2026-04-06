@@ -104,13 +104,49 @@
 
 **Acceptance Criteria**:
 
-- Comment with version specification updates the PR
-- Only valid semantic versions accepted
-- Override version must be higher than current version
-- Override triggers full PR update with new version
+**`!set-version X.Y.Z` (explicit pin):**
+
+- A comment containing `!set-version X.Y.Z` on the **active release PR** (head branch
+  matching `release/v*`) updates that release PR to exactly version `X.Y.Z`
+- If the command is posted on any other open PR, a scope rejection comment is posted
+  explaining that `!set-version` must be re-posted on the release PR; no PR is modified
+- Only valid semantic version strings are accepted; malformed strings produce a rejection comment
+- The specified version must be strictly greater than the current released version (latest
+  semver tag); violations produce a rejection comment with the reason
+- Only collaborators with Write access or above may issue commands
+
+**`!release major|minor|patch` (bump-floor override):**
+
+- A comment containing `!release major`, `!release minor`, or `!release patch` applies a
+  `rr:override-major/minor/patch` label to the **PR the comment was posted on** (the feature PR)
+- A confirmation comment is posted on the feature PR confirming the override and its scope
+- When the feature PR is **merged**, the override label is read from that PR and used as a
+  minimum-bump floor during orchestration: `effective_version = max(calculated_version, floor_version)`
+- If the feature PR is **closed without merging**, the label remains on the closed PR and
+  has no effect on any future merges — version decisions are only made based on merged work
+- When the **release PR is merged** (a release is published), any `rr:override-*` labels
+  on open feature PRs are **automatically cleared** and each affected PR receives an
+  informational comment. Overrides are valid for one release cycle only; contributors must
+  re-post `!release` if the intent still applies to the next release.
+- Posting a new `!release` command on the same PR replaces the previous override label
+  and posts an updated confirmation comment
+- The floor is applied as a minimum; it can never reduce a version that conventional
+  commits have computed to be higher
+- A `BREAKING CHANGE:` commit always produces a major bump and cannot be reduced by a
+  `!release minor` or `!release patch` override
+- When a floor is applied during orchestration, an audit comment is posted on the release
+  PR identifying the source feature PR and the version change
+
+**General:**
+
+- Commands are only processed when `VersioningConfig::allow_override = true`
+- Commands on closed or merged PRs are silently ignored
+- Commands from collaborators with Triage or Read access produce a `❌` rejection comment
+  identifying the commenter and explaining the permission requirement; the command has no
+  other effect
 
 **Priority**: Medium
-**Status**: Future Enhancement
+**Status**: In Progress
 
 ### US-5: Error Visibility
 

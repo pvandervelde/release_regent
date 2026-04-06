@@ -461,8 +461,8 @@ use traits::{
         GitUser as GitOpsUser, ListTagsOptions,
     },
     github_operations::{
-        CreatePullRequestParams, CreateReleaseParams, GitHubOperations, GitUser, PullRequest,
-        PullRequestBranch, Release, Repository, Tag, UpdateReleaseParams,
+        CreatePullRequestParams, CreateReleaseParams, GitHubOperations, GitUser, Label,
+        PullRequest, PullRequestBranch, Release, Repository, Tag, UpdateReleaseParams,
     },
     version_calculator::{
         CalculationOptions, ChangelogEntry, CommitAnalysis, ValidationRules, VersionBump,
@@ -548,8 +548,28 @@ fn make_git_commit(sha: &str) -> GitCommit {
 struct TestGitHubForLib {
     tags: Vec<GitTag>,
     existing_prs: Vec<PullRequest>,
+    /// Returned by `search_pull_requests` (independently configurable from
+    /// `existing_prs` which drives `list_pull_requests`).
+    search_results: Vec<PullRequest>,
+    /// Labels keyed by PR / issue number (drives `list_pr_labels`).
+    pr_labels: HashMap<u64, Vec<Label>>,
     created_prs: Arc<Mutex<Vec<(String, String, String)>>>, // (branch, title, body)
     create_branch_calls: Arc<Mutex<Vec<String>>>,
+    /// Records every `(issue_number, label_name)` passed to `remove_label`.
+    removed_labels: Arc<Mutex<Vec<(u64, String)>>>,
+    /// Records every `(issue_number, body)` passed to `create_issue_comment`.
+    issue_comments: Arc<Mutex<Vec<(u64, String)>>>,
+    /// When set, `search_pull_requests` returns an error if the query
+    /// contains this label name.  Other searches succeed normally.
+    fail_search_for_label: Option<String>,
+    /// When set, `remove_label` returns a network error for the specified PR number.
+    fail_remove_label_for_pr: Option<u64>,
+    /// When set, `create_issue_comment` returns a network error for the specified
+    /// PR / issue number.
+    fail_comment_for_pr: Option<u64>,
+    /// When set, `list_pr_labels` returns a `CoreError::GitHub` for the
+    /// specified PR / issue number.
+    fail_list_labels_for_pr: Option<u64>,
 }
 
 impl TestGitHubForLib {
@@ -557,9 +577,59 @@ impl TestGitHubForLib {
         Self {
             tags: vec![],
             existing_prs: vec![],
+            search_results: vec![],
+            pr_labels: HashMap::new(),
             created_prs: Arc::new(Mutex::new(vec![])),
             create_branch_calls: Arc::new(Mutex::new(vec![])),
+            removed_labels: Arc::new(Mutex::new(vec![])),
+            issue_comments: Arc::new(Mutex::new(vec![])),
+            fail_search_for_label: None,
+            fail_remove_label_for_pr: None,
+            fail_comment_for_pr: None,
+            fail_list_labels_for_pr: None,
         }
+    }
+
+    fn with_tags(mut self, tags: Vec<GitTag>) -> Self {
+        self.tags = tags;
+        self
+    }
+
+    fn with_pr_labels(mut self, pr_number: u64, labels: Vec<Label>) -> Self {
+        self.pr_labels.insert(pr_number, labels);
+        self
+    }
+
+    fn with_search_results(mut self, prs: Vec<PullRequest>) -> Self {
+        self.search_results = prs;
+        self
+    }
+
+    /// Make `search_pull_requests` return an error when the query contains
+    /// the specified label name.  Other searches succeed normally.
+    fn with_fail_search_for_label(mut self, label: impl Into<String>) -> Self {
+        self.fail_search_for_label = Some(label.into());
+        self
+    }
+
+    /// Make `remove_label` return a network error for the specified PR number.
+    fn with_fail_remove_label_for_pr(mut self, pr_number: u64) -> Self {
+        self.fail_remove_label_for_pr = Some(pr_number);
+        self
+    }
+
+    /// Make `create_issue_comment` return a network error for the specified PR
+    /// / issue number.
+    fn with_fail_comment_for_pr(mut self, pr_number: u64) -> Self {
+        self.fail_comment_for_pr = Some(pr_number);
+        self
+    }
+
+    /// Make `list_pr_labels` return a `CoreError::GitHub` for the specified PR
+    /// / issue number.
+    fn with_fail_list_labels_for_pr(mut self, pr_number: u64) -> Self {
+        self.fail_list_labels_for_pr = Some(pr_number);
+        self
     }
 }
 
@@ -717,9 +787,16 @@ impl GitHubOperations for TestGitHubForLib {
         &self,
         _owner: &str,
         _repo: &str,
-        _query: &str,
+        query: &str,
     ) -> CoreResult<Vec<PullRequest>> {
-        Ok(self.existing_prs.clone())
+        if let Some(ref failing_label) = self.fail_search_for_label {
+            if query.contains(failing_label.as_str()) {
+                return Err(CoreError::network(format!(
+                    "Simulated search_pull_requests failure for label {failing_label}"
+                )));
+            }
+        }
+        Ok(self.search_results.clone())
     }
 
     async fn update_pull_request(
@@ -770,9 +847,18 @@ impl GitHubOperations for TestGitHubForLib {
         &self,
         _owner: &str,
         _repo: &str,
-        _issue_number: u64,
-        _body: &str,
+        issue_number: u64,
+        body: &str,
     ) -> CoreResult<()> {
+        if self.fail_comment_for_pr == Some(issue_number) {
+            return Err(CoreError::network(format!(
+                "Simulated create_issue_comment failure for PR #{issue_number}"
+            )));
+        }
+        self.issue_comments
+            .lock()
+            .await
+            .push((issue_number, body.to_string()));
         Ok(())
     }
 
@@ -783,6 +869,54 @@ impl GitHubOperations for TestGitHubForLib {
         _username: &str,
     ) -> CoreResult<crate::traits::github_operations::CollaboratorPermission> {
         Ok(crate::traits::github_operations::CollaboratorPermission::Write)
+    }
+
+    async fn add_labels(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _issue_number: u64,
+        _labels: &[&str],
+    ) -> CoreResult<()> {
+        Ok(())
+    }
+
+    async fn remove_label(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        issue_number: u64,
+        label_name: &str,
+    ) -> CoreResult<()> {
+        if self.fail_remove_label_for_pr == Some(issue_number) {
+            return Err(CoreError::network(format!(
+                "Simulated remove_label failure for PR #{issue_number}"
+            )));
+        }
+        self.removed_labels
+            .lock()
+            .await
+            .push((issue_number, label_name.to_string()));
+        Ok(())
+    }
+
+    async fn list_pr_labels(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        issue_number: u64,
+    ) -> CoreResult<Vec<crate::traits::github_operations::Label>> {
+        if self.fail_list_labels_for_pr == Some(issue_number) {
+            return Err(CoreError::github(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("Simulated list_pr_labels failure for PR #{issue_number}"),
+            )));
+        }
+        Ok(self
+            .pr_labels
+            .get(&issue_number)
+            .cloned()
+            .unwrap_or_default())
     }
 }
 
@@ -1189,5 +1323,666 @@ async fn test_handle_merged_pr_includes_changelog_entries_in_pr_body() {
     assert!(
         body.contains(&"b".repeat(40)),
         "body missing commit sha B: {body}"
+    );
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Bump-override floor tests (task 9.20)
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// When the merged feature PR carries an `rr:override-major` label, the
+/// calculated version (a minor bump) is raised to a major bump and an audit
+/// comment is posted on the resulting release PR.
+#[tokio::test]
+async fn test_handle_merged_feature_pr_with_override_major_label_applies_floor() {
+    // Current released tag: v1.0.0  →  current_version = Some(1.0.0)
+    // Version calculator produces 1.1.0 (minor bump).
+    // Floor = Major  →  apply_bump_floor(1.0.0, 1.1.0, Major) = 2.0.0
+    let tag = GitTag {
+        name: "v1.0.0".to_string(),
+        target_sha: "a".repeat(40),
+        tag_type: GitTagType::Lightweight,
+        message: None,
+        tagger: None,
+        created_at: None,
+    };
+    let override_label = Label {
+        id: 1,
+        name: "rr:override-major".to_string(),
+        color: "ff0000".to_string(),
+        description: None,
+    };
+    // PR #7 is the feature PR being merged; its labels are read at orchestration time.
+    let github = TestGitHubForLib::new_empty()
+        .with_tags(vec![tag])
+        .with_pr_labels(7, vec![override_label]);
+
+    let config = TestConfigForLib;
+    let version_calc = TestVersionCalcForLib::returning("1.1.0");
+
+    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc);
+
+    let event = ProcessingEvent {
+        event_id: "evt-floor-1".into(),
+        correlation_id: "corr-floor-1".into(),
+        event_type: EventType::PullRequestMerged,
+        repository: RepositoryInfo {
+            owner: "acme".into(),
+            name: "app".into(),
+            default_branch: "main".into(),
+        },
+        payload: serde_json::json!({
+            "pull_request": {
+                // Head branch is NOT a release branch → feature PR path.
+                "head": { "ref": "feat/cool-feature" },
+                "base": { "ref": "main" },
+                "number": 7,
+                "merge_commit_sha": "b".repeat(40)
+            }
+        }),
+        received_at: Utc::now(),
+        source: EventSourceKind::Webhook,
+    };
+
+    let result = processor.handle_merged_pull_request(&event).await.unwrap();
+
+    // Release PR must be created at 2.0.0, not 1.1.0.
+    match &result {
+        release_orchestrator::OrchestratorResult::Created { pr, branch_name } => {
+            assert!(
+                branch_name.contains("2.0.0"),
+                "branch should reference 2.0.0 (floor applied), got: {branch_name}"
+            );
+            assert!(
+                pr.head.ref_name.contains("2.0.0"),
+                "PR head branch should reference 2.0.0, got: {}",
+                pr.head.ref_name
+            );
+        }
+        other => panic!("expected Created, got {other:?}"),
+    }
+
+    // An audit comment should have been posted on the release PR explaining
+    // the floor application.
+    let comments = github.issue_comments.lock().await;
+    assert!(
+        !comments.is_empty(),
+        "expected at least one audit comment, got none"
+    );
+    let audit = comments
+        .iter()
+        .find(|(_, body)| body.contains("Version floor applied"))
+        .expect("audit comment about version floor was not posted");
+    assert!(
+        audit.1.contains("major"),
+        "audit comment should mention 'major', got: {}",
+        audit.1
+    );
+    assert!(
+        audit.1.contains("2.0.0"),
+        "audit comment should mention effective version 2.0.0, got: {}",
+        audit.1
+    );
+
+    // The consumed override label must be removed from the merged feature PR.
+    let removed = github.removed_labels.lock().await;
+    assert!(
+        removed
+            .iter()
+            .any(|(pr, label)| *pr == 7 && label == "rr:override-major"),
+        "expected rr:override-major to be removed from merged feature PR #7, got: {removed:?}"
+    );
+}
+
+/// When the merged feature PR has no override labels, the calculated version
+/// is used unchanged and no audit comment is posted.
+#[tokio::test]
+async fn test_handle_merged_feature_pr_without_override_label_uses_calculated_version() {
+    let tag = GitTag {
+        name: "v1.0.0".to_string(),
+        target_sha: "a".repeat(40),
+        tag_type: GitTagType::Lightweight,
+        message: None,
+        tagger: None,
+        created_at: None,
+    };
+    // No pr_labels configured → list_pr_labels returns [].
+    let github = TestGitHubForLib::new_empty().with_tags(vec![tag]);
+    let config = TestConfigForLib;
+    let version_calc = TestVersionCalcForLib::returning("1.1.0");
+
+    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc);
+
+    let event = ProcessingEvent {
+        event_id: "evt-floor-2".into(),
+        correlation_id: "corr-floor-2".into(),
+        event_type: EventType::PullRequestMerged,
+        repository: RepositoryInfo {
+            owner: "acme".into(),
+            name: "app".into(),
+            default_branch: "main".into(),
+        },
+        payload: serde_json::json!({
+            "pull_request": {
+                "head": { "ref": "feat/other-feature" },
+                "base": { "ref": "main" },
+                "number": 8,
+                "merge_commit_sha": "c".repeat(40)
+            }
+        }),
+        received_at: Utc::now(),
+        source: EventSourceKind::Webhook,
+    };
+
+    let result = processor.handle_merged_pull_request(&event).await.unwrap();
+
+    // Release PR should be at 1.1.0 (the calculated version, no floor change).
+    match &result {
+        release_orchestrator::OrchestratorResult::Created { branch_name, .. } => {
+            assert!(
+                branch_name.contains("1.1.0"),
+                "branch should reference 1.1.0 (no floor), got: {branch_name}"
+            );
+        }
+        other => panic!("expected Created, got {other:?}"),
+    }
+
+    // No audit comment should have been posted (no floor was applied).
+    let comments = github.issue_comments.lock().await;
+    assert!(
+        comments
+            .iter()
+            .all(|(_, body)| !body.contains("Version floor applied")),
+        "unexpected audit comment when no floor was applied"
+    );
+}
+
+/// When a release PR is merged, stale `rr:override-*` labels on open feature
+/// PRs are removed and a cleanup comment is posted on each affected PR.
+#[tokio::test]
+async fn test_handle_merged_release_pr_clears_stale_override_labels_from_open_prs() {
+    // Feature PR #99 has a stale rr:override-major label from a previous
+    // !release command.  It will appear in search results for all three label
+    // queries (the stub returns `search_results` regardless of the query, which
+    // exercises the cleanup loop for all three label names).
+    let stale_pr = make_pr(99, "feat/stale-feature", "feat: stale work");
+
+    let github = TestGitHubForLib::new_empty().with_search_results(vec![stale_pr]);
+    let config = TestConfigForLib;
+    let version_calc = TestVersionCalcForLib::returning("1.1.0");
+
+    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc);
+
+    let event = ProcessingEvent {
+        event_id: "evt-floor-3".into(),
+        correlation_id: "corr-floor-3".into(),
+        event_type: EventType::PullRequestMerged,
+        repository: RepositoryInfo {
+            owner: "acme".into(),
+            name: "app".into(),
+            default_branch: "main".into(),
+        },
+        payload: serde_json::json!({
+            "pull_request": {
+                // Head branch starts with "release/v" → release PR path.
+                "head": { "ref": "release/v1.0.0" },
+                "base": { "ref": "main" },
+                "number": 100,
+                "merge_commit_sha": "d".repeat(40)
+            }
+        }),
+        received_at: Utc::now(),
+        source: EventSourceKind::Webhook,
+    };
+
+    processor.handle_merged_pull_request(&event).await.unwrap();
+
+    // remove_label should have been called once per override label constant
+    // (major, minor, patch), each time on PR #99.
+    let removed = github.removed_labels.lock().await;
+    assert_eq!(
+        removed.len(),
+        3,
+        "expected 3 remove_label calls (one per override label), got: {removed:?}"
+    );
+    let removed_names: Vec<&str> = removed.iter().map(|(_, n)| n.as_str()).collect();
+    assert!(
+        removed_names.contains(&"rr:override-major"),
+        "expected rr:override-major to be removed"
+    );
+    assert!(
+        removed_names.contains(&"rr:override-minor"),
+        "expected rr:override-minor to be removed"
+    );
+    assert!(
+        removed_names.contains(&"rr:override-patch"),
+        "expected rr:override-patch to be removed"
+    );
+    assert!(
+        removed.iter().all(|(pr, _)| *pr == 99),
+        "all removals should target PR #99"
+    );
+
+    // A cleanup comment should have been posted for each removal.
+    let comments = github.issue_comments.lock().await;
+    assert_eq!(
+        comments.len(),
+        3,
+        "expected 3 cleanup comments (one per override label), got: {comments:?}"
+    );
+    assert!(
+        comments.iter().all(|(pr, _)| *pr == 99),
+        "all cleanup comments should target PR #99"
+    );
+    assert!(
+        comments
+            .iter()
+            .any(|(_, body)| body.contains("cleared because a new release was published")),
+        "cleanup comment should explain why the label was cleared"
+    );
+}
+
+/// When the merged feature PR carries an `rr:override-minor` label, the
+/// calculated patch version is raised to the next minor version.
+#[tokio::test]
+async fn test_handle_merged_feature_pr_with_override_minor_label_applies_floor() {
+    // Current released tag: v1.2.3  →  current_version = Some(1.2.3)
+    // Version calculator produces 1.2.4 (patch bump).
+    // Floor = Minor  →  apply_bump_floor(1.2.3, 1.2.4, Minor) = 1.3.0
+    let tag = GitTag {
+        name: "v1.2.3".to_string(),
+        target_sha: "a".repeat(40),
+        tag_type: GitTagType::Lightweight,
+        message: None,
+        tagger: None,
+        created_at: None,
+    };
+    let override_label = Label {
+        id: 2,
+        name: "rr:override-minor".to_string(),
+        color: "0075ca".to_string(),
+        description: None,
+    };
+    let github = TestGitHubForLib::new_empty()
+        .with_tags(vec![tag])
+        .with_pr_labels(10, vec![override_label]);
+
+    let config = TestConfigForLib;
+    let version_calc = TestVersionCalcForLib::returning("1.2.4");
+
+    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc);
+
+    let event = ProcessingEvent {
+        event_id: "evt-minor-floor".into(),
+        correlation_id: "corr-minor-floor".into(),
+        event_type: EventType::PullRequestMerged,
+        repository: RepositoryInfo {
+            owner: "acme".into(),
+            name: "app".into(),
+            default_branch: "main".into(),
+        },
+        payload: serde_json::json!({
+            "pull_request": {
+                "head": { "ref": "feat/minor-feature" },
+                "base": { "ref": "main" },
+                "number": 10,
+                "merge_commit_sha": "e".repeat(40)
+            }
+        }),
+        received_at: Utc::now(),
+        source: EventSourceKind::Webhook,
+    };
+
+    let result = processor.handle_merged_pull_request(&event).await.unwrap();
+
+    // Release PR must be at 1.3.0 (minor floor applied), not 1.2.4.
+    match &result {
+        release_orchestrator::OrchestratorResult::Created { branch_name, .. } => {
+            assert!(
+                branch_name.contains("1.3.0"),
+                "branch should reference 1.3.0 (minor floor applied), got: {branch_name}"
+            );
+        }
+        other => panic!("expected Created, got {other:?}"),
+    }
+
+    // The consumed rr:override-minor label must be removed from PR #10 (task 9.20.5).
+    let removed = github.removed_labels.lock().await;
+    assert!(
+        removed
+            .iter()
+            .any(|(pr, label)| *pr == 10 && label == "rr:override-minor"),
+        "expected rr:override-minor to be removed from merged PR #10, got: {removed:?}"
+    );
+}
+
+/// When the merged feature PR has `rr:override-patch` and the calculated version
+/// is already a minor bump (which exceeds the patch floor), the calculated version
+/// is used unchanged and the label is still removed.
+#[tokio::test]
+async fn test_handle_merged_feature_pr_with_patch_floor_no_effect_when_calculated_exceeds() {
+    // Current released tag: v1.2.3  →  current_version = Some(1.2.3)
+    // Version calculator produces 1.3.0 (minor bump).
+    // Floor = Patch  →  floor_version = 1.2.4, which is LESS than 1.3.0.
+    // Effective = max(1.3.0, 1.2.4) = 1.3.0 (unchanged).
+    let tag = GitTag {
+        name: "v1.2.3".to_string(),
+        target_sha: "a".repeat(40),
+        tag_type: GitTagType::Lightweight,
+        message: None,
+        tagger: None,
+        created_at: None,
+    };
+    let override_label = Label {
+        id: 3,
+        name: "rr:override-patch".to_string(),
+        color: "e4e669".to_string(),
+        description: None,
+    };
+    let github = TestGitHubForLib::new_empty()
+        .with_tags(vec![tag])
+        .with_pr_labels(11, vec![override_label]);
+
+    let config = TestConfigForLib;
+    let version_calc = TestVersionCalcForLib::returning("1.3.0");
+
+    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc);
+
+    let event = ProcessingEvent {
+        event_id: "evt-patch-floor".into(),
+        correlation_id: "corr-patch-floor".into(),
+        event_type: EventType::PullRequestMerged,
+        repository: RepositoryInfo {
+            owner: "acme".into(),
+            name: "app".into(),
+            default_branch: "main".into(),
+        },
+        payload: serde_json::json!({
+            "pull_request": {
+                "head": { "ref": "feat/patch-feature" },
+                "base": { "ref": "main" },
+                "number": 11,
+                "merge_commit_sha": "f".repeat(40)
+            }
+        }),
+        received_at: Utc::now(),
+        source: EventSourceKind::Webhook,
+    };
+
+    let result = processor.handle_merged_pull_request(&event).await.unwrap();
+
+    // Release PR must be at 1.3.0 (patch floor has no effect on a minor bump).
+    match &result {
+        release_orchestrator::OrchestratorResult::Created { branch_name, .. } => {
+            assert!(
+                branch_name.contains("1.3.0"),
+                "branch should remain 1.3.0 (patch floor has no effect), got: {branch_name}"
+            );
+        }
+        other => panic!("expected Created, got {other:?}"),
+    }
+
+    // No audit comment should be posted because the floor had no effect.
+    let comments = github.issue_comments.lock().await;
+    assert!(
+        comments
+            .iter()
+            .all(|(_, body)| !body.contains("Version floor applied")),
+        "no audit comment should be posted when floor has no effect"
+    );
+
+    // Even though the floor had no effect, the label must still be removed (task 9.20.5).
+    let removed = github.removed_labels.lock().await;
+    assert!(
+        removed
+            .iter()
+            .any(|(pr, label)| *pr == 11 && label == "rr:override-patch"),
+        "expected rr:override-patch to be removed from merged PR #11, got: {removed:?}"
+    );
+}
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// handle_merged_pull_request — release-PR path error tests (spec §9 Minor #5)
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// When `search_pull_requests` fails for one override label (e.g., `rr:override-major`),
+/// a warning is logged and the cleanup for the remaining labels still proceeds.
+/// The overall event must succeed.
+#[tokio::test]
+async fn test_handle_merged_release_pr_search_failure_for_one_label_continues() {
+    // search_results contains PR #99 which will be found for override-minor and
+    // override-patch, but the search for override-major will fail.
+    let stale_pr = make_pr(99, "feat/stale-feature", "feat: stale work");
+    let github = TestGitHubForLib::new_empty()
+        .with_search_results(vec![stale_pr])
+        .with_fail_search_for_label("rr:override-major");
+
+    let config = TestConfigForLib;
+    let version_calc = TestVersionCalcForLib::returning("1.1.0");
+    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc);
+
+    let event = ProcessingEvent {
+        event_id: "evt-search-fail".into(),
+        correlation_id: "corr-search-fail".into(),
+        event_type: EventType::PullRequestMerged,
+        repository: RepositoryInfo {
+            owner: "acme".into(),
+            name: "app".into(),
+            default_branch: "main".into(),
+        },
+        payload: serde_json::json!({
+            "pull_request": {
+                "head": { "ref": "release/v1.1.0" },
+                "base": { "ref": "main" },
+                "number": 100,
+                "merge_commit_sha": "d".repeat(40)
+            }
+        }),
+        received_at: Utc::now(),
+        source: EventSourceKind::Webhook,
+    };
+
+    // Event must succeed despite the partial search failure.
+    let result = processor.handle_merged_pull_request(&event).await;
+    assert!(
+        result.is_ok(),
+        "expected Ok when one search fails, got: {result:?}"
+    );
+
+    // override-minor and override-patch searches succeeded → PR #99 was processed
+    // for at least 2 labels.  override-major search failed → no remove for that label.
+    let removed = github.removed_labels.lock().await;
+    assert!(
+        removed.len() >= 2,
+        "expected at least 2 label removals (minor + patch), got: {removed:?}"
+    );
+    let has_major_removal = removed
+        .iter()
+        .any(|(_, label)| label == "rr:override-major");
+    assert!(
+        !has_major_removal,
+        "should NOT have removed override-major (search failed), got: {removed:?}"
+    );
+}
+
+/// When `remove_label` fails for one PR, a warning is logged and the cleanup
+/// comment for that PR is still attempted.  The overall event must succeed.
+#[tokio::test]
+async fn test_handle_merged_release_pr_remove_label_failure_still_posts_cleanup_comment() {
+    let stale_pr = make_pr(99, "feat/stale-feature", "feat: stale work");
+    let github = TestGitHubForLib::new_empty()
+        .with_search_results(vec![stale_pr])
+        .with_fail_remove_label_for_pr(99); // remove_label on PR #99 will fail
+
+    let config = TestConfigForLib;
+    let version_calc = TestVersionCalcForLib::returning("1.1.0");
+    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc);
+
+    let event = ProcessingEvent {
+        event_id: "evt-remove-fail".into(),
+        correlation_id: "corr-remove-fail".into(),
+        event_type: EventType::PullRequestMerged,
+        repository: RepositoryInfo {
+            owner: "acme".into(),
+            name: "app".into(),
+            default_branch: "main".into(),
+        },
+        payload: serde_json::json!({
+            "pull_request": {
+                "head": { "ref": "release/v1.1.0" },
+                "base": { "ref": "main" },
+                "number": 100,
+                "merge_commit_sha": "e".repeat(40)
+            }
+        }),
+        received_at: Utc::now(),
+        source: EventSourceKind::Webhook,
+    };
+
+    // Event must succeed despite remove_label failures.
+    let result = processor.handle_merged_pull_request(&event).await;
+    assert!(
+        result.is_ok(),
+        "expected Ok when remove_label fails, got: {result:?}"
+    );
+
+    // Cleanup comments must still be posted on PR #99 even though remove_label failed.
+    let comments = github.issue_comments.lock().await;
+    let cleanup_comments: Vec<_> = comments.iter().filter(|(pr, _)| *pr == 99).collect();
+    assert!(
+        !cleanup_comments.is_empty(),
+        "cleanup comments should still be posted even when remove_label fails, got: {comments:?}"
+    );
+}
+
+/// When posting the cleanup comment fails for a PR, a warning is logged but
+/// the cleanup loop continues and the overall event still succeeds.
+#[tokio::test]
+async fn test_handle_merged_release_pr_cleanup_comment_failure_event_still_succeeds() {
+    let stale_pr = make_pr(99, "feat/stale-feature", "feat: stale work");
+    let github = TestGitHubForLib::new_empty()
+        .with_search_results(vec![stale_pr])
+        .with_fail_comment_for_pr(99); // comment on PR #99 will fail
+
+    let config = TestConfigForLib;
+    let version_calc = TestVersionCalcForLib::returning("1.1.0");
+    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc);
+
+    let event = ProcessingEvent {
+        event_id: "evt-comment-fail".into(),
+        correlation_id: "corr-comment-fail".into(),
+        event_type: EventType::PullRequestMerged,
+        repository: RepositoryInfo {
+            owner: "acme".into(),
+            name: "app".into(),
+            default_branch: "main".into(),
+        },
+        payload: serde_json::json!({
+            "pull_request": {
+                "head": { "ref": "release/v1.1.0" },
+                "base": { "ref": "main" },
+                "number": 100,
+                "merge_commit_sha": "g".repeat(40)
+            }
+        }),
+        received_at: Utc::now(),
+        source: EventSourceKind::Webhook,
+    };
+
+    // Event must succeed despite comment posting failure.
+    let result = processor.handle_merged_pull_request(&event).await;
+    assert!(
+        result.is_ok(),
+        "expected Ok when cleanup comment fails, got: {result:?}"
+    );
+
+    // Labels should have been removed even though the comment failed.
+    let removed = github.removed_labels.lock().await;
+    assert!(
+        !removed.is_empty(),
+        "labels should still be removed even when comment posting fails, got {removed:?}"
+    );
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// handle_merged_pull_request — feature-PR path audit-comment failure (Minor #6)
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// When the floor IS applied but posting the audit comment to the release PR
+/// fails, a warning is logged and `Ok(orch_result)` is returned.
+#[tokio::test]
+async fn test_handle_merged_feature_pr_audit_comment_failure_returns_ok() {
+    // Current released tag: v1.0.0  →  current_version = Some(1.0.0)
+    // Version calculator produces 1.1.0 (minor bump).
+    // Floor = Major  →  effective = 2.0.0, so the floor IS applied.
+    // The release PR created by the orchestrator gets number 42 (from TestGitHubForLib).
+    let tag = GitTag {
+        name: "v1.0.0".to_string(),
+        target_sha: "a".repeat(40),
+        tag_type: GitTagType::Lightweight,
+        message: None,
+        tagger: None,
+        created_at: None,
+    };
+    let override_label = Label {
+        id: 1,
+        name: "rr:override-major".to_string(),
+        color: "ff0000".to_string(),
+        description: None,
+    };
+    // Fail create_issue_comment on the release PR (number 42
+    // as returned by create_pull_request in the double).
+    let github = TestGitHubForLib::new_empty()
+        .with_tags(vec![tag])
+        .with_pr_labels(7, vec![override_label])
+        .with_fail_comment_for_pr(42); // audit comment on release PR #42 will fail
+
+    let config = TestConfigForLib;
+    let version_calc = TestVersionCalcForLib::returning("1.1.0");
+    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc);
+
+    let event = ProcessingEvent {
+        event_id: "evt-audit-fail".into(),
+        correlation_id: "corr-audit-fail".into(),
+        event_type: EventType::PullRequestMerged,
+        repository: RepositoryInfo {
+            owner: "acme".into(),
+            name: "app".into(),
+            default_branch: "main".into(),
+        },
+        payload: serde_json::json!({
+            "pull_request": {
+                "head": { "ref": "feat/cool-feature" },
+                "base": { "ref": "main" },
+                "number": 7,
+                "merge_commit_sha": "b".repeat(40)
+            }
+        }),
+        received_at: Utc::now(),
+        source: EventSourceKind::Webhook,
+    };
+
+    // The overall result must be Ok even though the audit comment failed.
+    let result = processor.handle_merged_pull_request(&event).await;
+    assert!(
+        result.is_ok(),
+        "expected Ok when audit comment posting fails, got: {result:?}"
+    );
+
+    // The release PR must have been created at 2.0.0 (floor applied).
+    let created = github.created_prs.lock().await;
+    assert_eq!(created.len(), 1, "expected one release PR");
+    assert!(
+        created[0].0.contains("2.0.0"),
+        "release PR branch should reference 2.0.0, got: {}",
+        created[0].0
+    );
+
+    // No audit comment should be present (it failed).
+    let comments = github.issue_comments.lock().await;
+    assert!(
+        comments
+            .iter()
+            .all(|(_, b)| !b.contains("Version floor applied")),
+        "no floor audit comment should be posted when it fails, got: {comments:?}"
     );
 }

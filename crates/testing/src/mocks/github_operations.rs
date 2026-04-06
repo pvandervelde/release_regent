@@ -56,6 +56,20 @@ pub struct MockGitHubOperations {
     /// A name already present causes `create_branch` to return
     /// `CoreError::Conflict`, matching real GitHub 422 behaviour.
     branches: HashMap<String, Vec<String>>,
+    /// Labels keyed `"owner/repo/issue_number"`.  Used by `list_pr_labels`,
+    /// `add_labels` (appends), and `remove_label` (removes by name).
+    /// The `search_pull_requests` label-filter also reads from this map.
+    ///
+    /// Wrapped in `Arc<RwLock<...>>` so that the `&self` async-trait methods
+    /// can mutate the map without requiring `&mut self`.
+    pr_labels: Arc<RwLock<HashMap<String, Vec<Label>>>>,
+    /// Configurable collaborator permission returned by
+    /// `get_collaborator_permission` for any username.
+    /// `None` defaults to `CollaboratorPermission::Write`.
+    collaborator_permission: Option<CollaboratorPermission>,
+    /// Per-method error overrides.  Key is the method name string; value is the
+    /// error message to return.  Takes precedence over global failure simulation.
+    method_errors: HashMap<String, String>,
 }
 
 impl MockGitHubOperations {
@@ -101,6 +115,9 @@ impl MockGitHubOperations {
             tags: HashMap::new(),
             releases: HashMap::new(),
             branches: HashMap::new(),
+            pr_labels: Arc::new(RwLock::new(HashMap::new())),
+            collaborator_permission: None,
+            method_errors: HashMap::new(),
         }
     }
 
@@ -155,6 +172,9 @@ impl MockGitHubOperations {
             tags: HashMap::new(),
             releases: HashMap::new(),
             branches: HashMap::new(),
+            pr_labels: Arc::new(RwLock::new(HashMap::new())),
+            collaborator_permission: None,
+            method_errors: HashMap::new(),
         }
     }
 
@@ -279,6 +299,48 @@ impl MockGitHubOperations {
     pub fn with_branches(mut self, owner: &str, name: &str, branches: Vec<String>) -> Self {
         let key = format!("{}/{}", owner, name);
         self.branches.insert(key, branches);
+        self
+    }
+
+    /// Pre-populate the mock with labels for a specific PR/issue number.
+    ///
+    /// These labels are returned by `list_pr_labels` and are also used by
+    /// `search_pull_requests` to support `label:NAME` queries.
+    ///
+    /// The key is formatted as `"{owner}/{repo}/{issue_number}"` so that
+    /// labels can be scoped to a specific repository.
+    pub fn with_pr_labels(
+        self,
+        owner: &str,
+        repo: &str,
+        issue_number: u64,
+        labels: Vec<Label>,
+    ) -> Self {
+        let key = format!("{owner}/{repo}/{issue_number}");
+        self.pr_labels.blocking_write().insert(key, labels);
+        self
+    }
+
+    /// Configure the collaborator permission returned by
+    /// `get_collaborator_permission` for any username.
+    ///
+    /// Defaults to `CollaboratorPermission::Write` when not set.
+    pub fn with_collaborator_permission(mut self, permission: CollaboratorPermission) -> Self {
+        self.collaborator_permission = Some(permission);
+        self
+    }
+
+    /// Configure a named method to return an error.
+    ///
+    /// This takes precedence over global failure simulation and lets tests
+    /// simulate partial failures (e.g. only `remove_label` fails while other
+    /// calls succeed).
+    ///
+    /// `method_name` must match the method name string used internally, e.g.
+    /// `"add_labels"`, `"remove_label"`, `"list_pr_labels"`.
+    pub fn with_method_error(mut self, method_name: &str, error_message: &str) -> Self {
+        self.method_errors
+            .insert(method_name.to_string(), error_message.to_string());
         self
     }
 }
@@ -792,9 +854,17 @@ impl GitHubOperations for MockGitHubOperations {
             return Err(error);
         }
 
+        if let Some(msg) = self.method_errors.get(method) {
+            let error = CoreError::network(msg.clone());
+            self.record_call(method, &params_str, CallResult::Error(error.to_string()))
+                .await;
+            return Err(error);
+        }
+
         let mut state_filter: Option<String> = None;
         let mut head_filter: Option<String> = None;
         let mut base_filter: Option<String> = None;
+        let mut label_filter: Option<String> = None;
 
         for token in query.split_whitespace() {
             if let Some(s) = token.strip_prefix("is:") {
@@ -803,6 +873,8 @@ impl GitHubOperations for MockGitHubOperations {
                 head_filter = Some(h.to_string());
             } else if let Some(b) = token.strip_prefix("base:") {
                 base_filter = Some(b.to_string());
+            } else if let Some(l) = token.strip_prefix("label:") {
+                label_filter = Some(l.to_string());
             }
         }
 
@@ -832,6 +904,17 @@ impl GitHubOperations for MockGitHubOperations {
                 base_filter
                     .as_ref()
                     .map_or(true, |b| pr.base.ref_name == *b)
+            })
+            .filter(|pr| {
+                label_filter.as_ref().map_or(true, |l| {
+                    let key = format!("{owner}/{repo}/{}", pr.number);
+                    // blocking_read() is safe here: this mock is test-only and
+                    // no concurrent writer can be active inside a synchronous
+                    // iterator closure.
+                    let map = self.pr_labels.blocking_read();
+                    map.get(&key)
+                        .map_or(false, |labels| labels.iter().any(|lbl| lbl.name == *l))
+                })
             })
             .collect();
 
@@ -948,9 +1031,150 @@ impl GitHubOperations for MockGitHubOperations {
             return Err(error);
         }
 
+        if let Some(msg) = self.method_errors.get(method) {
+            let error = CoreError::network(msg.clone());
+            self.record_call(method, &params_str, CallResult::Error(error.to_string()))
+                .await;
+            return Err(error);
+        }
+
         self.record_call(method, &params_str, CallResult::Success)
             .await;
-        Ok(CollaboratorPermission::Write)
+        Ok(self
+            .collaborator_permission
+            .clone()
+            .unwrap_or(CollaboratorPermission::Write))
+    }
+
+    async fn add_labels(
+        &self,
+        owner: &str,
+        repo: &str,
+        issue_number: u64,
+        labels: &[&str],
+    ) -> CoreResult<()> {
+        let method = "add_labels";
+        let params_str =
+            format!("owner={owner}, repo={repo}, issue={issue_number}, labels={labels:?}");
+
+        self.check_quota().await?;
+        self.simulate_latency().await;
+
+        if self.should_simulate_failure().await {
+            let error = CoreError::network("Simulated GitHub API error");
+            self.record_call(method, &params_str, CallResult::Error(error.to_string()))
+                .await;
+            return Err(error);
+        }
+
+        if let Some(msg) = self.method_errors.get(method) {
+            let error = CoreError::network(msg.clone());
+            self.record_call(method, &params_str, CallResult::Error(error.to_string()))
+                .await;
+            return Err(error);
+        }
+
+        let key = format!("{owner}/{repo}/{issue_number}");
+        {
+            let mut map = self.pr_labels.write().await;
+            let entry = map.entry(key).or_default();
+            for label_name in labels {
+                // Avoid duplicates — match GitHub's idempotent behaviour.
+                if !entry.iter().any(|l| l.name == *label_name) {
+                    entry.push(Label {
+                        id: 0,
+                        name: label_name.to_string(),
+                        color: String::new(),
+                        description: None,
+                    });
+                }
+            }
+        }
+
+        self.record_call(method, &params_str, CallResult::Success)
+            .await;
+        Ok(())
+    }
+
+    async fn remove_label(
+        &self,
+        owner: &str,
+        repo: &str,
+        issue_number: u64,
+        label_name: &str,
+    ) -> CoreResult<()> {
+        let method = "remove_label";
+        let params_str =
+            format!("owner={owner}, repo={repo}, issue={issue_number}, label={label_name}");
+
+        self.check_quota().await?;
+        self.simulate_latency().await;
+
+        if self.should_simulate_failure().await {
+            let error = CoreError::network("Simulated GitHub API error");
+            self.record_call(method, &params_str, CallResult::Error(error.to_string()))
+                .await;
+            return Err(error);
+        }
+
+        if let Some(msg) = self.method_errors.get(method) {
+            let error = CoreError::network(msg.clone());
+            self.record_call(method, &params_str, CallResult::Error(error.to_string()))
+                .await;
+            return Err(error);
+        }
+
+        let key = format!("{owner}/{repo}/{issue_number}");
+        {
+            let mut map = self.pr_labels.write().await;
+            if let Some(entry) = map.get_mut(&key) {
+                entry.retain(|l| l.name != label_name);
+            }
+        }
+
+        self.record_call(method, &params_str, CallResult::Success)
+            .await;
+        Ok(())
+    }
+
+    async fn list_pr_labels(
+        &self,
+        owner: &str,
+        repo: &str,
+        issue_number: u64,
+    ) -> CoreResult<Vec<Label>> {
+        let method = "list_pr_labels";
+        let params_str = format!("owner={owner}, repo={repo}, issue={issue_number}");
+
+        self.check_quota().await?;
+        self.simulate_latency().await;
+
+        if self.should_simulate_failure().await {
+            let error = CoreError::network("Simulated GitHub API error");
+            self.record_call(method, &params_str, CallResult::Error(error.to_string()))
+                .await;
+            return Err(error);
+        }
+
+        if let Some(msg) = self.method_errors.get(method) {
+            let error = CoreError::network(msg.clone());
+            self.record_call(method, &params_str, CallResult::Error(error.to_string()))
+                .await;
+            return Err(error);
+        }
+
+        let key = format!("{owner}/{repo}/{issue_number}");
+        let labels = self
+            .pr_labels
+            .read()
+            .await
+            .get(&key)
+            .cloned()
+            .unwrap_or_default();
+
+        self.record_call(method, &params_str, CallResult::Success)
+            .await;
+        Ok(labels)
     }
 }
 
