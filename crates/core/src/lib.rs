@@ -207,6 +207,7 @@ pub mod changelog;
 pub mod comment_command_processor;
 pub mod config;
 pub mod errors;
+pub mod release_automator;
 pub mod release_orchestrator;
 pub mod traits;
 pub mod versioning;
@@ -240,6 +241,19 @@ pub trait MergedPullRequestHandler: Send + Sync {
         event: &traits::event_source::ProcessingEvent,
     ) -> CoreResult<()>;
 
+    /// Process a single `ReleasePrMerged` event.
+    ///
+    /// Called when the event loop receives [`EventType::ReleasePrMerged`].
+    /// The default implementation is a no-op that acknowledges the event
+    /// without taking any action.  Override in the production processor to
+    /// invoke [`release_automator::ReleaseAutomator`].
+    async fn handle_release_pr_merged(
+        &self,
+        _event: &traits::event_source::ProcessingEvent,
+    ) -> CoreResult<()> {
+        Ok(())
+    }
+
     /// Process a single `PullRequestCommentReceived` event.
     ///
     /// The default implementation is a no-op that acknowledges the event
@@ -267,6 +281,29 @@ where
         match self.handle_merged_pull_request(event).await {
             Ok(result) => {
                 tracing::info!(result = ?result, "Release orchestration completed");
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn handle_release_pr_merged(
+        &self,
+        event: &traits::event_source::ProcessingEvent,
+    ) -> CoreResult<()> {
+        use release_automator::{AutomatorConfig, ReleaseAutomator};
+
+        let config = AutomatorConfig::default();
+        let correlation_id = &event.correlation_id;
+        let owner = &event.repository.owner;
+        let repo = &event.repository.name;
+
+        match ReleaseAutomator::new(config, &self.github_operations)
+            .automate(owner, repo, event, correlation_id)
+            .await
+        {
+            Ok(result) => {
+                tracing::info!(result = ?result, "Release automation completed");
                 Ok(())
             }
             Err(e) => Err(e),
@@ -395,9 +432,9 @@ where
                                     "{}/{}",
                                     event.repository.owner, event.repository.name
                                 ),
-                                "Release PR merged — release automator not yet wired"
+                                "Release PR merged — running release automator"
                             );
-                            Ok(())
+                            handler.handle_release_pr_merged(&event).await
                         }
                         EventType::PullRequestCommentReceived => {
                             tracing::debug!(
