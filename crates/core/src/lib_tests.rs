@@ -32,6 +32,7 @@ impl MergedPullRequestHandler for NoopMergedPRHandler {
 #[derive(Clone, Default)]
 struct SpyMergedPRHandler {
     received: Arc<Mutex<Vec<String>>>,
+    received_release_pr: Arc<Mutex<Vec<String>>>,
 }
 
 impl SpyMergedPRHandler {
@@ -42,12 +43,24 @@ impl SpyMergedPRHandler {
     async fn received_event_ids(&self) -> Vec<String> {
         self.received.lock().await.clone()
     }
+
+    async fn received_release_pr_event_ids(&self) -> Vec<String> {
+        self.received_release_pr.lock().await.clone()
+    }
 }
 
 #[async_trait]
 impl MergedPullRequestHandler for SpyMergedPRHandler {
     async fn handle_merged_pull_request(&self, event: &ProcessingEvent) -> CoreResult<()> {
         self.received.lock().await.push(event.event_id.clone());
+        Ok(())
+    }
+
+    async fn handle_release_pr_merged(&self, event: &ProcessingEvent) -> CoreResult<()> {
+        self.received_release_pr
+            .lock()
+            .await
+            .push(event.event_id.clone());
         Ok(())
     }
 }
@@ -401,6 +414,10 @@ async fn test_run_event_loop_calls_handler_for_pull_request_merged_events() {
     // The handler should have been called only for the two PullRequestMerged events.
     let handled = handler.received_event_ids().await;
     assert_eq!(handled, vec!["evt-pr-a", "evt-pr-b"]);
+
+    // The release PR merged handler should have been called for the ReleasePrMerged event.
+    let release_handled = handler.received_release_pr_event_ids().await;
+    assert_eq!(release_handled, vec!["evt-release"]);
 }
 
 /// A `PullRequestMerged` event whose handler returns an error is rejected.
