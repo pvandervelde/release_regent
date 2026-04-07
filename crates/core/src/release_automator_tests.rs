@@ -543,6 +543,181 @@ fn test_extract_version_from_branch_invalid_semver_returns_error() {
     ));
 }
 
+/// Build a [`ProcessingEvent`] representing a merged release PR, including an
+/// explicit `title` field in the payload.
+///
+/// Used to test the PR-title fallback in [`extract_version_from_pr`].
+fn make_release_pr_event_with_title(
+    branch: &str,
+    title: &str,
+    merge_sha: &str,
+    body: &str,
+) -> ProcessingEvent {
+    let payload = serde_json::json!({
+        "pull_request": {
+            "number": 42,
+            "title": title,
+            "head": {
+                "ref": branch,
+                "sha": merge_sha
+            },
+            "merge_commit_sha": merge_sha,
+            "body": body
+        }
+    });
+    ProcessingEvent {
+        event_id: "evt-001".to_string(),
+        correlation_id: "corr-001".to_string(),
+        event_type: EventType::ReleasePrMerged,
+        repository: RepositoryInfo {
+            owner: "testorg".to_string(),
+            name: "testrepo".to_string(),
+            default_branch: "main".to_string(),
+        },
+        payload,
+        received_at: Utc::now(),
+        source: EventSourceKind::Webhook,
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// extract_version_from_pr tests  (BA-13)
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_extract_version_from_pr_branch_path_takes_priority() {
+    // Step 1 succeeds: title and body also contain versions but branch wins.
+    let v = extract_version_from_pr(
+        "release/v2.0.0",
+        "chore(release): v9.9.9",
+        "Release v8.8.8 notes",
+        "release",
+    )
+    .unwrap();
+    assert_eq!(v.major, 2);
+    assert_eq!(v.minor, 0);
+    assert_eq!(v.patch, 0);
+}
+
+#[test]
+fn test_extract_version_from_pr_title_fallback_conventional_commit() {
+    // Step 1 fails (feature branch), step 2 extracts from conventional commit title.
+    let v = extract_version_from_pr(
+        "feature/my-feature",
+        "chore(release): v1.5.0",
+        "",
+        "release",
+    )
+    .unwrap();
+    assert_eq!(v.major, 1);
+    assert_eq!(v.minor, 5);
+    assert_eq!(v.patch, 0);
+}
+
+#[test]
+fn test_extract_version_from_pr_title_fallback_prerelease_token() {
+    // Step 1 fails, step 2 extracts a pre-release version token from title.
+    let v = extract_version_from_pr(
+        "feature/my-feature",
+        "chore(release): v3.0.0-rc.2",
+        "",
+        "release",
+    )
+    .unwrap();
+    assert_eq!(v.major, 3);
+    assert_eq!(v.minor, 0);
+    assert_eq!(v.patch, 0);
+    assert_eq!(v.prerelease.as_deref(), Some("rc.2"));
+}
+
+#[test]
+fn test_extract_version_from_pr_body_fallback_version_in_body() {
+    // Steps 1 and 2 fail; step 3 extracts from body.
+    let v = extract_version_from_pr(
+        "feature/my-feature",
+        "some title without version info",
+        "This release contains changes for v3.1.4.",
+        "release",
+    )
+    .unwrap();
+    assert_eq!(v.major, 3);
+    assert_eq!(v.minor, 1);
+    assert_eq!(v.patch, 4);
+}
+
+#[test]
+fn test_extract_version_from_pr_body_fallback_no_v_prefix() {
+    // Body fallback accepts version tokens without a `v` prefix.
+    let v = extract_version_from_pr(
+        "feature/x",
+        "no version here",
+        "Version 4.2.1 released",
+        "release",
+    )
+    .unwrap();
+    assert_eq!(v.major, 4);
+    assert_eq!(v.minor, 2);
+    assert_eq!(v.patch, 1);
+}
+
+#[test]
+fn test_extract_version_from_pr_all_sources_fail_returns_invalid_input() {
+    let err = extract_version_from_pr("feature/x", "no version", "no version here", "release")
+        .unwrap_err();
+    assert!(
+        matches!(err, CoreError::InvalidInput { .. }),
+        "Expected InvalidInput when all three fallbacks fail, got: {err:?}"
+    );
+}
+
+#[test]
+fn test_extract_version_from_pr_malformed_v_token_in_title_falls_through_to_body() {
+    // Title has a `v`-prefixed token that is not valid semver; falls through to body.
+    let v = extract_version_from_pr(
+        "feature/not-a-release",
+        "chore: vnot-semver update",
+        "Body contains v1.2.3 as the actual version",
+        "release",
+    )
+    .unwrap();
+    assert_eq!(v.major, 1);
+    assert_eq!(v.minor, 2);
+    assert_eq!(v.patch, 3);
+}
+
+#[test]
+fn test_extract_version_from_pr_title_requires_v_prefix() {
+    // Title has a bare version (no `v`) — title step must not match it; body
+    // step may match it when reached.
+    let v = extract_version_from_pr(
+        "feature/x",
+        "bump to 5.0.0",
+        "releasing 5.0.0 today",
+        "release",
+    )
+    .unwrap();
+    // Either body scan (step 3, no v-prefix required) found "5.0.0".
+    assert_eq!(v.major, 5);
+    assert_eq!(v.minor, 0);
+    assert_eq!(v.patch, 0);
+}
+
+#[test]
+fn test_extract_version_from_pr_branch_prerelease_version() {
+    // Branch with a pre-release version — step 1 must succeed.
+    let v = extract_version_from_pr("release/v1.0.0-rc.1", "no version", "no version", "release")
+        .unwrap();
+    assert!(v.is_prerelease());
+    assert_eq!(v.major, 1);
+    assert_eq!(v.minor, 0);
+    assert_eq!(v.patch, 0);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// make_release_pr_event_with_title helper and its tests are below the
+// is_release_pr_branch tests, inline with the automate integration tests.
+// ─────────────────────────────────────────────────────────────────────────────
+
 // ─────────────────────────────────────────────────────────────────────────────
 // is_release_pr_branch tests
 // ─────────────────────────────────────────────────────────────────────────────
@@ -947,5 +1122,89 @@ async fn test_automate_fallback_sha_used_when_merge_commit_sha_absent() {
     assert_eq!(
         tags[0].1, "cafebabe1234567890cafebabe1234567890abcd",
         "Should use head.sha when merge_commit_sha is absent"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ReleaseAutomator::automate — BA-13 fallback chain integration tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_automate_title_fallback_when_branch_version_is_invalid() {
+    // Branch name has an invalid semver suffix but the PR title contains a
+    // valid `v`-prefixed version token.
+    let github = TestGitHub::new();
+    let automator = ReleaseAutomator::new(AutomatorConfig::default(), &github);
+
+    let event = make_release_pr_event_with_title(
+        "release/vnot-valid",
+        "chore(release): v1.5.0",
+        "deadbeef1234567890deadbeef1234567890abcd",
+        "## Changelog\n- fix: something",
+    );
+
+    let result = automator
+        .automate("testorg", "testrepo", &event, "corr-001")
+        .await
+        .unwrap();
+
+    let AutomatorResult::Created { release } = result;
+    assert_eq!(release.tag_name, "v1.5.0");
+
+    let tags = github.created_tags().await;
+    assert_eq!(tags.len(), 1);
+    assert_eq!(tags[0].0, "v1.5.0");
+}
+
+#[tokio::test]
+async fn test_automate_body_fallback_when_branch_and_title_lack_version() {
+    // Neither the branch name nor the PR title yields a valid version; the
+    // automator must fall back to the PR body.
+    let github = TestGitHub::new();
+    let automator = ReleaseAutomator::new(AutomatorConfig::default(), &github);
+
+    let event = make_release_pr_event_with_title(
+        "feature/my-feature",
+        "chore: some useful update",
+        "deadbeef1234567890deadbeef1234567890abcd",
+        "## Changelog\nThis release ships v2.3.4 of the system.",
+    );
+
+    let result = automator
+        .automate("testorg", "testrepo", &event, "corr-001")
+        .await
+        .unwrap();
+
+    let AutomatorResult::Created { release } = result;
+    assert_eq!(release.tag_name, "v2.3.4");
+
+    let tags = github.created_tags().await;
+    assert_eq!(tags.len(), 1);
+    assert_eq!(tags[0].0, "v2.3.4");
+}
+
+#[tokio::test]
+async fn test_automate_all_fallbacks_fail_returns_invalid_input() {
+    // All three sources fail to yield a valid semver — automate must return
+    // CoreError::InvalidInput so the event loop can treat it as a permanent
+    // failure (not retried).
+    let github = TestGitHub::new();
+    let automator = ReleaseAutomator::new(AutomatorConfig::default(), &github);
+
+    let event = make_release_pr_event_with_title(
+        "feature/my-feature",
+        "chore: no version here",
+        "deadbeef1234567890deadbeef1234567890abcd",
+        "",
+    );
+
+    let err = automator
+        .automate("testorg", "testrepo", &event, "corr-001")
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(err, CoreError::InvalidInput { .. }),
+        "Expected InvalidInput when all fallbacks fail, got: {err:?}"
     );
 }

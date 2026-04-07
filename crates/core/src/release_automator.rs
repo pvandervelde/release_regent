@@ -143,8 +143,9 @@ impl<'a, G: GitHubOperations + Send + Sync> ReleaseAutomator<'a, G> {
         event: &ProcessingEvent,
         correlation_id: &str,
     ) -> CoreResult<AutomatorResult> {
-        let (branch, merge_sha, pr_body) = extract_payload_fields(event)?;
-        let version = extract_version_from_branch(&branch, &self.config.branch_prefix)?;
+        let (branch, merge_sha, pr_body, pr_title) = extract_payload_fields(event)?;
+        let version =
+            extract_version_from_pr(&branch, &pr_title, &pr_body, &self.config.branch_prefix)?;
         let tag_name = version.to_string_with_prefix(true);
 
         info!(
@@ -268,9 +269,10 @@ impl<'a, G: GitHubOperations + Send + Sync> ReleaseAutomator<'a, G> {
 // Free helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Extract the three required fields from a `ReleasePrMerged` webhook payload.
+/// Extract the required fields from a `ReleasePrMerged` webhook payload.
 ///
-/// Returns `(branch, merge_sha, pr_body)`.
+/// Returns `(branch, merge_sha, pr_body, pr_title)`.  The `pr_title` defaults
+/// to an empty string when `pull_request.title` is absent.
 ///
 /// # Errors
 ///
@@ -280,7 +282,7 @@ impl<'a, G: GitHubOperations + Send + Sync> ReleaseAutomator<'a, G> {
 // The same allow is applied to `extract_version_from_branch` and other free
 // functions in this file for the same reason.
 #[allow(clippy::result_large_err)]
-fn extract_payload_fields(event: &ProcessingEvent) -> CoreResult<(String, String, String)> {
+fn extract_payload_fields(event: &ProcessingEvent) -> CoreResult<(String, String, String, String)> {
     let branch = event
         .payload
         .get("pull_request")
@@ -325,7 +327,15 @@ fn extract_payload_fields(event: &ProcessingEvent) -> CoreResult<(String, String
         .unwrap_or("")
         .to_string();
 
-    Ok((branch, merge_sha, pr_body))
+    let pr_title = event
+        .payload
+        .get("pull_request")
+        .and_then(|pr| pr.get("title"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+        .to_string();
+
+    Ok((branch, merge_sha, pr_body, pr_title))
 }
 
 /// Extract a [`SemanticVersion`] from a release branch name.
@@ -372,6 +382,133 @@ pub fn extract_version_from_branch(
         )
     })?;
     VersionCalculator::parse_version(version_str)
+}
+
+/// Extract a [`SemanticVersion`] from a release PR using a three-level fallback chain.
+///
+/// The chain is evaluated in priority order:
+///
+/// 1. **Branch name** — delegates to [`extract_version_from_branch`]; succeeds
+///    for branches matching `{branch_prefix}/v{semver}`.
+/// 2. **PR title** — scans whitespace-separated tokens for the first one that
+///    starts with `v` *and* is a valid semantic version
+///    (e.g. `chore(release): v1.2.3` → `1.2.3`).
+/// 3. **PR body** — scans whitespace-separated tokens for the first valid
+///    semantic version with an optional `v` prefix
+///    (e.g. `v1.2.3` or `1.2.3`).
+///
+/// Returns [`CoreError::InvalidInput`] when no valid semver can be extracted
+/// from any of the three sources.
+///
+/// [`extract_version_from_branch`] is **unchanged** by this addition; all
+/// existing call sites that use it directly are unaffected.
+///
+/// # Parameters
+///
+/// - `branch`: PR head branch name (e.g. `release/v1.2.3`).
+/// - `title`: PR title string (e.g. `chore(release): v1.2.3`).
+/// - `body`: PR body text.
+/// - `branch_prefix`: Release branch prefix (e.g. `release`).
+///
+/// # Errors
+///
+/// Returns [`CoreError::InvalidInput`] when all three sources fail to yield a
+/// valid semantic version.
+///
+/// # Examples
+///
+/// ```
+/// use release_regent_core::release_automator::extract_version_from_pr;
+///
+/// // Branch name wins when valid.
+/// let v = extract_version_from_pr("release/v1.2.3", "no version", "no version", "release")
+///     .unwrap();
+/// assert_eq!(v.to_string(), "1.2.3");
+///
+/// // Falls back to title when branch is not a release branch.
+/// let v = extract_version_from_pr("feature/x", "chore(release): v2.0.0", "", "release")
+///     .unwrap();
+/// assert_eq!(v.to_string(), "2.0.0");
+/// ```
+// `CoreError` is a large enum used uniformly throughout the codebase.
+// Boxing it would require changing the entire `CoreResult<T>` type alias — a
+// project-wide refactor. Allow the lint here as it is consistent with the
+// existing pattern.
+#[allow(clippy::result_large_err)]
+pub fn extract_version_from_pr(
+    branch: &str,
+    title: &str,
+    body: &str,
+    branch_prefix: &str,
+) -> CoreResult<SemanticVersion> {
+    // Step 1: branch name.
+    if let Ok(version) = extract_version_from_branch(branch, branch_prefix) {
+        return Ok(version);
+    }
+
+    // Step 2: PR title — require a `v`-prefixed token.
+    if let Some(version) = find_version_token(title, true) {
+        return Ok(version);
+    }
+
+    // Step 3: PR body — `v` prefix is optional.
+    if let Some(version) = find_version_token(body, false) {
+        return Ok(version);
+    }
+
+    Err(CoreError::invalid_input(
+        "version",
+        format!(
+            "Could not extract a valid semantic version from branch '{branch}', \
+             PR title, or PR body"
+        ),
+    ))
+}
+
+/// Scan `text` for the first whitespace-separated token that is a valid semver.
+///
+/// Surrounding punctuation (`:`, `,`, `(`, `)`, `[`, `]`, etc.) is stripped
+/// from each token before parsing so that tokens like `v1.2.3,` or `(v1.2.3)`
+/// are recognised correctly.
+///
+/// When `require_v_prefix` is `true`, only tokens that begin with `v` (followed
+/// by a digit) are considered.  When `false`, a `v` prefix is stripped when
+/// present but is not required.
+fn find_version_token(text: &str, require_v_prefix: bool) -> Option<SemanticVersion> {
+    for token in text.split_whitespace() {
+        // Strip common surrounding punctuation that cannot appear in semver.
+        // The trailing `.` in prose like "version v3.1.4." is intentionally
+        // included; `trim_matches` only strips from the absolute edges so it
+        // will not discard the dots within `1.2.3`.)
+        let token = token.trim_matches(|c: char| {
+            matches!(
+                c,
+                ':' | ';' | ',' | '.' | '(' | ')' | '[' | ']' | '{' | '}' | '!' | '?' | '\'' | '"'
+            )
+        });
+
+        let starts_with_v = token.starts_with('v');
+
+        if require_v_prefix {
+            if !starts_with_v {
+                continue;
+            }
+            // Reject tokens like "version" where 'v' is followed by a non-digit.
+            if !token
+                .get(1..)
+                .is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit()))
+            {
+                continue;
+            }
+        } else if !starts_with_v && !token.starts_with(|c: char| c.is_ascii_digit()) {
+            continue;
+        }
+
+        if let Ok(version) = VersionCalculator::parse_version(token) {
+            return Some(version);
+        }
+    }
+    None
 }
 
 /// Returns `true` when the branch name starts with the release branch prefix
