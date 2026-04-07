@@ -82,7 +82,11 @@ impl Default for AutomatorConfig {
 /// The outcome of a single [`ReleaseAutomator::automate`] call.
 #[derive(Debug, Clone)]
 pub enum AutomatorResult {
-    /// A new GitHub release was created (or already existed — idempotent).
+    /// The GitHub release is ready — either freshly created or already present.
+    ///
+    /// When the matching Git tag **and** GitHub release both existed before this
+    /// call, no new resources are created and this variant is returned
+    /// unchanged, making the operation safe to retry.
     Created {
         /// The created (or previously existing) GitHub release.
         release: Release,
@@ -131,6 +135,7 @@ impl<'a, G: GitHubOperations + Send + Sync> ReleaseAutomator<'a, G> {
     ///   semantic version, or the payload is missing required fields.
     /// - [`CoreError::GitHub`] — a GitHub API call failed for a non-idempotent
     ///   reason.
+    #[tracing::instrument(skip(self, event), fields(owner, repo, correlation_id))]
     pub async fn automate(
         &self,
         owner: &str,
@@ -138,9 +143,6 @@ impl<'a, G: GitHubOperations + Send + Sync> ReleaseAutomator<'a, G> {
         event: &ProcessingEvent,
         correlation_id: &str,
     ) -> CoreResult<AutomatorResult> {
-        let span = tracing::info_span!("release_automator.automate", owner, repo, correlation_id,);
-        let _enter = span.enter();
-
         let (branch, merge_sha, pr_body) = extract_payload_fields(event)?;
         let version = extract_version_from_branch(&branch, &self.config.branch_prefix)?;
         let tag_name = version.to_string_with_prefix(true);
@@ -156,6 +158,17 @@ impl<'a, G: GitHubOperations + Send + Sync> ReleaseAutomator<'a, G> {
             .ensure_tag_and_get_existing_release(owner, repo, &tag_name, &merge_sha)
             .await?
         {
+            // Tag and release both exist — this is a full idempotent retry.
+            // Still attempt branch cleanup: a previous run may have succeeded at
+            // tag+release creation but failed before (or during) deletion.
+            if let Err(e) = self.github.delete_branch(owner, repo, &branch).await {
+                warn!(
+                    error = %e, branch = %branch,
+                    "Failed to delete release branch in idempotent path; continuing"
+                );
+            } else {
+                tracing::debug!(branch = %branch, "Deleted release branch (idempotent path)");
+            }
             return Ok(AutomatorResult::Created { release: existing });
         }
 
@@ -263,6 +276,10 @@ impl<'a, G: GitHubOperations + Send + Sync> ReleaseAutomator<'a, G> {
 ///
 /// Returns [`CoreError::InvalidInput`] when `pull_request.head.ref` is absent
 /// or when neither `merge_commit_sha` nor `pull_request.head.sha` are present.
+// `CoreError` is a large enum used uniformly throughout the codebase.
+// The same allow is applied to `extract_version_from_branch` and other free
+// functions in this file for the same reason.
+#[allow(clippy::result_large_err)]
 fn extract_payload_fields(event: &ProcessingEvent) -> CoreResult<(String, String, String)> {
     let branch = event
         .payload
@@ -357,7 +374,15 @@ pub fn extract_version_from_branch(
     VersionCalculator::parse_version(version_str)
 }
 
-/// Returns `true` when the branch name matches the release branch pattern.
+/// Returns `true` when the branch name starts with the release branch prefix
+/// (`{branch_prefix}/v`).
+///
+/// **This is a prefix-only check.** It does not validate that the version
+/// suffix is a valid semantic version. For example, `"release/vnot-valid"`
+/// returns `true` even though [`extract_version_from_branch`] would return an
+/// error for that branch. Use this function as a lightweight pre-filter and
+/// call [`extract_version_from_branch`] whenever you need to parse or validate
+/// the version.
 ///
 /// # Examples
 ///
@@ -366,6 +391,9 @@ pub fn extract_version_from_branch(
 ///
 /// assert!(is_release_pr_branch("release/v1.2.3", "release"));
 /// assert!(is_release_pr_branch("release/v1.0.0-rc.1", "release"));
+/// // Prefix-only: "release/vnot-valid" passes the prefix check even though
+/// // extract_version_from_branch would reject the version suffix.
+/// assert!(is_release_pr_branch("release/vnot-valid", "release"));
 /// assert!(!is_release_pr_branch("feature/my-feature", "release"));
 /// assert!(!is_release_pr_branch("release/not-a-version", "release"));
 /// ```

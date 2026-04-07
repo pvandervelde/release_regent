@@ -675,14 +675,17 @@ async fn test_automate_idempotent_tag_and_release_both_exist() {
         "Expected the pre-existing release to be returned"
     );
 
-    // No new releases created and no branch deleted (already complete).
+    // No new releases created, but branch deletion is still attempted so that
+    // a previous run that succeeded at tag+release but failed at deletion can
+    // be cleaned up on the next retry.
     assert!(
         github.created_releases().await.is_empty(),
         "No new release should be created when both tag and release exist"
     );
-    assert!(
-        github.deleted_branches().await.is_empty(),
-        "Branch should not be deleted when idempotently returning existing release"
+    assert_eq!(
+        github.deleted_branches().await,
+        vec!["release/v1.2.3".to_string()],
+        "Branch should still be deleted in the idempotent path"
     );
 }
 

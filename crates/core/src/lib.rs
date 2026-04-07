@@ -293,10 +293,19 @@ where
     ) -> CoreResult<()> {
         use release_automator::{AutomatorConfig, ReleaseAutomator};
 
-        let config = AutomatorConfig::default();
         let correlation_id = &event.correlation_id;
         let owner = &event.repository.owner;
         let repo = &event.repository.name;
+
+        // `branch_prefix` and `changelog_header` are not yet per-repo config
+        // fields in `ReleaseRegentConfig`. Use the same default source as
+        // `OrchestratorConfig` so both components stay in sync. When the schema
+        // gains an explicit `release.branch_prefix` field, load it here via
+        // `self.configuration_provider.get_merged_config(...)`.
+        let config = AutomatorConfig {
+            branch_prefix: release_orchestrator::OrchestratorConfig::default().branch_prefix,
+            changelog_header: "## Changelog".to_string(),
+        };
 
         match ReleaseAutomator::new(config, &self.github_operations)
             .automate(owner, repo, event, correlation_id)
