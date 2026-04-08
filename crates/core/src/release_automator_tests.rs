@@ -713,10 +713,9 @@ fn test_extract_version_from_pr_branch_prerelease_version() {
     assert_eq!(v.patch, 0);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// make_release_pr_event_with_title helper and its tests are below the
-// is_release_pr_branch tests, inline with the automate integration tests.
-// ─────────────────────────────────────────────────────────────────────────────
+// Note: make_release_pr_event_with_title is defined above (before the
+// extract_version_from_pr tests). Its integration tests appear later in the
+// file alongside the other ReleaseAutomator::automate tests.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // is_release_pr_branch tests
@@ -1044,13 +1043,13 @@ async fn test_automate_invalid_branch_version_returns_error() {
         .automate("testorg", "testrepo", &event, "corr-001")
         .await
         .unwrap_err();
-    // The error comes from VersionCalculator::parse_version which returns Versioning or InvalidInput.
+    // With the fallback chain in place, all three sources (branch, title, body)
+    // are tried before returning. The catch-all in extract_version_from_pr always
+    // returns CoreError::InvalidInput, so CoreError::Versioning is no longer
+    // reachable here.
     assert!(
-        matches!(
-            err,
-            CoreError::InvalidInput { .. } | CoreError::Versioning { .. }
-        ),
-        "Expected parse error for invalid semver branch, got: {err:?}"
+        matches!(err, CoreError::InvalidInput { .. }),
+        "Expected InvalidInput when all fallbacks fail, got: {err:?}"
     );
 }
 

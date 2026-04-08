@@ -7,7 +7,12 @@
 //!
 //! When [`EventType::ReleasePrMerged`] arrives in the event loop, the automator:
 //!
-//! 1. **Extracts** the version from the PR head branch name (`release/v{version}`).
+//! 1. **Extracts** the version from the merged PR using a three-level fallback chain:
+//!    - Branch name: `release/v{version}` (e.g. `release/v1.2.3`).
+//!    - PR title: first `v`-prefixed semver token (e.g. `chore(release): v1.2.3`).
+//!    - PR body: first semver token with an optional `v` prefix.
+//!    Fails with [`CoreError::InvalidInput`] only if no valid semver is found in any
+//!    of the three sources.
 //! 2. **Extracts** the merge commit SHA from the webhook payload.
 //! 3. **Creates an annotated Git tag** pointing to the merge commit.
 //! 4. **Extracts** the changelog from the PR body.
@@ -442,17 +447,37 @@ pub fn extract_version_from_pr(
     branch_prefix: &str,
 ) -> CoreResult<SemanticVersion> {
     // Step 1: branch name.
-    if let Ok(version) = extract_version_from_branch(branch, branch_prefix) {
-        return Ok(version);
+    match extract_version_from_branch(branch, branch_prefix) {
+        Ok(version) => return Ok(version),
+        Err(ref e) => {
+            tracing::debug!(
+                branch,
+                error = %e,
+                "Branch version extraction failed; trying PR title"
+            );
+        }
     }
 
     // Step 2: PR title — require a `v`-prefixed token.
     if let Some(version) = find_version_token(title, true) {
+        tracing::debug!(
+            ?title,
+            "Extracted version from PR title after branch name failed"
+        );
         return Ok(version);
     }
+    tracing::debug!(
+        ?title,
+        "PR title contained no v-prefixed semver token; trying PR body"
+    );
 
     // Step 3: PR body — `v` prefix is optional.
+    // Note: tokens starting with a digit (e.g. `3.14.1`, `2026.4.7`) are also
+    // scanned here which could produce false positives in prose-heavy bodies.
+    // This is an accepted trade-off: body scanning is only reached after both
+    // branch name and PR title have failed.
     if let Some(version) = find_version_token(body, false) {
+        tracing::debug!("Extracted version from PR body after branch name and title failed");
         return Ok(version);
     }
 
