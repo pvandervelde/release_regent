@@ -1,6 +1,6 @@
 //! Authentication module for github-bot-sdk integration
 //!
-//! Provides SecretProvider, JwtSigner, and GitHubApiClient implementations
+//! Provides [`SecretProvider`], [`JwtSigner`], and [`GitHubApiClient`] implementations
 //! for use with github-bot-sdk in production deployments.
 
 use async_trait::async_trait;
@@ -29,7 +29,7 @@ pub struct AuthConfig {
 
 /// Azure Key Vault-based secret provider
 ///
-/// Implements the SecretProvider trait for github-bot-sdk using Azure Key Vault
+/// Implements the [`SecretProvider`] trait for github-bot-sdk using Azure Key Vault
 /// for secret storage and retrieval.
 #[derive(Debug, Clone)]
 pub struct AzureKeyVaultSecretProvider {
@@ -39,7 +39,12 @@ pub struct AzureKeyVaultSecretProvider {
 }
 
 impl AzureKeyVaultSecretProvider {
-    /// Create a new Azure Key Vault secret provider
+    /// Create a new Azure Key Vault secret provider.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SecretError::InvalidFormat`] if the private key in `config` is not
+    /// a valid PEM-encoded RSA private key.
     pub fn new(config: AuthConfig) -> Result<Self, SecretError> {
         let app_id = GitHubAppId::new(config.app_id);
 
@@ -95,6 +100,7 @@ pub struct DefaultJwtSigner;
 
 impl DefaultJwtSigner {
     /// Create a new [`DefaultJwtSigner`].
+    #[must_use]
     pub fn new() -> Self {
         Self
     }
@@ -115,7 +121,7 @@ impl JwtSigner for DefaultJwtSigner {
     ) -> Result<JsonWebToken, SigningError> {
         let encoding_key = EncodingKey::from_rsa_pem(private_key.key_data()).map_err(|e| {
             SigningError::InvalidKey {
-                message: format!("Failed to create encoding key: {}", e),
+                message: format!("Failed to create encoding key: {e}"),
             }
         })?;
 
@@ -125,7 +131,7 @@ impl JwtSigner for DefaultJwtSigner {
 
         let token_string =
             encode(&header, &claims, &encoding_key).map_err(|e| SigningError::EncodingFailed {
-                message: format!("Failed to encode JWT: {}", e),
+                message: format!("Failed to encode JWT: {e}"),
             })?;
 
         let expires_at = DateTime::from_timestamp(exp, 0).unwrap_or_else(Utc::now);
@@ -137,7 +143,7 @@ impl JwtSigner for DefaultJwtSigner {
             .map(|_| ())
             .map_err(|e| ValidationError::InvalidFormat {
                 field: "private_key".to_string(),
-                message: format!("Invalid RSA private key: {}", e),
+                message: format!("Invalid RSA private key: {e}"),
             })
     }
 }
@@ -159,6 +165,7 @@ pub struct DefaultGitHubApiClient {
 
 impl DefaultGitHubApiClient {
     /// Create a new [`DefaultGitHubApiClient`] pointing at `https://api.github.com`.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             http_client: reqwest::Client::new(),
@@ -193,17 +200,18 @@ impl GitHubApiClient for DefaultGitHubApiClient {
             installation_id.as_u64()
         );
 
+        let bearer_token = format!("Bearer {}", jwt.token());
         let response = self
             .http_client
             .post(&url)
-            .header("Authorization", format!("Bearer {}", jwt.token()))
+            .header("Authorization", bearer_token)
             .header("User-Agent", &self.user_agent)
             .header("Accept", "application/vnd.github.v3+json")
             .send()
             .await
             .map_err(|e| ApiError::HttpError {
                 status: 0,
-                message: format!("Network error sending token request: {}", e),
+                message: format!("Network error sending token request: {e}"),
             })?;
 
         if !response.status().is_success() {
@@ -218,7 +226,7 @@ impl GitHubApiClient for DefaultGitHubApiClient {
         let token_response: TokenResponse =
             response.json().await.map_err(|e| ApiError::HttpError {
                 status: 0,
-                message: format!("Failed to parse token response: {}", e),
+                message: format!("Failed to parse token response: {e}"),
             })?;
 
         Ok(InstallationToken::new(
