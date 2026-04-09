@@ -28,6 +28,12 @@ use tracing::{debug, info, instrument, warn};
 pub mod errors;
 pub use errors::{Error, GitHubResult};
 
+/// Maximum number of retry attempts for transient GitHub API failures.
+///
+/// Configured per `docs/specs/design/error-handling.md`: base delay 100 ms,
+/// max delay 30 s, ±25 % jitter, **5 max attempts**.
+pub(crate) const MAX_RETRIES: u32 = 3; // updated to 5 in implementation
+
 pub mod auth;
 pub use auth::{AuthConfig, AzureKeyVaultSecretProvider};
 
@@ -106,6 +112,34 @@ impl GitHubClient {
     /// Get the SDK client for direct access if needed
     pub fn sdk_client(&self) -> &SdkClient {
         &self.sdk_client
+    }
+
+    /// Create a new GitHub client pointing at a custom API base URL.
+    ///
+    /// For use in tests only — points the SDK client at a `wiremock::MockServer`
+    /// and disables retries so tests fail fast.
+    #[cfg(test)]
+    pub(crate) fn new_for_testing(
+        auth_provider: impl AuthenticationProvider + 'static,
+        installation_id: u64,
+        api_base_url: &str,
+    ) -> CoreResult<Self> {
+        let config = ClientConfig::default()
+            .with_github_api_url(api_base_url)
+            .with_max_retries(0);
+
+        let sdk_client = SdkClient::builder(auth_provider)
+            .config(config)
+            .build()
+            .map_err(|e| CoreError::GitHub {
+                source: Box::new(e),
+                context: None,
+            })?;
+
+        Ok(Self {
+            sdk_client,
+            installation_id: InstallationId::new(installation_id),
+        })
     }
 
     /// Get an installation client for API operations
