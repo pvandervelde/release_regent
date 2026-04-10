@@ -42,7 +42,7 @@ reqwest = { version = "0.13", features = ["json", "rustls"] }
 
 # Crypto and security
 jsonwebtoken = "9.2"
-secrecy = "0.8"
+secrecy = "0.10"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.6", features = ["v4", "serde"] }
 
