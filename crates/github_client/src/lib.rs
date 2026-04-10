@@ -860,8 +860,7 @@ impl GitHubOperations for GitHubClient {
         let installation = self.installation().await?;
         let path = format!("/repos/{owner}/{repo}/issues/{issue_number}/labels");
         let response = installation.get(&path).await.map_err(map_sdk_error)?;
-        let raw: Vec<serde_json::Value> =
-            response.json().await.map_err(CoreError::github)?;
+        let raw: Vec<serde_json::Value> = response.json().await.map_err(CoreError::github)?;
 
         let labels = raw
             .into_iter()
@@ -1068,10 +1067,7 @@ fn map_sdk_error(error: ApiError) -> CoreError {
                 let secs = (reset_at - chrono::Utc::now()).num_seconds();
                 u64::try_from(secs).unwrap_or(1).max(1)
             };
-            CoreError::rate_limit_with_retry(
-                "GitHub primary rate limit exceeded",
-                retry_after,
-            )
+            CoreError::rate_limit_with_retry("GitHub primary rate limit exceeded", retry_after)
         }
         ApiError::SecondaryRateLimit => {
             // Abuse-detection limit: GitHub recommends waiting at least 60 s.
@@ -1082,17 +1078,12 @@ fn map_sdk_error(error: ApiError) -> CoreError {
         }
 
         // ── Transient: request timed out ─────────────────────────────────────
-        ApiError::Timeout => {
-            CoreError::timeout("GitHub API request", 30_000)
-        }
+        ApiError::Timeout => CoreError::timeout("GitHub API request", 30_000),
 
         // ── Mixed: HTTP status-code based classification ─────────────────────
         ApiError::HttpError { status, message } => match status {
             // Rate-limit via 429 (when the SDK returns HttpError instead of RateLimitExceeded)
-            429 => CoreError::rate_limit_with_retry(
-                format!("GitHub rate limit: {message}"),
-                60,
-            ),
+            429 => CoreError::rate_limit_with_retry(format!("GitHub rate limit: {message}"), 60),
             // Auth failures
             401 => CoreError::authentication(format!("GitHub 401: {message}")),
             403 => CoreError::authentication(format!("GitHub 403: {message}")),
@@ -1123,9 +1114,9 @@ fn map_sdk_error(error: ApiError) -> CoreError {
             )),
             context: None,
         },
-        ApiError::Configuration { message } => CoreError::config(format!(
-            "GitHub client configuration error: {message}"
-        )),
+        ApiError::Configuration { message } => {
+            CoreError::config(format!("GitHub client configuration error: {message}"))
+        }
         ApiError::TokenGenerationFailed { message } => {
             CoreError::authentication(format!("GitHub token generation failed: {message}"))
         }
