@@ -40,6 +40,12 @@ pub use errors::{Error, GitHubResult};
 /// max delay 30 s, ±25 % jitter, **5 max attempts**.
 pub(crate) const MAX_RETRIES: u32 = 5;
 
+/// Retry delay (seconds) after a GitHub secondary (abuse-detection) rate limit.
+///
+/// GitHub recommends waiting at least 60 s before retrying after a secondary
+/// rate limit response.
+const SECONDARY_RATE_LIMIT_RETRY_SECS: u64 = 60;
+
 pub mod auth;
 pub use auth::{AuthConfig, AzureKeyVaultSecretProvider};
 
@@ -256,13 +262,7 @@ impl GitOperations for GitHubClient {
             .into_iter()
             .find(|t| t.name == tag_name)
             .map(convert_sdk_tag_to_git_tag)
-            .ok_or_else(|| CoreError::GitHub {
-                source: Box::new(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    "Tag not found",
-                )),
-                context: None,
-            })
+            .ok_or_else(|| CoreError::not_found(format!("tag '{tag_name}' not found")))
     }
 
     #[instrument(skip(self))]
@@ -271,7 +271,8 @@ impl GitOperations for GitHubClient {
 
         match self.get_tag(owner, repo, tag_name).await {
             Ok(_) => Ok(true),
-            Err(_) => Ok(false), // Assume any error means tag doesn't exist
+            Err(CoreError::NotFound { .. }) => Ok(false),
+            Err(e) => Err(e),
         }
     }
 
@@ -536,6 +537,8 @@ impl GitHubOperations for GitHubClient {
         convert_sdk_pr_to_release_regent_pr(sdk_pr)
     }
 
+    /// Note: `per_page` and `page` parameters are ignored — this implementation
+    /// always fetches all pages and returns a complete result set.
     #[instrument(skip(self))]
     async fn list_pull_requests(
         &self,
@@ -584,10 +587,9 @@ impl GitHubOperations for GitHubClient {
                 all_prs.push(convert_sdk_pr_to_release_regent_pr(sdk_pr)?);
             }
 
-            if has_next {
-                page = next_page_num;
-            } else {
-                break;
+            match (has_next, next_page_num) {
+                (true, Some(next)) => page = Some(next),
+                _ => break,
             }
         }
 
@@ -652,10 +654,9 @@ impl GitHubOperations for GitHubClient {
                 all_prs.push(convert_sdk_pr_to_release_regent_pr(sdk_pr)?);
             }
 
-            if has_next {
-                page = next_page_num;
-            } else {
-                break;
+            match (has_next, next_page_num) {
+                (true, Some(next)) => page = Some(next),
+                _ => break,
             }
         }
 
@@ -1069,13 +1070,10 @@ fn map_sdk_error(error: ApiError) -> CoreError {
             };
             CoreError::rate_limit_with_retry("GitHub primary rate limit exceeded", retry_after)
         }
-        ApiError::SecondaryRateLimit => {
-            // Abuse-detection limit: GitHub recommends waiting at least 60 s.
-            CoreError::rate_limit_with_retry(
-                "GitHub secondary rate limit (abuse detection) exceeded",
-                60,
-            )
-        }
+        ApiError::SecondaryRateLimit => CoreError::rate_limit_with_retry(
+            "GitHub secondary rate limit (abuse detection) exceeded",
+            SECONDARY_RATE_LIMIT_RETRY_SECS,
+        ),
 
         // ── Transient: request timed out ─────────────────────────────────────
         ApiError::Timeout => CoreError::timeout("GitHub API request", 30_000),
@@ -1129,8 +1127,11 @@ fn map_sdk_error(error: ApiError) -> CoreError {
     }
 }
 
-fn is_not_found_error(error: &github_bot_sdk::error::ApiError) -> bool {
-    matches!(error, github_bot_sdk::error::ApiError::NotFound)
+fn is_not_found_error(error: &ApiError) -> bool {
+    matches!(
+        error,
+        ApiError::NotFound | ApiError::HttpError { status: 404, .. }
+    )
 }
 
 #[cfg(test)]

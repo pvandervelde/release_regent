@@ -30,4 +30,3 @@ release-regent-core = { path = "../core" }
 tokio-test = { workspace = true }
 mockall = { workspace = true }
 wiremock = { workspace = true }
-chrono = { workspace = true }

@@ -302,3 +302,132 @@ async fn test_list_pull_requests_not_found_returns_core_error_not_found() {
         result
     );
 }
+
+// ---------------------------------------------------------------------------
+// search_pull_requests tests
+// ---------------------------------------------------------------------------
+
+/// `search_pull_requests` with no query filters returns all open PRs.
+#[tokio::test]
+async fn test_search_pull_requests_no_filter_returns_all_open() {
+    let mock_server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/repo/pulls"))
+        .and(header("Authorization", "Bearer test-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+            pr_json(1, "feature/one", "main", "open"),
+            pr_json(2, "feature/two", "main", "open"),
+        ])))
+        .mount(&mock_server)
+        .await;
+
+    let client = make_client(&mock_server, "test-token");
+    let prs = client
+        .search_pull_requests("owner", "repo", "is:open")
+        .await
+        .expect("search_pull_requests should succeed");
+
+    assert_eq!(prs.len(), 2);
+}
+
+/// `search_pull_requests` with `head:release/v*` applies client-side prefix filter.
+#[tokio::test]
+async fn test_search_pull_requests_head_filter_applied_client_side() {
+    let mock_server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/repo/pulls"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+            pr_json(1, "release/v1.0.0", "main", "open"),
+            pr_json(2, "feature/unrelated", "main", "open"),
+            pr_json(3, "release/v2.0.0", "main", "open"),
+        ])))
+        .mount(&mock_server)
+        .await;
+
+    let client = make_client(&mock_server, "test-token");
+    let prs = client
+        .search_pull_requests("owner", "repo", "is:open head:release/v*")
+        .await
+        .expect("search_pull_requests with head filter should succeed");
+
+    assert_eq!(prs.len(), 2, "only release/v* PRs should be returned");
+    assert!(prs
+        .iter()
+        .all(|pr| pr.head.ref_name.starts_with("release/v")));
+}
+
+/// `search_pull_requests` follows pagination and combines results.
+#[tokio::test]
+async fn test_search_pull_requests_pagination_combines_all_pages() {
+    let mock_server = MockServer::start().await;
+
+    let link_header = format!(
+        r#"<{}repos/owner/repo/pulls?page=2>; rel="next""#,
+        mock_server.uri()
+    );
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/repo/pulls"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Link", link_header)
+                .set_body_json(serde_json::json!([pr_json(
+                    1,
+                    "release/v1.0.0",
+                    "main",
+                    "open"
+                ),])),
+        )
+        .up_to_n_times(1)
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/repo/pulls"))
+        .and(query_param("page", "2"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!([pr_json(
+                2,
+                "release/v2.0.0",
+                "main",
+                "open"
+            ),])),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let client = make_client(&mock_server, "test-token");
+    let prs = client
+        .search_pull_requests("owner", "repo", "is:open")
+        .await
+        .expect("search_pull_requests should follow pagination");
+
+    assert_eq!(prs.len(), 2, "should combine results from both pages");
+}
+
+/// `search_pull_requests` with `is:closed` fetches closed PRs.
+#[tokio::test]
+async fn test_search_pull_requests_closed_state() {
+    let mock_server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/repo/pulls"))
+        .and(query_param("state", "closed"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!([pr_json(
+                5, "fix/bug", "main", "closed"
+            ),])),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let client = make_client(&mock_server, "test-token");
+    let prs = client
+        .search_pull_requests("owner", "repo", "is:closed")
+        .await
+        .expect("search_pull_requests with is:closed should succeed");
+
+    assert_eq!(prs.len(), 1);
+    assert_eq!(prs[0].number, 5);
+}
