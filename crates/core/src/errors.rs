@@ -492,7 +492,19 @@ impl CoreError {
         }
     }
 
-    /// Check if the error is retryable
+    /// Returns `true` for transient errors that are safe to retry after a back-off delay.
+    ///
+    /// # Retryable variants
+    ///
+    /// | Variant | Reason |
+    /// |---------|--------|
+    /// | [`Self::Network`] | Connection or transport failure; the remote may recover. |
+    /// | [`Self::RateLimit`] | API quota exceeded; back off until `retry_after_seconds`. |
+    /// | [`Self::Timeout`] | Operation timed out; a fresh attempt may succeed. |
+    /// | [`Self::Conflict`] | Optimistic-lock collision (ETag mismatch / branch already exists); re-fetch the resource and retry. |
+    ///
+    /// All other variants represent permanent errors that will not resolve by retrying:
+    /// configuration mistakes, bad input, auth failures, or parse errors.
     pub fn is_retryable(&self) -> bool {
         matches!(
             self,
