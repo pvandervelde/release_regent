@@ -1,12 +1,18 @@
 //! GitHub client implementation using github-bot-sdk
 //!
-//! This crate provides implementations of GitOperations and GitHubOperations traits
+//! This crate provides implementations of [`GitOperations`] and [`GitHubOperations`] traits
 //! using the github-bot-sdk library for GitHub API interactions.
 
 use async_trait::async_trait;
 use github_bot_sdk::{
-    auth::{AuthenticationProvider, InstallationId},
-    client::{ClientConfig, GitHubClient as SdkClient, InstallationClient},
+    auth::{
+        cache::InMemoryTokenCache, tokens::GitHubAppAuth, AuthenticationProvider, InstallationId,
+    },
+    client::{
+        ClientConfig, CreatePullRequestRequest, CreateReleaseRequest, GitHubClient as SdkClient,
+        InstallationClient, UpdatePullRequestRequest, UpdateReleaseRequest,
+    },
+    error::ApiError,
 };
 use release_regent_core::{
     traits::{
@@ -28,6 +34,18 @@ use tracing::{debug, info, instrument, warn};
 pub mod errors;
 pub use errors::{Error, GitHubResult};
 
+/// Maximum number of retry attempts for transient GitHub API failures.
+///
+/// Configured per `docs/specs/design/error-handling.md`: base delay 100 ms,
+/// max delay 30 s, ±25 % jitter, **5 max attempts**.
+pub(crate) const MAX_RETRIES: u32 = 5;
+
+/// Retry delay (seconds) after a GitHub secondary (abuse-detection) rate limit.
+///
+/// GitHub recommends waiting at least 60 s before retrying after a secondary
+/// rate limit response.
+const SECONDARY_RATE_LIMIT_RETRY_SECS: u64 = 60;
+
 pub mod auth;
 pub use auth::{AuthConfig, AzureKeyVaultSecretProvider};
 
@@ -42,7 +60,12 @@ pub struct GitHubClient {
 }
 
 impl GitHubClient {
-    /// Create a new GitHub client with authentication provider
+    /// Create a new GitHub client with authentication provider.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError::GitHub`] if the underlying SDK client cannot be built.
+    #[allow(clippy::result_large_err)]
     pub fn new(
         auth_provider: impl AuthenticationProvider + 'static,
         installation_id: u64,
@@ -50,7 +73,7 @@ impl GitHubClient {
         let config = ClientConfig::default()
             .with_user_agent("release-regent/0.1.0")
             .with_timeout(StdDuration::from_secs(30))
-            .with_max_retries(3);
+            .with_max_retries(MAX_RETRIES);
 
         let sdk_client = SdkClient::builder(auth_provider)
             .config(config)
@@ -78,9 +101,8 @@ impl GitHubClient {
     ///
     /// Returns an error if the private key in `auth_config` is malformed or
     /// if the underlying SDK client cannot be initialised.
+    #[allow(clippy::result_large_err)]
     pub fn from_config(auth_config: AuthConfig, installation_id: u64) -> CoreResult<Self> {
-        use github_bot_sdk::auth::{cache::InMemoryTokenCache, tokens::GitHubAppAuth};
-
         let secret_provider =
             auth::AzureKeyVaultSecretProvider::new(auth_config).map_err(|e| CoreError::GitHub {
                 source: Box::new(e),
@@ -104,8 +126,37 @@ impl GitHubClient {
     }
 
     /// Get the SDK client for direct access if needed
+    #[must_use]
     pub fn sdk_client(&self) -> &SdkClient {
         &self.sdk_client
+    }
+
+    /// Create a new GitHub client pointing at a custom API base URL.
+    ///
+    /// For use in tests only — points the SDK client at a `wiremock::MockServer`
+    /// and disables retries so tests fail fast.
+    #[cfg(test)]
+    pub(crate) fn new_for_testing(
+        auth_provider: impl AuthenticationProvider + 'static,
+        installation_id: u64,
+        api_base_url: &str,
+    ) -> CoreResult<Self> {
+        let config = ClientConfig::default()
+            .with_github_api_url(api_base_url)
+            .with_max_retries(0);
+
+        let sdk_client = SdkClient::builder(auth_provider)
+            .config(config)
+            .build()
+            .map_err(|e| CoreError::GitHub {
+                source: Box::new(e),
+                context: None,
+            })?;
+
+        Ok(Self {
+            sdk_client,
+            installation_id: InstallationId::new(installation_id),
+        })
     }
 
     /// Get an installation client for API operations
@@ -211,13 +262,7 @@ impl GitOperations for GitHubClient {
             .into_iter()
             .find(|t| t.name == tag_name)
             .map(convert_sdk_tag_to_git_tag)
-            .ok_or_else(|| CoreError::GitHub {
-                source: Box::new(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    "Tag not found",
-                )),
-                context: None,
-            })
+            .ok_or_else(|| CoreError::not_found(format!("tag '{tag_name}' not found")))
     }
 
     #[instrument(skip(self))]
@@ -226,7 +271,8 @@ impl GitOperations for GitHubClient {
 
         match self.get_tag(owner, repo, tag_name).await {
             Ok(_) => Ok(true),
-            Err(_) => Ok(false), // Assume any error means tag doesn't exist
+            Err(CoreError::NotFound { .. }) => Ok(false),
+            Err(e) => Err(e),
         }
     }
 
@@ -308,7 +354,6 @@ impl GitHubOperations for GitHubClient {
 
         let installation = self.installation().await?;
 
-        use github_bot_sdk::client::CreatePullRequestRequest;
         let request = CreatePullRequestRequest {
             title: params.title,
             head: params.head,
@@ -341,7 +386,6 @@ impl GitHubOperations for GitHubClient {
 
         let installation = self.installation().await?;
 
-        use github_bot_sdk::client::CreateReleaseRequest;
         let request = CreateReleaseRequest {
             tag_name: params.tag_name,
             target_commitish: params.target_commitish,
@@ -477,7 +521,6 @@ impl GitHubOperations for GitHubClient {
 
         let installation = self.installation().await?;
 
-        use github_bot_sdk::client::UpdatePullRequestRequest;
         let request = UpdatePullRequestRequest {
             title,
             body,
@@ -494,21 +537,70 @@ impl GitHubOperations for GitHubClient {
         convert_sdk_pr_to_release_regent_pr(sdk_pr)
     }
 
+    /// Note: `per_page` and `page` parameters are ignored — this implementation
+    /// always fetches all pages and returns a complete result set.
     #[instrument(skip(self))]
     async fn list_pull_requests(
         &self,
-        _owner: &str,
-        _repo: &str,
-        _state: Option<&str>,
-        _head: Option<&str>,
-        _base: Option<&str>,
+        owner: &str,
+        repo: &str,
+        state: Option<&str>,
+        head: Option<&str>,
+        base: Option<&str>,
         _per_page: Option<u8>,
         _page: Option<u32>,
     ) -> CoreResult<Vec<PullRequest>> {
-        Err(CoreError::not_supported(
-            "list_pull_requests",
-            "not yet implemented in GitHubClient",
-        ))
+        info!(
+            owner,
+            repo,
+            state = state.unwrap_or("open"),
+            "Listing pull requests"
+        );
+
+        let state_str = state.unwrap_or("open");
+        let installation = self.installation().await?;
+        let mut all_prs: Vec<PullRequest> = Vec::new();
+        let mut page: Option<u32> = None;
+
+        loop {
+            let response = installation
+                .list_pull_requests(owner, repo, Some(state_str), page)
+                .await
+                .map_err(map_sdk_error)?;
+
+            let has_next = response.has_next();
+            let next_page_num = response.next_page_number();
+
+            for sdk_pr in response.items {
+                // Client-side head-branch prefix filter.
+                if let Some(prefix) = head {
+                    if !sdk_pr.head.branch_ref.starts_with(prefix) {
+                        continue;
+                    }
+                }
+                // Client-side base-branch exact-match filter.
+                if let Some(base_branch) = base {
+                    if sdk_pr.base.branch_ref != base_branch {
+                        continue;
+                    }
+                }
+                all_prs.push(convert_sdk_pr_to_release_regent_pr(sdk_pr)?);
+            }
+
+            match (has_next, next_page_num) {
+                (true, Some(next)) => page = Some(next),
+                _ => break,
+            }
+        }
+
+        debug!(
+            owner,
+            repo,
+            state = state_str,
+            count = all_prs.len(),
+            "list_pull_requests complete"
+        );
+        Ok(all_prs)
     }
 
     #[instrument(skip(self))]
@@ -562,10 +654,9 @@ impl GitHubOperations for GitHubClient {
                 all_prs.push(convert_sdk_pr_to_release_regent_pr(sdk_pr)?);
             }
 
-            if has_next {
-                page = next_page_num;
-            } else {
-                break;
+            match (has_next, next_page_num) {
+                (true, Some(next)) => page = Some(next),
+                _ => break,
             }
         }
 
@@ -591,7 +682,6 @@ impl GitHubOperations for GitHubClient {
 
         let installation = self.installation().await?;
 
-        use github_bot_sdk::client::UpdateReleaseRequest;
         let request = UpdateReleaseRequest {
             tag_name: None,
             target_commitish: None,
@@ -683,7 +773,7 @@ impl GitHubOperations for GitHubClient {
         let installation = self.installation().await?;
         let path = format!("/repos/{owner}/{repo}/collaborators/{username}/permission");
         let response = installation.get(&path).await.map_err(map_sdk_error)?;
-        let body: serde_json::Value = response.json().await.map_err(|e| CoreError::github(e))?;
+        let body: serde_json::Value = response.json().await.map_err(CoreError::github)?;
 
         let permission_str = body
             .get("permission")
@@ -755,8 +845,7 @@ impl GitHubOperations for GitHubClient {
         let encoded = label_name.replace(':', "%3A");
         let path = format!("/repos/{owner}/{repo}/issues/{issue_number}/labels/{encoded}");
         match installation.delete(&path).await {
-            Ok(_) => Ok(()),
-            Err(github_bot_sdk::error::ApiError::HttpError { status: 404, .. }) => Ok(()),
+            Ok(_) | Err(github_bot_sdk::error::ApiError::HttpError { status: 404, .. }) => Ok(()),
             Err(e) => Err(map_sdk_error(e)),
         }
     }
@@ -772,8 +861,7 @@ impl GitHubOperations for GitHubClient {
         let installation = self.installation().await?;
         let path = format!("/repos/{owner}/{repo}/issues/{issue_number}/labels");
         let response = installation.get(&path).await.map_err(map_sdk_error)?;
-        let raw: Vec<serde_json::Value> =
-            response.json().await.map_err(|e| CoreError::github(e))?;
+        let raw: Vec<serde_json::Value> = response.json().await.map_err(CoreError::github)?;
 
         let labels = raw
             .into_iter()
@@ -864,6 +952,8 @@ fn convert_sdk_release_to_release_regent_release(
     }
 }
 
+#[allow(clippy::unnecessary_wraps)]
+#[allow(clippy::result_large_err)]
 fn convert_sdk_pr_to_release_regent_pr(
     pr: github_bot_sdk::client::PullRequest,
 ) -> CoreResult<PullRequest> {
@@ -934,7 +1024,8 @@ fn convert_sdk_pr_to_release_regent_pr(
     })
 }
 
-fn apply_tag_sorting(tags: &mut Vec<GitTag>, sort: TagSortOrder) {
+#[allow(clippy::needless_pass_by_value)]
+fn apply_tag_sorting(tags: &mut [GitTag], sort: TagSortOrder) {
     match sort {
         TagSortOrder::NameAsc => tags.sort_by(|a, b| a.name.cmp(&b.name)),
         TagSortOrder::NameDesc => tags.sort_by(|a, b| b.name.cmp(&a.name)),
@@ -951,15 +1042,96 @@ fn apply_tag_sorting(tags: &mut Vec<GitTag>, sort: TagSortOrder) {
     }
 }
 
-fn map_sdk_error(error: github_bot_sdk::error::ApiError) -> CoreError {
-    CoreError::GitHub {
-        source: Box::new(error),
-        context: None,
+/// Map an SDK `ApiError` to the most semantically accurate `CoreError` variant.
+///
+/// Correct mapping ensures that `CoreError::is_retryable()` returns `true` for
+/// transient server faults (5xx, rate limits, timeouts, network) and `false` for
+/// permanent client errors (4xx auth/validation failures).
+#[allow(clippy::match_same_arms)] // explicit arms are intentional for clarity
+fn map_sdk_error(error: ApiError) -> CoreError {
+    match error {
+        // ── Permanent: resource not found ───────────────────────────────────
+        ApiError::NotFound => CoreError::not_found("GitHub resource not found"),
+
+        // ── Permanent: authentication / authorisation failures ───────────────
+        ApiError::AuthenticationFailed => {
+            CoreError::authentication("GitHub API authentication failed (401)")
+        }
+        ApiError::AuthorizationFailed => {
+            CoreError::authentication("GitHub API authorisation failed (403)")
+        }
+
+        // ── Transient: rate limiting ─────────────────────────────────────────
+        ApiError::RateLimitExceeded { reset_at } => {
+            // Compute seconds until the rate limit resets; floor at 1 s.
+            let retry_after = {
+                let secs = (reset_at - chrono::Utc::now()).num_seconds();
+                u64::try_from(secs).unwrap_or(1).max(1)
+            };
+            CoreError::rate_limit_with_retry("GitHub primary rate limit exceeded", retry_after)
+        }
+        ApiError::SecondaryRateLimit => CoreError::rate_limit_with_retry(
+            "GitHub secondary rate limit (abuse detection) exceeded",
+            SECONDARY_RATE_LIMIT_RETRY_SECS,
+        ),
+
+        // ── Transient: request timed out ─────────────────────────────────────
+        ApiError::Timeout => CoreError::timeout("GitHub API request", 30_000),
+
+        // ── Mixed: HTTP status-code based classification ─────────────────────
+        ApiError::HttpError { status, message } => match status {
+            // Rate-limit via 429 (when the SDK returns HttpError instead of RateLimitExceeded)
+            429 => CoreError::rate_limit_with_retry(format!("GitHub rate limit: {message}"), 60),
+            // Auth failures
+            401 => CoreError::authentication(format!("GitHub 401: {message}")),
+            403 => CoreError::authentication(format!("GitHub 403: {message}")),
+            // Not found
+            404 => CoreError::not_found(format!("GitHub 404: {message}")),
+            // Server errors → transient/retryable
+            s if s >= 500 => CoreError::network(format!("GitHub server error {s}: {message}")),
+            // Everything else (4xx validation errors) → permanent
+            _ => CoreError::GitHub {
+                source: Box::new(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("GitHub HTTP {status}: {message}"),
+                )),
+                context: None,
+            },
+        },
+
+        // ── Transient: network / transport failures ──────────────────────────
+        ApiError::HttpClientError(e) => {
+            CoreError::network(format!("GitHub HTTP client error: {e}"))
+        }
+
+        // ── Permanent: client mistakes / config errors ───────────────────────
+        ApiError::InvalidRequest { message } => CoreError::GitHub {
+            source: Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("GitHub invalid request: {message}"),
+            )),
+            context: None,
+        },
+        ApiError::Configuration { message } => {
+            CoreError::config(format!("GitHub client configuration error: {message}"))
+        }
+        ApiError::TokenGenerationFailed { message } => {
+            CoreError::authentication(format!("GitHub token generation failed: {message}"))
+        }
+        ApiError::TokenExchangeFailed { message } => {
+            CoreError::authentication(format!("GitHub token exchange failed: {message}"))
+        }
+
+        // ── Permanent: JSON parsing error ────────────────────────────────────
+        ApiError::JsonError(e) => CoreError::github(e),
     }
 }
 
-fn is_not_found_error(error: &github_bot_sdk::error::ApiError) -> bool {
-    matches!(error, github_bot_sdk::error::ApiError::NotFound { .. })
+fn is_not_found_error(error: &ApiError) -> bool {
+    matches!(
+        error,
+        ApiError::NotFound | ApiError::HttpError { status: 404, .. }
+    )
 }
 
 #[cfg(test)]

@@ -29,3 +29,4 @@ release-regent-core = { path = "../core" }
 [dev-dependencies]
 tokio-test = { workspace = true }
 mockall = { workspace = true }
+wiremock = { workspace = true }
