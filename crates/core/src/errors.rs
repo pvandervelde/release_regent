@@ -492,7 +492,29 @@ impl CoreError {
         }
     }
 
-    /// Check if the error is retryable
+    /// Returns `true` for transient errors that are safe to retry after a back-off delay.
+    ///
+    /// # Retryable variants
+    ///
+    /// | Variant | Reason |
+    /// |---------|--------|
+    /// | [`Self::Network`] | Connection or transport failure; the remote may recover. |
+    /// | [`Self::RateLimit`] | API quota exceeded; back off until `retry_after_seconds`. |
+    /// | [`Self::Timeout`] | Operation timed out; a fresh attempt may succeed. |
+    /// | [`Self::Conflict`] | Optimistic-lock collision (ETag mismatch / branch already exists); re-fetch the resource and retry. |
+    ///
+    /// All other variants represent permanent errors that will not resolve by retrying:
+    /// configuration mistakes, bad input, auth failures, or parse errors.
+    ///
+    /// # Spec note
+    ///
+    /// `docs/specs/design/error-handling.md` lists "Authentication token expiration" under
+    /// transient errors.  In this codebase every `Authentication` error originates from
+    /// a permanent credential failure (401/403 from the GitHub API or a missing/invalid
+    /// private key) rather than a short-lived token clock skew, so `Authentication` is
+    /// classified as non-retryable here.  If a future variant specifically models token
+    /// expiry that should be retried after re-authentication, add a dedicated variant
+    /// rather than changing the blanket `Authentication` classification.
     pub fn is_retryable(&self) -> bool {
         matches!(
             self,
@@ -505,7 +527,16 @@ impl CoreError {
         )
     }
 
-    /// Get retry delay in seconds if applicable
+    /// Returns the number of seconds to wait before retrying, if a hint is available.
+    ///
+    /// | Variant | Delay |
+    /// |---------|-------|
+    /// | [`Self::RateLimit`] with `retry_after_seconds` | The value of `retry_after_seconds` (caller-supplied hint). |
+    /// | [`Self::RateLimit`] without hint | `None` — caller should use its own back-off. |
+    /// | [`Self::Network`] | `Some(1)` — conservative 1-second default. |
+    /// | [`Self::Timeout`] | `Some(2)` — slightly longer default for timed-out operations. |
+    /// | [`Self::Conflict`] | `None` — re-fetch and retry immediately (no prescribed delay). |
+    /// | All other variants | `None` — non-retryable; delay is not applicable. |
     pub fn retry_delay_seconds(&self) -> Option<u64> {
         match self {
             Self::RateLimit {
@@ -514,6 +545,9 @@ impl CoreError {
             } => *retry_after_seconds,
             Self::Network { .. } => Some(1), // Default 1 second for network errors
             Self::Timeout { .. } => Some(2), // Default 2 seconds for timeout errors
+            // Conflict is retryable (re-fetch and retry), but the caller should
+            // retry immediately after re-fetching rather than waiting a fixed delay.
+            Self::Conflict { .. } => None,
             _ => None,
         }
     }
@@ -524,233 +558,4 @@ pub type CoreResult<T> = Result<T, CoreError>;
 
 #[cfg(test)]
 #[path = "errors_tests.rs"]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_config_error_creation() {
-        let error = CoreError::config("Test config error".to_string());
-        match error {
-            CoreError::Config {
-                message,
-                context,
-                source,
-            } => {
-                assert_eq!(message, "Test config error");
-                assert!(context.is_none());
-                assert!(source.is_none());
-            }
-            _ => panic!("Expected Config error"),
-        }
-    }
-
-    #[test]
-    fn test_versioning_error_creation() {
-        let error = CoreError::versioning("Test versioning error".to_string());
-        match error {
-            CoreError::Versioning {
-                reason,
-                context,
-                source,
-            } => {
-                assert_eq!(reason, "Test versioning error");
-                assert!(context.is_none());
-                assert!(source.is_none());
-            }
-            _ => panic!("Expected Versioning error"),
-        }
-    }
-
-    #[test]
-    fn test_changelog_generation_error_creation() {
-        let error = CoreError::changelog_generation("Test error message".to_string());
-        match error {
-            CoreError::ChangelogGeneration {
-                message,
-                context,
-                source,
-            } => {
-                assert_eq!(message, "Test error message");
-                assert!(context.is_none());
-                assert!(source.is_none());
-            }
-            _ => panic!("Expected ChangelogGeneration error"),
-        }
-    }
-
-    #[test]
-    fn test_webhook_error_creation() {
-        let error = CoreError::webhook("Test stage".to_string(), "Test webhook error".to_string());
-        match error {
-            CoreError::Webhook {
-                stage,
-                message,
-                context,
-                source,
-            } => {
-                assert_eq!(stage, "Test stage");
-                assert_eq!(message, "Test webhook error");
-                assert!(context.is_none());
-                assert!(source.is_none());
-            }
-            _ => panic!("Expected Webhook error"),
-        }
-    }
-
-    #[test]
-    fn test_invalid_input_error_creation() {
-        let error = CoreError::invalid_input("field1".to_string(), "Invalid value".to_string());
-        match error {
-            CoreError::InvalidInput {
-                field,
-                message,
-                context,
-            } => {
-                assert_eq!(field, "field1");
-                assert_eq!(message, "Invalid value");
-                assert!(context.is_none());
-            }
-            _ => panic!("Expected InvalidInput error"),
-        }
-    }
-
-    #[test]
-    fn test_not_supported_error_creation() {
-        let error =
-            CoreError::not_supported("some_operation".to_string(), "some_context".to_string());
-        match error {
-            CoreError::NotSupported {
-                operation,
-                context,
-                error_context,
-            } => {
-                assert_eq!(operation, "some_operation");
-                assert_eq!(context, "some_context");
-                assert!(error_context.is_none());
-            }
-            _ => panic!("Expected NotSupported error"),
-        }
-    }
-
-    #[test]
-    fn test_internal_state_error_creation() {
-        let error = CoreError::internal_state("Inconsistent state".to_string());
-        match error {
-            CoreError::InternalState {
-                message,
-                context,
-                source,
-            } => {
-                assert_eq!(message, "Inconsistent state");
-                assert!(context.is_none());
-                assert!(source.is_none());
-            }
-            _ => panic!("Expected InternalState error"),
-        }
-    }
-
-    #[test]
-    fn test_error_context_creation() {
-        let context = ErrorContext::new("test_operation", "test_component")
-            .with_data("key1", "value1")
-            .with_correlation_id("test-123");
-
-        assert_eq!(context.operation, "test_operation");
-        assert_eq!(context.component, "test_component");
-        assert_eq!(
-            context.context_data.get("key1"),
-            Some(&"value1".to_string())
-        );
-        assert_eq!(context.correlation_id, Some("test-123".to_string()));
-    }
-
-    #[test]
-    fn test_error_with_context() {
-        let context =
-            ErrorContext::new("config_load", "config_provider").with_data("file", "config.yaml");
-
-        let error = CoreError::config_with_context("Failed to load config", context.clone());
-
-        let retrieved_context = error.context().unwrap();
-        assert_eq!(retrieved_context.operation, "config_load");
-        assert_eq!(retrieved_context.component, "config_provider");
-        assert_eq!(
-            retrieved_context.context_data.get("file"),
-            Some(&"config.yaml".to_string())
-        );
-    }
-
-    #[test]
-    fn test_retryable_errors() {
-        let network_error = CoreError::network("Connection failed");
-        let rate_limit_error = CoreError::rate_limit("Too many requests");
-        let timeout_error = CoreError::timeout("Operation timed out", 5000);
-        let config_error = CoreError::config("Invalid configuration");
-        let conflict_error = CoreError::conflict("concurrent modification");
-
-        assert!(network_error.is_retryable());
-        assert!(rate_limit_error.is_retryable());
-        assert!(timeout_error.is_retryable());
-        // Conflict must be retryable: the doc comment says "re-fetch and retry".
-        assert!(conflict_error.is_retryable());
-        assert!(!config_error.is_retryable());
-    }
-
-    #[test]
-    fn test_retry_delays() {
-        let network_error = CoreError::network("Connection failed");
-        let rate_limit_error = CoreError::rate_limit_with_retry("Too many requests", 60);
-        let timeout_error = CoreError::timeout("Operation timed out", 5000);
-        let config_error = CoreError::config("Invalid configuration");
-
-        assert_eq!(network_error.retry_delay_seconds(), Some(1));
-        assert_eq!(rate_limit_error.retry_delay_seconds(), Some(60));
-        assert_eq!(timeout_error.retry_delay_seconds(), Some(2));
-        assert_eq!(config_error.retry_delay_seconds(), None);
-    }
-
-    #[test]
-    fn test_validation_error() {
-        let error = CoreError::validation("email", "Invalid email format");
-        match error {
-            CoreError::Validation {
-                field,
-                message,
-                context,
-            } => {
-                assert_eq!(field, "email");
-                assert_eq!(message, "Invalid email format");
-                assert!(context.is_none());
-            }
-            _ => panic!("Expected Validation error"),
-        }
-    }
-
-    #[test]
-    fn test_authentication_error() {
-        let error = CoreError::authentication("Invalid token");
-        match error {
-            CoreError::Authentication { message, context } => {
-                assert_eq!(message, "Invalid token");
-                assert!(context.is_none());
-            }
-            _ => panic!("Expected Authentication error"),
-        }
-    }
-
-    #[test]
-    fn test_new_error_types() {
-        // Test timeout error
-        let timeout = CoreError::timeout("db_query", 30000);
-        assert!(timeout.is_retryable());
-
-        // Test network error
-        let network = CoreError::network("DNS resolution failed");
-        assert!(network.is_retryable());
-
-        // Test rate limit error
-        let rate_limit = CoreError::rate_limit_with_retry("API quota exceeded", 3600);
-        assert!(rate_limit.is_retryable());
-        assert_eq!(rate_limit.retry_delay_seconds(), Some(3600));
-    }
-}
+mod tests;
