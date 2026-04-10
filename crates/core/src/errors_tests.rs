@@ -391,6 +391,8 @@ fn test_retry_delay_seconds_retryable_variants() {
         CoreError::rate_limit_with_retry("quota", 60).retry_delay_seconds(),
         Some(60)
     );
+    // Rate limit without hint: no prescribed delay (caller uses its own back-off).
+    assert_eq!(CoreError::rate_limit("quota").retry_delay_seconds(), None);
     // Conflict is retryable but has no prescribed delay; re-fetch-and-retry is immediate.
     assert_eq!(
         CoreError::conflict("branch exists").retry_delay_seconds(),

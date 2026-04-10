@@ -505,6 +505,16 @@ impl CoreError {
     ///
     /// All other variants represent permanent errors that will not resolve by retrying:
     /// configuration mistakes, bad input, auth failures, or parse errors.
+    ///
+    /// # Spec note
+    ///
+    /// `docs/specs/design/error-handling.md` lists "Authentication token expiration" under
+    /// transient errors.  In this codebase every `Authentication` error originates from
+    /// a permanent credential failure (401/403 from the GitHub API or a missing/invalid
+    /// private key) rather than a short-lived token clock skew, so `Authentication` is
+    /// classified as non-retryable here.  If a future variant specifically models token
+    /// expiry that should be retried after re-authentication, add a dedicated variant
+    /// rather than changing the blanket `Authentication` classification.
     pub fn is_retryable(&self) -> bool {
         matches!(
             self,
@@ -517,7 +527,16 @@ impl CoreError {
         )
     }
 
-    /// Get retry delay in seconds if applicable
+    /// Returns the number of seconds to wait before retrying, if a hint is available.
+    ///
+    /// | Variant | Delay |
+    /// |---------|-------|
+    /// | [`Self::RateLimit`] with `retry_after_seconds` | The value of `retry_after_seconds` (caller-supplied hint). |
+    /// | [`Self::RateLimit`] without hint | `None` — caller should use its own back-off. |
+    /// | [`Self::Network`] | `Some(1)` — conservative 1-second default. |
+    /// | [`Self::Timeout`] | `Some(2)` — slightly longer default for timed-out operations. |
+    /// | [`Self::Conflict`] | `None` — re-fetch and retry immediately (no prescribed delay). |
+    /// | All other variants | `None` — non-retryable; delay is not applicable. |
     pub fn retry_delay_seconds(&self) -> Option<u64> {
         match self {
             Self::RateLimit {
@@ -526,6 +545,9 @@ impl CoreError {
             } => *retry_after_seconds,
             Self::Network { .. } => Some(1), // Default 1 second for network errors
             Self::Timeout { .. } => Some(2), // Default 2 seconds for timeout errors
+            // Conflict is retryable (re-fetch and retry), but the caller should
+            // retry immediately after re-fetching rather than waiting a fixed delay.
+            Self::Conflict { .. } => None,
             _ => None,
         }
     }
