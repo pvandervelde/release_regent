@@ -4,7 +4,7 @@ use thiserror::Error;
 #[path = "errors_tests.rs"]
 mod tests;
 
-/// Errors that can occur in Azure Function operations
+/// Errors that can occur in webhook server operations
 #[derive(Error, Debug)]
 #[allow(dead_code)] // Allow during foundation phase
 pub enum Error {
@@ -19,6 +19,10 @@ pub enum Error {
     /// Azure Key Vault errors
     #[error("Azure Key Vault error: {message}")]
     AzureKeyVault { message: String },
+
+    /// Configuration provider errors
+    #[error("Configuration provider error: {message}")]
+    ConfigProvider { message: String },
 
     /// Core operation errors
     #[error("Core operation failed: {source}")]
@@ -80,6 +84,13 @@ impl Error {
         }
     }
 
+    /// Create a new configuration provider error
+    pub fn config_provider(message: impl Into<String>) -> Self {
+        Self::ConfigProvider {
+            message: message.into(),
+        }
+    }
+
     /// Create a new environment error
     pub fn environment(variable: impl Into<String>, message: impl Into<String>) -> Self {
         Self::Environment {
@@ -110,6 +121,3 @@ impl Error {
         }
     }
 }
-
-/// Result type for function operations
-pub type FunctionResult<T> = Result<T, Error>;
