@@ -289,7 +289,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let processor = Arc::new(build_server_processor(github_secret.clone()).await?);
     info!("Production processor constructed successfully");
 
-
     // Allowed repositories: comma-separated "owner/repo" values, or "*" for all.
     let allowed_repos: Vec<String> = std::env::var("ALLOWED_REPOS")
         .map(|s| {
