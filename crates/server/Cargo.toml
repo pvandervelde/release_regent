@@ -40,6 +40,7 @@ github-bot-sdk = { workspace = true }
 
 # Release Regent dependencies
 release-regent-core = { path = "../core" }
+release_regent_config_provider = { path = "../config_provider" }
 release-regent-github-client = { path = "../github_client" }
 
 [dev-dependencies]

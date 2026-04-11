@@ -2927,6 +2927,7 @@ dependencies = [
  "hyper",
  "release-regent-core",
  "release-regent-github-client",
+ "release_regent_config_provider",
  "serde",
  "serde_json",
  "serde_yaml",
