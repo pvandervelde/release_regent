@@ -206,7 +206,7 @@
 pub mod changelog;
 pub mod comment_command_processor;
 pub mod config;
-pub mod default_version_calculator;
+pub(crate) mod default_version_calculator;
 pub mod errors;
 pub mod release_automator;
 pub mod release_orchestrator;

@@ -8,13 +8,14 @@
 //!
 //! | Env var                  | Description                                          | Default |
 //! |--------------------------|------------------------------------------------------|---------|
-//! | `GITHUB_WEBHOOK_SECRET`  | HMAC-SHA256 secret shared with GitHub (**required**) | —       |
-//! | `GITHUB_APP_ID`          | Numeric GitHub App ID (**required**)                 | —       |
-//! | `GITHUB_PRIVATE_KEY`     | PEM-encoded GitHub App private key (**required**)    | —       |
-//! | `GITHUB_INSTALLATION_ID` | GitHub App installation ID (**required**)            | —       |
-//! | `ALLOWED_REPOS`          | Comma-separated `owner/repo` values, or `*`          | `*`     |
-//! | `EVENT_CHANNEL_CAPACITY` | Bounded channel depth for in-flight events           | `1024`  |
-//! | `PORT`                   | TCP port the server listens on                       | `8080`  |
+//! | `GITHUB_WEBHOOK_SECRET`  | HMAC-SHA256 secret shared with GitHub (**required**) | —                  |
+//! | `GITHUB_APP_ID`          | Numeric GitHub App ID (**required**)                 | —                  |
+//! | `GITHUB_PRIVATE_KEY`     | PEM-encoded GitHub App private key (**required**)    | —                  |
+//! | `GITHUB_INSTALLATION_ID` | GitHub App installation ID (**required**)            | —                  |
+//! | `CONFIG_DIR`             | Directory to search for `.release-regent.toml`       | current directory  |
+//! | `ALLOWED_REPOS`          | Comma-separated `owner/repo` values, or `*`          | `*`                |
+//! | `EVENT_CHANNEL_CAPACITY` | Bounded channel depth for in-flight events           | `1024`             |
+//! | `PORT`                   | TCP port the server listens on                       | `8080`             |
 //!
 //! # Architecture
 //!
@@ -120,7 +121,8 @@ fn read_github_credentials_from_env() -> Result<(u64, String, u64), errors::Erro
 /// Reads `GITHUB_APP_ID`, `GITHUB_PRIVATE_KEY`, and `GITHUB_INSTALLATION_ID`
 /// from the environment, builds a [`release_regent_github_client::GitHubClient`],
 /// initialises a [`release_regent_config_provider::FileConfigurationProvider`]
-/// from the current working directory, and wires them together with
+/// from the directory specified by `CONFIG_DIR` (falling back to the current
+/// working directory when `CONFIG_DIR` is absent), and wires them together with
 /// [`DefaultVersionCalculator`] into a [`ServerProcessor`].
 ///
 /// # Errors
@@ -139,9 +141,13 @@ async fn build_server_processor(webhook_secret: String) -> Result<ServerProcesso
     let github_client =
         release_regent_github_client::GitHubClient::from_config(auth_config, installation_id)?;
 
-    let config_dir = std::env::current_dir().map_err(|e| {
-        errors::Error::internal(format!("Failed to determine working directory: {e}"))
-    })?;
+    let config_dir = match std::env::var("CONFIG_DIR") {
+        Ok(dir) => std::path::PathBuf::from(dir),
+        Err(_) => std::env::current_dir().map_err(|e| {
+            errors::Error::internal(format!("Failed to determine working directory: {e}"))
+        })?,
+    };
+    info!(config_dir = %config_dir.display(), "Using configuration directory");
 
     let config_provider =
         release_regent_config_provider::FileConfigurationProvider::new(config_dir)

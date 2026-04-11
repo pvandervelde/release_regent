@@ -53,7 +53,6 @@ mod tests;
 pub struct DefaultVersionCalculator;
 
 /// Private helpers used within the trait implementation and tests.
-#[allow(dead_code)] // methods are exercised from the test module
 impl DefaultVersionCalculator {
     /// Create a new default version calculator.
     #[must_use]
@@ -72,6 +71,7 @@ impl DefaultVersionCalculator {
     }
 
     /// Map from the trait-layer `VersionBump` to core `versioning::VersionBump`.
+    #[allow(dead_code)] // only called from tests; kept for symmetry with local_to_trait_bump
     fn trait_to_local_bump(bump: &TraitVersionBump) -> LocalVersionBump {
         match bump {
             TraitVersionBump::Major => LocalVersionBump::Major,
@@ -162,6 +162,9 @@ impl DefaultVersionCalculator {
             match analysis.version_bump {
                 TraitVersionBump::Major => return TraitVersionBump::Major,
                 TraitVersionBump::Minor if result != TraitVersionBump::Minor => {
+                    // Guard prevents redundant re-assignment: once `result` is already
+                    // `Minor` we don't want to overwrite it ("promote only" semantics —
+                    // we never downgrade from a higher level back to Minor).
                     result = TraitVersionBump::Minor;
                 }
                 TraitVersionBump::Patch if result == TraitVersionBump::None => {

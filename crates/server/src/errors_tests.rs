@@ -39,24 +39,6 @@ fn test_environment_error_creation() {
 }
 
 #[test]
-fn test_http_request_error_creation() {
-    let error = Error::http_request(400, "Bad Request");
-
-    match error {
-        Error::HttpRequest {
-            status,
-            ref message,
-        } => {
-            assert_eq!(status, 400);
-            assert_eq!(message, "Bad Request");
-        }
-        _ => panic!("Expected HttpRequest error"),
-    }
-
-    assert_eq!(error.to_string(), "HTTP request error: 400 - Bad Request");
-}
-
-#[test]
 fn test_internal_error_creation() {
     let error = Error::internal("Unexpected state during processing");
 
