@@ -15,8 +15,6 @@
 //! [`ConventionalCalculator`]: crate::versioning::VersionCalculator
 //! [`ReleaseRegentProcessor`]: crate::ReleaseRegentProcessor
 
-use async_trait::async_trait;
-use chrono::Utc;
 use crate::{
     traits::version_calculator::{
         CalculationOptions, ChangelogEntry, CommitAnalysis, ValidationRules,
@@ -29,6 +27,8 @@ use crate::{
     },
     CoreError, CoreResult,
 };
+use async_trait::async_trait;
+use chrono::Utc;
 use std::collections::HashMap;
 use tracing::debug;
 
@@ -123,7 +123,10 @@ impl DefaultVersionCalculator {
             })
             .collect();
 
-        debug!(commit_count = commits.len(), "Fetched commits from local git log");
+        debug!(
+            commit_count = commits.len(),
+            "Fetched commits from local git log"
+        );
         Ok(commits)
     }
 
@@ -204,7 +207,6 @@ impl DefaultVersionCalculator {
             version_bump: bump,
         }
     }
-
 }
 
 #[async_trait]

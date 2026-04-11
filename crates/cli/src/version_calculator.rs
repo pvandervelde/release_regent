@@ -8,5 +8,3 @@ pub use release_regent_core::DefaultVersionCalculator;
 #[cfg(test)]
 #[path = "version_calculator_tests.rs"]
 mod tests;
-
-

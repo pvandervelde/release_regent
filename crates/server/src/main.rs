@@ -99,10 +99,7 @@ fn read_github_credentials_from_env() -> Result<(u64, String, u64), errors::Erro
         .map_err(|e| errors::Error::environment("GITHUB_APP_ID", e.to_string()))?
         .parse::<u64>()
         .map_err(|e| {
-            errors::Error::environment(
-                "GITHUB_APP_ID",
-                format!("must be a number: {e}"),
-            )
+            errors::Error::environment("GITHUB_APP_ID", format!("must be a number: {e}"))
         })?;
 
     let private_key = std::env::var("GITHUB_PRIVATE_KEY")
@@ -112,10 +109,7 @@ fn read_github_credentials_from_env() -> Result<(u64, String, u64), errors::Erro
         .map_err(|e| errors::Error::environment("GITHUB_INSTALLATION_ID", e.to_string()))?
         .parse::<u64>()
         .map_err(|e| {
-            errors::Error::environment(
-                "GITHUB_INSTALLATION_ID",
-                format!("must be a number: {e}"),
-            )
+            errors::Error::environment("GITHUB_INSTALLATION_ID", format!("must be a number: {e}"))
         })?;
 
     Ok((app_id, private_key, installation_id))
@@ -133,9 +127,7 @@ fn read_github_credentials_from_env() -> Result<(u64, String, u64), errors::Erro
 ///
 /// Returns an error if any required variable is absent, if the GitHub App
 /// private key is malformed, or if the configuration directory is inaccessible.
-async fn build_server_processor(
-    webhook_secret: String,
-) -> Result<ServerProcessor, errors::Error> {
+async fn build_server_processor(webhook_secret: String) -> Result<ServerProcessor, errors::Error> {
     let (app_id, private_key, installation_id) = read_github_credentials_from_env()?;
 
     let auth_config = release_regent_github_client::AuthConfig {
@@ -148,9 +140,7 @@ async fn build_server_processor(
         release_regent_github_client::GitHubClient::from_config(auth_config, installation_id)?;
 
     let config_dir = std::env::current_dir().map_err(|e| {
-        errors::Error::internal(format!(
-            "Failed to determine working directory: {e}"
-        ))
+        errors::Error::internal(format!("Failed to determine working directory: {e}"))
     })?;
 
     let config_provider =

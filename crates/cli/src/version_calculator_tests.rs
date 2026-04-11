@@ -156,4 +156,3 @@ fn parse_conventional_commit_identifies_breaking_change() {
     assert_eq!(analysis.version_bump, TraitVersionBump::Major);
     assert!(analysis.is_breaking);
 }
-
