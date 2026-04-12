@@ -27,19 +27,27 @@ pub struct AuthConfig {
     pub webhook_secret: String,
 }
 
-/// Azure Key Vault-based secret provider
+/// Environment-variable-based secret provider.
 ///
-/// Implements the [`SecretProvider`] trait for github-bot-sdk using Azure Key Vault
-/// for secret storage and retrieval.
+/// Implements the [`SecretProvider`] trait for github-bot-sdk by returning values
+/// that were loaded from environment variables at process startup and passed in via
+/// [`AuthConfig`].
+///
+/// # Deployment model
+///
+/// Release Regent runs as a container. The container runtime (Azure Container Apps,
+/// AKS + CSI Driver, AWS ECS, etc.) injects secrets as environment variables before
+/// the process starts. This struct simply holds those pre-loaded values — there is no
+/// need for the application to call a secret-management API at runtime.
 #[derive(Debug, Clone)]
-pub struct AzureKeyVaultSecretProvider {
+pub struct EnvSecretProvider {
     app_id: GitHubAppId,
     private_key: PrivateKey,
     webhook_secret: String,
 }
 
-impl AzureKeyVaultSecretProvider {
-    /// Create a new Azure Key Vault secret provider.
+impl EnvSecretProvider {
+    /// Create a new environment secret provider from pre-loaded [`AuthConfig`] values.
     ///
     /// # Errors
     ///
@@ -63,26 +71,23 @@ impl AzureKeyVaultSecretProvider {
 }
 
 #[async_trait]
-impl SecretProvider for AzureKeyVaultSecretProvider {
+impl SecretProvider for EnvSecretProvider {
     async fn get_private_key(&self) -> Result<PrivateKey, SecretError> {
-        debug!("Retrieving private key");
-        // In a real implementation, this would fetch from Azure Key Vault
-        // For now, we return the cached key
+        debug!(provider = "env", "Retrieving private key");
         Ok(self.private_key.clone())
     }
 
     async fn get_app_id(&self) -> Result<GitHubAppId, SecretError> {
-        debug!("Retrieving app ID");
+        debug!(provider = "env", "Retrieving app ID");
         Ok(self.app_id)
     }
 
     async fn get_webhook_secret(&self) -> Result<String, SecretError> {
-        debug!("Retrieving webhook secret");
+        debug!(provider = "env", "Retrieving webhook secret");
         Ok(self.webhook_secret.clone())
     }
 
     fn cache_duration(&self) -> Duration {
-        // Cache secrets for 1 hour
         Duration::hours(1)
     }
 }
@@ -134,7 +139,10 @@ impl JwtSigner for DefaultJwtSigner {
                 message: format!("Failed to encode JWT: {e}"),
             })?;
 
-        let expires_at = DateTime::from_timestamp(exp, 0).unwrap_or_else(Utc::now);
+        let expires_at =
+            DateTime::from_timestamp(exp, 0).ok_or_else(|| SigningError::SigningFailed {
+                message: format!("JWT exp timestamp {exp} is out of range for DateTime"),
+            })?;
         Ok(JsonWebToken::new(token_string, app_id, expires_at))
     }
 

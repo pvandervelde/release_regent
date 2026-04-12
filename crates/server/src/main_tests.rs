@@ -247,7 +247,7 @@ async fn test_build_server_processor_with_invalid_pem_returns_github_error() {
         Err(errors::Error::Core {
             source: release_regent_core::CoreError::GitHub { .. },
         }) => {
-            // Expected: the invalid PEM causes AzureKeyVaultSecretProvider::new to return
+            // Expected: the invalid PEM causes EnvSecretProvider::new to return
             // SecretError::InvalidFormat, which is wrapped as CoreError::GitHub by
             // GitHubClient::from_config, then converted to Error::Core here.
         }
