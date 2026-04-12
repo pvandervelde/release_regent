@@ -47,7 +47,7 @@ pub(crate) const MAX_RETRIES: u32 = 5;
 const SECONDARY_RATE_LIMIT_RETRY_SECS: u64 = 60;
 
 pub mod auth;
-pub use auth::{AuthConfig, AzureKeyVaultSecretProvider};
+pub use auth::{AuthConfig, EnvSecretProvider};
 
 // Re-export SDK types for convenience
 pub use github_bot_sdk::auth::{GitHubAppId, InstallationId as SdkInstallationId, PrivateKey};
@@ -92,7 +92,7 @@ impl GitHubClient {
     /// Create a new GitHub client directly from [`AuthConfig`].
     ///
     /// This convenience constructor wires together all required SDK components:
-    /// - [`auth::AzureKeyVaultSecretProvider`] for secret retrieval
+    /// - [`auth::EnvSecretProvider`] for secret retrieval
     /// - [`auth::DefaultJwtSigner`] for RS256 JWT signing
     /// - [`auth::DefaultGitHubApiClient`] for installation token exchange
     /// - An in-memory token cache
@@ -104,7 +104,7 @@ impl GitHubClient {
     #[allow(clippy::result_large_err)]
     pub fn from_config(auth_config: AuthConfig, installation_id: u64) -> CoreResult<Self> {
         let secret_provider =
-            auth::AzureKeyVaultSecretProvider::new(auth_config).map_err(|e| CoreError::GitHub {
+            auth::EnvSecretProvider::new(auth_config).map_err(|e| CoreError::GitHub {
                 source: Box::new(e),
                 context: None,
             })?;

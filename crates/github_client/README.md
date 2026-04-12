@@ -72,7 +72,7 @@ Release Regent has migrated from octocrab to github-bot-sdk to improve architect
 ## Usage
 
 ```rust
-use release_regent_github_client::{GitHubClient, AuthConfig, AzureKeyVaultSecretProvider};
+use release_regent_github_client::{GitHubClient, AuthConfig, EnvSecretProvider};
 use github_bot_sdk::auth::AuthenticationProvider;
 
 // Configure authentication
@@ -82,7 +82,7 @@ let auth_config = AuthConfig {
     webhook_secret: "webhook-secret".to_string(),
 };
 
-let secret_provider = AzureKeyVaultSecretProvider::new(auth_config)?;
+let secret_provider = EnvSecretProvider::new(auth_config)?;
 
 // Create client
 let client = GitHubClient::new(
