@@ -206,12 +206,14 @@
 pub mod changelog;
 pub mod comment_command_processor;
 pub mod config;
+pub(crate) mod default_version_calculator;
 pub mod errors;
 pub mod release_automator;
 pub mod release_orchestrator;
 pub mod traits;
 pub mod versioning;
 
+pub use default_version_calculator::DefaultVersionCalculator;
 pub use errors::{CoreError, CoreResult};
 pub use traits::{ConfigurationProvider, GitHubOperations, GitOperations, VersionCalculator};
 

@@ -169,8 +169,8 @@ impl MockState {
         }
 
         use rand::Rng;
-        let mut rng = rand::thread_rng();
-        rng.gen::<f64>() < self.config.failure_rate
+        let mut rng = rand::rng();
+        rng.random::<f64>() < self.config.failure_rate
     }
 
     /// Add latency simulation if configured

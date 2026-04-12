@@ -8,10 +8,14 @@
 //!
 //! | Env var                  | Description                                          | Default |
 //! |--------------------------|------------------------------------------------------|---------|
-//! | `GITHUB_WEBHOOK_SECRET`  | HMAC-SHA256 secret shared with GitHub (**required**) | —       |
-//! | `ALLOWED_REPOS`          | Comma-separated `owner/repo` values, or `*`          | `*`     |
-//! | `EVENT_CHANNEL_CAPACITY` | Bounded channel depth for in-flight events           | `1024`  |
-//! | `PORT`                   | TCP port the server listens on                       | `8080`  |
+//! | `GITHUB_WEBHOOK_SECRET`  | HMAC-SHA256 secret shared with GitHub (**required**) | —                  |
+//! | `GITHUB_APP_ID`          | Numeric GitHub App ID (**required**)                 | —                  |
+//! | `GITHUB_PRIVATE_KEY`     | PEM-encoded GitHub App private key (**required**)    | —                  |
+//! | `GITHUB_INSTALLATION_ID` | GitHub App installation ID (**required**)            | —                  |
+//! | `CONFIG_DIR`             | Directory to search for `.release-regent.toml`       | current directory  |
+//! | `ALLOWED_REPOS`          | Comma-separated `owner/repo` values, or `*`          | `*`                |
+//! | `EVENT_CHANNEL_CAPACITY` | Bounded channel depth for in-flight events           | `1024`             |
+//! | `PORT`                   | TCP port the server listens on                       | `8080`             |
 //!
 //! # Architecture
 //!
@@ -46,8 +50,7 @@ use github_bot_sdk::{
     events::{EventProcessor, ProcessorConfig},
     webhook::{WebhookReceiver, WebhookRequest, WebhookResponse},
 };
-use release_regent_core::{run_event_loop, MergedPullRequestHandler};
-use release_regent_core::{traits::event_source::ProcessingEvent, CoreResult};
+use release_regent_core::{run_event_loop, DefaultVersionCalculator};
 use std::{collections::HashMap, sync::Arc};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
@@ -57,7 +60,22 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 mod errors;
 mod handler;
 
+#[cfg(test)]
+#[path = "main_tests.rs"]
+mod tests;
+
 use handler::WebhookSecretProvider;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Type aliases
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Concrete production processor type used by the server.
+type ServerProcessor = release_regent_core::ReleaseRegentProcessor<
+    release_regent_github_client::GitHubClient,
+    release_regent_config_provider::FileConfigurationProvider,
+    DefaultVersionCalculator,
+>;
 
 /// Maximum allowed webhook payload size (10 MiB).
 ///
@@ -65,23 +83,84 @@ use handler::WebhookSecretProvider;
 /// layer before the signature validator even runs.
 const MAX_BODY_BYTES: usize = 10 * 1024 * 1024;
 
-/// Placeholder `MergedPullRequestHandler` used until the full processor is wired.
-///
-/// When the GitHub client and configuration provider are fully configured in the
-/// server binary (a subsequent task), this will be replaced by a real
-/// `ReleaseRegentProcessor` instance.  Until then this stub ensures the server
-/// compiles and routes events safely without taking any action on them.
-struct NoopMergedPRHandler;
+// ─────────────────────────────────────────────────────────────────────────────
+// Processor construction helpers
+// ─────────────────────────────────────────────────────────────────────────────
 
-#[async_trait::async_trait]
-impl MergedPullRequestHandler for NoopMergedPRHandler {
-    async fn handle_merged_pull_request(&self, event: &ProcessingEvent) -> CoreResult<()> {
-        info!(
-            event_id = %event.event_id,
-            "PullRequestMerged handler not yet wired in server — event skipped"
-        );
-        Ok(())
-    }
+/// Parse GitHub App credentials from environment variables.
+///
+/// Returns `(app_id, private_key, installation_id)` on success.
+///
+/// # Errors
+///
+/// Returns [`errors::Error::Environment`] if any required variable is absent
+/// or if `GITHUB_APP_ID` / `GITHUB_INSTALLATION_ID` cannot be parsed as `u64`.
+fn read_github_credentials_from_env() -> Result<(u64, String, u64), errors::Error> {
+    let app_id: u64 = std::env::var("GITHUB_APP_ID")
+        .map_err(|e| errors::Error::environment("GITHUB_APP_ID", e.to_string()))?
+        .parse::<u64>()
+        .map_err(|e| {
+            errors::Error::environment("GITHUB_APP_ID", format!("must be a number: {e}"))
+        })?;
+
+    let private_key = std::env::var("GITHUB_PRIVATE_KEY")
+        .map_err(|e| errors::Error::environment("GITHUB_PRIVATE_KEY", e.to_string()))?;
+
+    let installation_id: u64 = std::env::var("GITHUB_INSTALLATION_ID")
+        .map_err(|e| errors::Error::environment("GITHUB_INSTALLATION_ID", e.to_string()))?
+        .parse::<u64>()
+        .map_err(|e| {
+            errors::Error::environment("GITHUB_INSTALLATION_ID", format!("must be a number: {e}"))
+        })?;
+
+    Ok((app_id, private_key, installation_id))
+}
+
+/// Construct the production [`ServerProcessor`] from environment variables.
+///
+/// Reads `GITHUB_APP_ID`, `GITHUB_PRIVATE_KEY`, and `GITHUB_INSTALLATION_ID`
+/// from the environment, builds a [`release_regent_github_client::GitHubClient`],
+/// initialises a [`release_regent_config_provider::FileConfigurationProvider`]
+/// from the directory specified by `CONFIG_DIR` (falling back to the current
+/// working directory when `CONFIG_DIR` is absent), and wires them together with
+/// [`DefaultVersionCalculator`] into a [`ServerProcessor`].
+///
+/// # Errors
+///
+/// Returns an error if any required variable is absent, if the GitHub App
+/// private key is malformed, or if the configuration directory is inaccessible.
+async fn build_server_processor(webhook_secret: String) -> Result<ServerProcessor, errors::Error> {
+    let (app_id, private_key, installation_id) = read_github_credentials_from_env()?;
+
+    let auth_config = release_regent_github_client::AuthConfig {
+        app_id,
+        private_key,
+        webhook_secret,
+    };
+
+    let github_client =
+        release_regent_github_client::GitHubClient::from_config(auth_config, installation_id)?;
+
+    let config_dir = match std::env::var("CONFIG_DIR") {
+        Ok(dir) => std::path::PathBuf::from(dir),
+        Err(_) => std::env::current_dir().map_err(|e| {
+            errors::Error::internal(format!("Failed to determine working directory: {e}"))
+        })?,
+    };
+    info!(config_dir = %config_dir.display(), "Using configuration directory");
+
+    let config_provider =
+        release_regent_config_provider::FileConfigurationProvider::new(config_dir)
+            .await
+            .map_err(|e| errors::Error::config_provider(e.to_string()))?;
+
+    let version_calculator = DefaultVersionCalculator::new();
+
+    Ok(release_regent_core::ReleaseRegentProcessor::new(
+        github_client,
+        config_provider,
+        version_calculator,
+    ))
 }
 
 /// Application state cloned into every Axum request handler.
@@ -182,7 +261,8 @@ fn setup_logging() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 /// # Errors
 ///
 /// Returns an error if:
-/// - `GITHUB_WEBHOOK_SECRET` is not set in the environment.
+/// - Any of `GITHUB_WEBHOOK_SECRET`, `GITHUB_APP_ID`, `GITHUB_PRIVATE_KEY`, or
+///   `GITHUB_INSTALLATION_ID` is absent from the environment.
 /// - The TCP listener cannot bind to the configured address.
 /// - The Axum server exits with an error.
 #[tokio::main]
@@ -194,9 +274,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // ── Secret / configuration loading ────────────────────────────────────
 
     // Load webhook secret.
-    // Full SecretProvider wiring (Azure Key Vault / AWS Secrets Manager) is task 14.1.
     let github_secret = std::env::var("GITHUB_WEBHOOK_SECRET")
         .map_err(|e| errors::Error::environment("GITHUB_WEBHOOK_SECRET", e.to_string()))?;
+
+    // ── Build production processor ─────────────────────────────────────────
+
+    // Construct the real ReleaseRegentProcessor from GitHub App credentials.
+    // Fails fast with a clear error message when any required variable is absent.
+    info!("Building production processor from environment credentials");
+    let processor = Arc::new(build_server_processor(github_secret.clone()).await?);
+    info!("Production processor constructed successfully");
 
     // Allowed repositories: comma-separated "owner/repo" values, or "*" for all.
     let allowed_repos: Vec<String> = std::env::var("ALLOWED_REPOS")
@@ -273,8 +360,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // cancelled, processing each `ProcessingEvent` from the mpsc channel.
     let loop_token = shutdown_token.clone();
     let event_loop_handle = tokio::spawn(async move {
-        let handler = NoopMergedPRHandler;
-        if let Err(e) = run_event_loop(&event_source, &handler, loop_token).await {
+        if let Err(e) = run_event_loop(&event_source, processor.as_ref(), loop_token).await {
             error!(error = %e, "Event loop exited with error");
         }
         info!("Event loop stopped");
@@ -284,8 +370,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // Build the SDK WebhookReceiver (validates signatures, dispatches to handlers).
     let secret_provider = Arc::new(WebhookSecretProvider::new(github_secret));
-    let processor = EventProcessor::new(ProcessorConfig::default());
-    let mut receiver = WebhookReceiver::new(secret_provider, processor);
+    let sdk_event_processor = EventProcessor::new(ProcessorConfig::default());
+    let mut receiver = WebhookReceiver::new(secret_provider, sdk_event_processor);
     receiver.add_handler(Arc::new(webhook_event_handler)).await;
 
     let state = AppState {
