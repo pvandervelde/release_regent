@@ -24,12 +24,7 @@ tokio-util = { workspace = true }
 tokio = { workspace = true }
 tempfile = { workspace = true }
 
-# Mock data generation
-fake = { version = "2.9", features = [
-    "derive",
-    "chrono",
-    "uuid",
-], optional = true }
+# Random test-data helpers
 rand = { workspace = true }
 
 # HTTP mocking for GitHub API simulation
@@ -54,4 +49,4 @@ default = []
 # Feature for enabling test-only functionality
 test-utils = []
 # Feature for enabling mock builders
-mock-builders = ["fake"]
+mock-builders = []

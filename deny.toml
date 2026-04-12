@@ -83,6 +83,13 @@ ignore = [
     # No fixed version of rsa is available upstream. Mitigated by the fact that private key
     # operations happen in a controlled server environment, not exposed to timing oracles.
     { id = "RUSTSEC-2023-0071", reason = "Transitive via github-bot-sdk; no fixed rsa version exists. Mitigated by server-side-only key usage." },
+    # RUSTSEC-2026-0097: rand 0.8.x unsoundness with custom logger + thread_rng reseeding.
+    # Our workspace rand has been updated to 0.9.x. The remaining rand 0.8.5 instances are
+    # entirely transitive: github-bot-sdk (uncontrolled git dep), num-bigint-dig/rsa (via
+    # github-bot-sdk), phf_generator/chrono-tz (build-time dep via git-cliff-core), and
+    # tera (via git-cliff-core). None of these code paths run in contexts with custom loggers
+    # that call back into rand, so the unsoundness preconditions cannot be met in practice.
+    { id = "RUSTSEC-2026-0097", reason = "Remaining rand 0.8.5 is transitive-only via github-bot-sdk, rsa, and git-cliff-core. No upgrade path exists for these external deps. The unsoundness requires a custom logger calling rand::rng() during reseeding — not present in any of these paths." },
 ]
 
 # If this is true, then cargo deny will use the git executable to fetch advisory database.

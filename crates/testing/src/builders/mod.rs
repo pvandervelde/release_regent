@@ -51,13 +51,13 @@ pub mod helpers {
     /// # Returns
     /// 40-character hexadecimal Git SHA
     pub fn generate_git_sha() -> String {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
 
         // Generate 40 hex characters
         (0..40)
             .map(|_| {
                 let hex_chars = b"0123456789abcdef";
-                hex_chars[rng.gen_range(0..16)] as char
+                hex_chars[rng.random_range(0..16)] as char
             })
             .collect()
     }
@@ -69,13 +69,13 @@ pub mod helpers {
     pub fn generate_github_login() -> String {
         let adjectives = ["happy", "clever", "bright", "swift", "gentle"];
         let nouns = ["cat", "dog", "bird", "fish", "bear"];
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
 
         format!(
             "{}{}{}",
-            adjectives[rng.gen_range(0..adjectives.len())],
-            nouns[rng.gen_range(0..nouns.len())],
-            rng.gen_range(100..999)
+            adjectives[rng.random_range(0..adjectives.len())],
+            nouns[rng.random_range(0..nouns.len())],
+            rng.random_range(100..999)
         )
     }
 
@@ -92,10 +92,10 @@ pub mod helpers {
     /// # Returns
     /// Recent timestamp for realistic test data
     pub fn generate_recent_timestamp() -> DateTime<Utc> {
-        let mut rng = rand::thread_rng();
-        let days_ago = rng.gen_range(0..30);
-        let hours_ago = rng.gen_range(0..24);
-        let minutes_ago = rng.gen_range(0..60);
+        let mut rng = rand::rng();
+        let days_ago = rng.random_range(0..30);
+        let hours_ago = rng.random_range(0..24);
+        let minutes_ago = rng.random_range(0..60);
 
         Utc::now()
             - chrono::Duration::days(days_ago)
@@ -110,38 +110,38 @@ pub mod helpers {
     pub fn generate_repo_name() -> String {
         let prefixes = ["awesome", "super", "mega", "ultra", "hyper"];
         let subjects = ["tool", "lib", "app", "service", "utility"];
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
 
         format!(
             "{}-{}",
-            prefixes[rng.gen_range(0..prefixes.len())],
-            subjects[rng.gen_range(0..subjects.len())]
+            prefixes[rng.random_range(0..prefixes.len())],
+            subjects[rng.random_range(0..subjects.len())]
         )
     }
 
     /// Generate a unique ID
     pub fn generate_id() -> u64 {
-        let mut rng = rand::thread_rng();
-        rng.gen_range(100000..999999)
+        let mut rng = rand::rng();
+        rng.random_range(100000..999999)
     }
 
     /// Generate a full name for testing
     pub fn generate_full_name() -> String {
         let first_names = ["Alice", "Bob", "Charlie", "Diana", "Eve"];
         let last_names = ["Smith", "Johnson", "Williams", "Brown", "Jones"];
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
 
         format!(
             "{} {}",
-            first_names[rng.gen_range(0..first_names.len())],
-            last_names[rng.gen_range(0..last_names.len())]
+            first_names[rng.random_range(0..first_names.len())],
+            last_names[rng.random_range(0..last_names.len())]
         )
     }
 
     /// Generate a PR number
     pub fn generate_pr_number() -> u32 {
-        let mut rng = rand::thread_rng();
-        rng.gen_range(1..9999)
+        let mut rng = rand::rng();
+        rng.random_range(1..9999)
     }
 
     /// Generate a PR title
@@ -154,12 +154,12 @@ pub mod helpers {
             "documentation",
             "tests",
         ];
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
 
         format!(
             "{} {}",
-            prefixes[rng.gen_range(0..prefixes.len())],
-            subjects[rng.gen_range(0..subjects.len())]
+            prefixes[rng.random_range(0..prefixes.len())],
+            subjects[rng.random_range(0..subjects.len())]
         )
     }
 
