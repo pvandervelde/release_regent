@@ -139,7 +139,10 @@ impl JwtSigner for DefaultJwtSigner {
                 message: format!("Failed to encode JWT: {e}"),
             })?;
 
-        let expires_at = DateTime::from_timestamp(exp, 0).unwrap_or_else(Utc::now);
+        let expires_at =
+            DateTime::from_timestamp(exp, 0).ok_or_else(|| SigningError::SigningFailed {
+                message: format!("JWT exp timestamp {exp} is out of range for DateTime"),
+            })?;
         Ok(JsonWebToken::new(token_string, app_id, expires_at))
     }
 
