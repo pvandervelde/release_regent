@@ -22,6 +22,10 @@ fn test_auth_config_create_with_valid_fields_stores_values() {
     };
 
     assert_eq!(config.app_id, 12345);
+    assert_eq!(
+        config.private_key,
+        "-----BEGIN RSA PRIVATE KEY-----\ntest\n-----END RSA PRIVATE KEY-----"
+    );
     assert_eq!(config.webhook_secret, "test-secret");
 }
 

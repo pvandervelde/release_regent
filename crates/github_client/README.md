@@ -54,7 +54,7 @@ Release Regent has migrated from octocrab to github-bot-sdk to improve architect
 - Tag operations (list, create, get)
 - Release operations (create, update, get, list)
 - Pull request operations (create, update, get)
-- Authentication via Azure Key Vault
+- Authentication via environment variables (injected by container runtime)
 - Rate limiting and retry logic
 
 ⚠️ **Temporarily Stubbed:**
