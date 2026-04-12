@@ -118,31 +118,29 @@ impl SecretProvider for WebhookSecretProvider {
 ///
 /// ## Routing table
 ///
-/// | `X-GitHub-Event`              | Conditions                                     | Result                             |
-/// |-------------------------------|------------------------------------------------|------------------------------------|
-/// | `pull_request`                | `action=closed`, `merged=true`, non-release branch | `PullRequestMerged`            |
-/// | `pull_request`                | `action=closed`, `merged=true`, `release/v*` branch | `ReleasePrMerged`             |
-/// | `pull_request`                | any other action or not merged                 | `Unknown("pull_request:<action>")` |
-/// | `issue_comment`               | `issue.pull_request` field present in payload  | `PullRequestCommentReceived`       |
-/// | `issue_comment`               | no `issue.pull_request` field (plain issue)    | `Unknown("issue_comment:issue")`   |
-/// | `pull_request_review_comment` | always                                         | `PullRequestCommentReceived`       |
-/// | everything else               | always                                         | `Unknown("<event_type>")`          |
-///
-/// # Release branch prefix
-///
-/// The `release/v` branch prefix is currently hardcoded. Repositories using a
-/// different convention (e.g. `releases/v`, `rel/v`) will have their release
-/// PR merges classified as [`EventType::PullRequestMerged`] instead of
-/// [`EventType::ReleasePrMerged`]. This will be made configurable once branch
-/// prefix support is added to the configuration loading infrastructure.
+/// | `X-GitHub-Event`              | Conditions                                                      | Result                             |
+/// |-------------------------------|----------------------------------------------------------------|------------------------------------|
+/// | `pull_request`                | `action=closed`, `merged=true`, non-release branch             | `PullRequestMerged`                |
+/// | `pull_request`                | `action=closed`, `merged=true`, `{release_branch_prefix}/v*`  | `ReleasePrMerged`                  |
+/// | `pull_request`                | any other action or not merged                                  | `Unknown("pull_request:<action>")` |
+/// | `issue_comment`               | `issue.pull_request` field present in payload                   | `PullRequestCommentReceived`       |
+/// | `issue_comment`               | no `issue.pull_request` field (plain issue)                     | `Unknown("issue_comment:issue")`   |
+/// | `pull_request_review_comment` | always                                                          | `PullRequestCommentReceived`       |
+/// | everything else               | always                                                          | `Unknown("<event_type>")`          |
 ///
 /// # Parameters
 ///
 /// - `event_type` — The raw `X-GitHub-Event` string (e.g. `"pull_request"`).
 /// - `payload` — The parsed JSON body of the webhook.
-pub fn classify_event(event_type: &str, payload: &serde_json::Value) -> EventType {
+/// - `release_branch_prefix` — The configured release branch prefix (e.g. `"release"`);
+///   combined with `/v` to form the expected branch head prefix (e.g. `"release/v"`).
+pub fn classify_event(
+    event_type: &str,
+    payload: &serde_json::Value,
+    release_branch_prefix: &str,
+) -> EventType {
     match event_type {
-        "pull_request" => classify_pull_request_event(payload),
+        "pull_request" => classify_pull_request_event(payload, release_branch_prefix),
         "issue_comment" => classify_issue_comment_event(payload),
         "pull_request_review_comment" => EventType::PullRequestCommentReceived,
         other => EventType::Unknown(other.to_string()),
@@ -173,7 +171,14 @@ fn classify_issue_comment_event(payload: &serde_json::Value) -> EventType {
 /// Non-closed and non-merged events return `Unknown("pull_request:<action>")`
 /// so that the action is visible in logs when diagnosing which events are being
 /// discarded.
-fn classify_pull_request_event(payload: &serde_json::Value) -> EventType {
+///
+/// A merged PR whose head branch starts with `{release_branch_prefix}/v` is
+/// classified as [`EventType::ReleasePrMerged`]; all others map to
+/// [`EventType::PullRequestMerged`].
+fn classify_pull_request_event(
+    payload: &serde_json::Value,
+    release_branch_prefix: &str,
+) -> EventType {
     let action = payload
         .get("action")
         .and_then(serde_json::Value::as_str)
@@ -193,7 +198,8 @@ fn classify_pull_request_event(payload: &serde_json::Value) -> EventType {
         .and_then(serde_json::Value::as_str)
         .unwrap_or("");
 
-    if head_ref.starts_with("release/v") {
+    let release_prefix = format!("{release_branch_prefix}/v");
+    if head_ref.starts_with(release_prefix.as_str()) {
         EventType::ReleasePrMerged
     } else {
         EventType::PullRequestMerged
@@ -213,7 +219,13 @@ fn classify_pull_request_event(payload: &serde_json::Value) -> EventType {
 ///
 /// Returns [`Error::Internal`] when `repository.full_name` does not contain
 /// a `/` separator.
-pub fn convert_envelope(envelope: &EventEnvelope) -> Result<ProcessingEvent, Error> {
+// `CoreError` is a large enum; boxing it here would complicate callers.
+// This is the established pattern across the codebase.
+#[allow(clippy::result_large_err)]
+pub fn convert_envelope(
+    envelope: &EventEnvelope,
+    release_branch_prefix: &str,
+) -> Result<ProcessingEvent, Error> {
     let full_name = &envelope.repository.full_name;
 
     let (owner, name) = full_name.split_once('/').ok_or_else(|| Error::Internal {
@@ -226,7 +238,11 @@ pub fn convert_envelope(envelope: &EventEnvelope) -> Result<ProcessingEvent, Err
         default_branch: envelope.repository.default_branch.clone(),
     };
 
-    let event_type = classify_event(envelope.event_type.as_str(), envelope.payload.raw());
+    let event_type = classify_event(
+        envelope.event_type.as_str(),
+        envelope.payload.raw(),
+        release_branch_prefix,
+    );
 
     Ok(ProcessingEvent {
         event_id: envelope.event_id.to_string(),
@@ -253,6 +269,7 @@ pub fn convert_envelope(envelope: &EventEnvelope) -> Result<ProcessingEvent, Err
 pub struct ReleaseRegentWebhookHandler {
     tx: mpsc::Sender<ProcessingEvent>,
     allowed_repos: Vec<String>,
+    release_branch_prefix: String,
 }
 
 impl ReleaseRegentWebhookHandler {
@@ -265,8 +282,18 @@ impl ReleaseRegentWebhookHandler {
     ///   - Empty `Vec` → deny all repositories.
     ///   - `vec!["*"]` → allow all repositories.
     ///   - Otherwise → exact `"owner/repo"` match.
-    pub fn new(tx: mpsc::Sender<ProcessingEvent>, allowed_repos: Vec<String>) -> Self {
-        Self { tx, allowed_repos }
+    /// - `release_branch_prefix` — The configured release branch prefix (e.g. `"release"`);
+    ///   forwarded to [`classify_event`] during envelope conversion.
+    pub fn new(
+        tx: mpsc::Sender<ProcessingEvent>,
+        allowed_repos: Vec<String>,
+        release_branch_prefix: String,
+    ) -> Self {
+        Self {
+            tx,
+            allowed_repos,
+            release_branch_prefix,
+        }
     }
 
     /// Return `true` if `full_name` matches the allow-list policy.
@@ -299,7 +326,7 @@ impl WebhookHandler for ReleaseRegentWebhookHandler {
             return Ok(());
         }
 
-        let processing_event = match convert_envelope(envelope) {
+        let processing_event = match convert_envelope(envelope, &self.release_branch_prefix) {
             Ok(e) => e,
             Err(e) => {
                 warn!(
@@ -408,13 +435,16 @@ impl EventSource for WebhookEventSource {
 ///
 /// - `allowed_repos` — Repository allow-list; see [`ReleaseRegentWebhookHandler::new`].
 /// - `channel_capacity` — Bounded channel depth.
+/// - `release_branch_prefix` — The configured release branch prefix (e.g. `"release"`);
+///   forwarded to [`classify_event`] to distinguish release PRs from regular PRs.
 pub fn create_webhook_components(
     allowed_repos: Vec<String>,
     channel_capacity: usize,
+    release_branch_prefix: String,
 ) -> (ReleaseRegentWebhookHandler, WebhookEventSource) {
     let (tx, rx) = mpsc::channel(channel_capacity);
     (
-        ReleaseRegentWebhookHandler::new(tx, allowed_repos),
+        ReleaseRegentWebhookHandler::new(tx, allowed_repos, release_branch_prefix),
         WebhookEventSource::new(rx),
     )
 }
