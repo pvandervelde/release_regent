@@ -111,8 +111,18 @@ impl SecretProvider for WebhookSecretProvider {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Event classification
+// Event classification helpers
 // ─────────────────────────────────────────────────────────────────────────────
+
+/// Build the full branch head prefix that identifies a release PR.
+///
+/// The convention is `"{branch_prefix}/v"`, e.g. `"release/v"` for the
+/// default configuration. This is the single place in the server crate that
+/// encodes the `/v` suffix; `ReleaseOrchestrator` has an equivalent private
+/// method in the core crate.
+fn release_v_prefix(branch_prefix: &str) -> String {
+    format!("{branch_prefix}/v")
+}
 
 /// Classify a raw GitHub webhook event into a domain [`EventType`].
 ///
@@ -175,6 +185,13 @@ fn classify_issue_comment_event(payload: &serde_json::Value) -> EventType {
 /// A merged PR whose head branch starts with `{release_branch_prefix}/v` is
 /// classified as [`EventType::ReleasePrMerged`]; all others map to
 /// [`EventType::PullRequestMerged`].
+///
+/// # Panics
+///
+/// Does not panic. An empty `release_branch_prefix` is treated as a
+/// programming error: a `WARN` log is emitted and the event is classified as
+/// [`EventType::PullRequestMerged`] rather than silently matching any branch
+/// that starts with `"/v"`.
 fn classify_pull_request_event(
     payload: &serde_json::Value,
     release_branch_prefix: &str,
@@ -193,13 +210,17 @@ fn classify_pull_request_event(
         return EventType::Unknown(format!("pull_request:{action}"));
     }
 
+    if release_branch_prefix.is_empty() {
+        warn!("release_branch_prefix is empty; classifying merged PR as PullRequestMerged to avoid matching any /v* branch");
+        return EventType::PullRequestMerged;
+    }
+
     let head_ref = payload
         .pointer("/pull_request/head/ref")
         .and_then(serde_json::Value::as_str)
         .unwrap_or("");
 
-    let release_prefix = format!("{release_branch_prefix}/v");
-    if head_ref.starts_with(release_prefix.as_str()) {
+    if head_ref.starts_with(release_v_prefix(release_branch_prefix).as_str()) {
         EventType::ReleasePrMerged
     } else {
         EventType::PullRequestMerged

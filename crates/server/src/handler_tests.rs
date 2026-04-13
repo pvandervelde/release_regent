@@ -347,6 +347,25 @@ fn test_classify_event_default_prefix_unchanged_behavior_for_release_branch() {
     );
 }
 
+#[test]
+fn test_classify_event_empty_prefix_merged_pr_returns_pr_merged() {
+    // An empty prefix is a programming error. Rather than matching any "/v*" branch,
+    // the classifier must fall back to PullRequestMerged and emit a warning.
+    let payload = json!({
+        "action": "closed",
+        "pull_request": {
+            "merged": true,
+            "head": { "ref": "/v1.0.0" }
+        }
+    });
+    let result = classify_event("pull_request", &payload, "");
+    assert_eq!(
+        result,
+        EventType::PullRequestMerged,
+        "empty prefix must not silently match /v* branches as ReleasePrMerged"
+    );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // convert_envelope tests
 // ─────────────────────────────────────────────────────────────────────────────
