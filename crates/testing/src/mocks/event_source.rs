@@ -87,7 +87,7 @@ impl MockEventSource {
     ///
     /// Events are consumed from the front of the `Vec` on successive
     /// `next_event` calls.
-    #[must_use] 
+    #[must_use]
     pub fn new(events: Vec<ProcessingEvent>) -> Self {
         Self {
             state: Arc::new(Mutex::new(MockEventSourceState {
@@ -99,7 +99,7 @@ impl MockEventSource {
     }
 
     /// Create an empty mock with no pre-loaded events.
-    #[must_use] 
+    #[must_use]
     pub fn empty() -> Self {
         Self::new(vec![])
     }

@@ -15,7 +15,7 @@ pub enum ConfigFormat {
 
 impl ConfigFormat {
     /// Get the primary file extension for this format
-    #[must_use] 
+    #[must_use]
     pub fn extension(&self) -> &'static str {
         match self {
             ConfigFormat::Yaml => "yaml",
@@ -24,7 +24,7 @@ impl ConfigFormat {
     }
 
     /// Get all supported file extensions for this format
-    #[must_use] 
+    #[must_use]
     pub fn extensions(&self) -> &'static [&'static str] {
         match self {
             ConfigFormat::Yaml => &["yaml", "yml"],
@@ -33,7 +33,7 @@ impl ConfigFormat {
     }
 
     /// Get the format name as a string
-    #[must_use] 
+    #[must_use]
     pub fn name(&self) -> &'static str {
         match self {
             ConfigFormat::Yaml => "YAML",
@@ -143,13 +143,13 @@ impl FormatDetector {
     }
 
     /// Get all supported formats
-    #[must_use] 
+    #[must_use]
     pub fn supported_formats() -> Vec<ConfigFormat> {
         vec![ConfigFormat::Yaml, ConfigFormat::Toml]
     }
 
     /// Get all supported file extensions
-    #[must_use] 
+    #[must_use]
     pub fn supported_extensions() -> Vec<&'static str> {
         Self::supported_formats()
             .iter()
@@ -158,7 +158,7 @@ impl FormatDetector {
     }
 
     /// Check if a file extension is supported
-    #[must_use] 
+    #[must_use]
     pub fn is_supported_extension(extension: &str) -> bool {
         let extension = extension.to_lowercase();
         Self::supported_extensions()

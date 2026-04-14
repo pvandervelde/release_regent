@@ -34,7 +34,7 @@ pub struct TagBuilder {
 
 impl TagBuilder {
     /// Create a new tag builder with sensible defaults.
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             name: "v1.0.0".to_string(),
@@ -46,42 +46,42 @@ impl TagBuilder {
     }
 
     /// Set the tag name.
-    #[must_use] 
+    #[must_use]
     pub fn with_name(mut self, name: &str) -> Self {
         self.name = name.to_string();
         self
     }
 
     /// Set the target commit SHA.
-    #[must_use] 
+    #[must_use]
     pub fn with_commit_sha(mut self, sha: &str) -> Self {
         self.commit_sha = sha.to_string();
         self
     }
 
     /// Set a tag message, making this an annotated tag.
-    #[must_use] 
+    #[must_use]
     pub fn with_message(mut self, message: &str) -> Self {
         self.message = Some(message.to_string());
         self
     }
 
     /// Set the tagger information.
-    #[must_use] 
+    #[must_use]
     pub fn with_tagger(mut self, tagger: GitUser) -> Self {
         self.tagger = Some(tagger);
         self
     }
 
     /// Set the tag creation timestamp.
-    #[must_use] 
+    #[must_use]
     pub fn with_created_at(mut self, created_at: DateTime<Utc>) -> Self {
         self.created_at = Some(created_at);
         self
     }
 
     /// Make this an annotated tag using a default release message.
-    #[must_use] 
+    #[must_use]
     pub fn annotated(mut self) -> Self {
         self.message = Some(format!("Release {}", self.name));
         self

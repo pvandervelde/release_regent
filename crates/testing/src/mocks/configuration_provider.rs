@@ -6,7 +6,11 @@
 use crate::mocks::{CallResult, MockConfig, MockState, SharedMockState};
 use async_trait::async_trait;
 use release_regent_core::{
-    config::ReleaseRegentConfig, traits::configuration_provider::{RepositoryConfig, ValidationResult, ConfigurationProvider, LoadOptions, ConfigurationSource}, CoreError, CoreResult,
+    config::ReleaseRegentConfig,
+    traits::configuration_provider::{
+        ConfigurationProvider, ConfigurationSource, LoadOptions, RepositoryConfig, ValidationResult,
+    },
+    CoreError, CoreResult,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -54,7 +58,7 @@ impl MockConfigurationProvider {
     /// - Call tracking enabled
     /// - Successful validation by default
     /// - No failure simulation
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             state: Arc::new(RwLock::new(MockState::new())),
@@ -72,7 +76,7 @@ impl MockConfigurationProvider {
     ///
     /// # Returns
     /// Configured mock instance
-    #[must_use] 
+    #[must_use]
     pub fn with_config(config: MockConfig) -> Self {
         Self {
             state: Arc::new(RwLock::new(MockState::with_config(config))),
@@ -91,7 +95,7 @@ impl MockConfigurationProvider {
     ///
     /// # Returns
     /// Self for method chaining
-    #[must_use] 
+    #[must_use]
     pub fn with_configuration(mut self, source_path: &str, config: ReleaseRegentConfig) -> Self {
         self.configurations.insert(source_path.to_string(), config);
         self
@@ -106,7 +110,7 @@ impl MockConfigurationProvider {
     ///
     /// # Returns
     /// Self for method chaining
-    #[must_use] 
+    #[must_use]
     pub fn with_repository_config(
         mut self,
         owner: &str,
@@ -126,7 +130,7 @@ impl MockConfigurationProvider {
     ///
     /// # Returns
     /// Self for method chaining
-    #[must_use] 
+    #[must_use]
     pub fn with_validation_result(mut self, config_key: &str, result: ValidationResult) -> Self {
         self.validation_results
             .insert(config_key.to_string(), result);
@@ -140,7 +144,7 @@ impl MockConfigurationProvider {
     ///
     /// # Returns
     /// Self for method chaining
-    #[must_use] 
+    #[must_use]
     pub fn with_validation_success(mut self, success: bool) -> Self {
         self.default_validation_success = success;
         self

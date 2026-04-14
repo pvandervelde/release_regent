@@ -15,7 +15,7 @@ pub struct VersionBuilder {
 
 impl VersionBuilder {
     /// Create a new version builder with defaults
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             major: 1,
@@ -27,35 +27,35 @@ impl VersionBuilder {
     }
 
     /// Set major version
-    #[must_use] 
+    #[must_use]
     pub fn with_major(mut self, major: u64) -> Self {
         self.major = major;
         self
     }
 
     /// Set minor version
-    #[must_use] 
+    #[must_use]
     pub fn with_minor(mut self, minor: u64) -> Self {
         self.minor = minor;
         self
     }
 
     /// Set patch version
-    #[must_use] 
+    #[must_use]
     pub fn with_patch(mut self, patch: u64) -> Self {
         self.patch = patch;
         self
     }
 
     /// Set prerelease identifier
-    #[must_use] 
+    #[must_use]
     pub fn with_prerelease(mut self, prerelease: &str) -> Self {
         self.prerelease = Some(prerelease.to_string());
         self
     }
 
     /// Set build metadata
-    #[must_use] 
+    #[must_use]
     pub fn with_build(mut self, build: &str) -> Self {
         self.build = Some(build.to_string());
         self

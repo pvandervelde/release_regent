@@ -24,7 +24,7 @@ impl FixtureProvider {
     ///
     /// # Returns
     /// Fixture provider with pre-loaded common fixtures
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         let mut provider = Self {
             fixtures: HashMap::new(),
@@ -90,7 +90,7 @@ impl FixtureProvider {
     ///
     /// # Returns
     /// Webhook payload data if found
-    #[must_use] 
+    #[must_use]
     pub fn get_webhook_fixture(&self, event_type: &str, action: &str) -> Option<&Value> {
         let key = format!("webhook.{event_type}.{action}");
         self.fixtures.get(&key)
@@ -104,7 +104,7 @@ impl FixtureProvider {
     ///
     /// # Returns
     /// API response data if found
-    #[must_use] 
+    #[must_use]
     pub fn get_api_fixture(&self, resource: &str, variant: &str) -> Option<&Value> {
         let key = format!("api.{resource}.{variant}");
         self.fixtures.get(&key)
@@ -117,7 +117,7 @@ impl FixtureProvider {
     ///
     /// # Returns
     /// Map of matching fixtures
-    #[must_use] 
+    #[must_use]
     pub fn get_fixtures_matching(&self, pattern: &str) -> HashMap<String, &Value> {
         let mut matches = HashMap::new();
         let pattern_prefix = pattern.trim_end_matches('*');
@@ -135,7 +135,7 @@ impl FixtureProvider {
     ///
     /// # Returns
     /// Vector of all fixture names
-    #[must_use] 
+    #[must_use]
     pub fn list_fixtures(&self) -> Vec<String> {
         self.fixtures.keys().cloned().collect()
     }
@@ -158,7 +158,7 @@ impl FixtureProvider {
     ///
     /// # Returns
     /// Fixture data if found
-    #[must_use] 
+    #[must_use]
     pub fn get_fixture(&self, name: &str) -> Option<&Value> {
         self.fixtures.get(name)
     }

@@ -115,7 +115,7 @@ impl ConfigProviderError {
     }
 
     /// Create a new validation error
-    #[must_use] 
+    #[must_use]
     pub fn validation_error(path: PathBuf, errors: Vec<String>) -> Self {
         Self::ValidationError { path, errors }
     }

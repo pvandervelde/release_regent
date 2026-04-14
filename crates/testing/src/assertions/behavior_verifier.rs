@@ -12,7 +12,7 @@ pub struct BehaviorVerifier {
 
 impl BehaviorVerifier {
     /// Create a new behavior verifier
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             context: HashMap::new(),
@@ -27,7 +27,7 @@ impl BehaviorVerifier {
     ///
     /// # Returns
     /// Self for method chaining
-    #[must_use] 
+    #[must_use]
     pub fn with_context(mut self, key: &str, value: &str) -> Self {
         self.context.insert(key.to_string(), value.to_string());
         self
@@ -42,7 +42,7 @@ impl BehaviorVerifier {
     ///
     /// # Returns
     /// Spec assertion result
-    #[must_use] 
+    #[must_use]
     pub fn verify_behavior(
         &self,
         spec_name: &str,
@@ -68,7 +68,7 @@ impl BehaviorVerifier {
     ///
     /// # Returns
     /// Test result with all assertions
-    #[must_use] 
+    #[must_use]
     pub fn verify_behaviors(&self, behaviors: Vec<(&str, &str, &str)>) -> SpecTestResult {
         let mut result = SpecTestResult::new();
 
@@ -90,7 +90,7 @@ impl BehaviorVerifier {
     ///
     /// # Returns
     /// Spec assertion result
-    #[must_use] 
+    #[must_use]
     pub fn verify_configuration_behavior(
         &self,
         config_type: &str,
@@ -130,7 +130,7 @@ impl BehaviorVerifier {
     ///
     /// # Returns
     /// Spec assertion result
-    #[must_use] 
+    #[must_use]
     pub fn verify_error_handling(
         &self,
         operation: &str,
@@ -164,7 +164,7 @@ impl BehaviorVerifier {
     ///
     /// # Returns
     /// Spec assertion result
-    #[must_use] 
+    #[must_use]
     pub fn verify_async_behavior(
         &self,
         operation: &str,
@@ -185,7 +185,7 @@ impl BehaviorVerifier {
     }
 
     /// Get current context
-    #[must_use] 
+    #[must_use]
     pub fn context(&self) -> &HashMap<String, String> {
         &self.context
     }

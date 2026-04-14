@@ -118,13 +118,13 @@ pub struct MockState {
 
 impl MockState {
     /// Create new mock state with default configuration
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Create new mock state with custom configuration
-    #[must_use] 
+    #[must_use]
     pub fn with_config(config: MockConfig) -> Self {
         Self {
             config,
@@ -146,19 +146,19 @@ impl MockState {
     }
 
     /// Get the history of all recorded calls
-    #[must_use] 
+    #[must_use]
     pub fn call_history(&self) -> &[CallInfo] {
         &self.call_history
     }
 
     /// Get the total number of calls made
-    #[must_use] 
+    #[must_use]
     pub fn call_count(&self) -> u64 {
         self.call_count
     }
 
     /// Check if quota limit has been exceeded
-    #[must_use] 
+    #[must_use]
     pub fn is_quota_exceeded(&self) -> bool {
         if let Some(max_calls) = self.config.max_calls {
             self.call_count >= max_calls
@@ -168,7 +168,7 @@ impl MockState {
     }
 
     /// Determine if this call should simulate a failure
-    #[must_use] 
+    #[must_use]
     pub fn should_simulate_failure(&self) -> bool {
         use rand::Rng;
 
@@ -196,7 +196,7 @@ impl MockState {
     }
 
     /// Get custom data for test scenarios
-    #[must_use] 
+    #[must_use]
     pub fn get_custom_data(&self, key: &str) -> Option<&serde_json::Value> {
         self.custom_data.get(key)
     }

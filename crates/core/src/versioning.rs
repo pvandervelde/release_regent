@@ -365,7 +365,10 @@ impl VersionCalculator {
         &self,
         commits: &[ConventionalCommit],
     ) -> CoreResult<SemanticVersion> {
-        info!(commit_count = commits.len(), "Calculating next version from commits");
+        info!(
+            commit_count = commits.len(),
+            "Calculating next version from commits"
+        );
 
         let bump = Self::determine_version_bump(commits);
         debug!(bump = ?bump, "Determined version bump");

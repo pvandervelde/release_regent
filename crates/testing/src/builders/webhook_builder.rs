@@ -14,7 +14,7 @@ pub struct WebhookBuilder {
 
 impl WebhookBuilder {
     /// Create a new webhook builder with defaults
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             event_type: "push".to_string(),
@@ -25,21 +25,21 @@ impl WebhookBuilder {
     }
 
     /// Set event type
-    #[must_use] 
+    #[must_use]
     pub fn with_event_type(mut self, event_type: &str) -> Self {
         self.event_type = event_type.to_string();
         self
     }
 
     /// Set action (for some event types)
-    #[must_use] 
+    #[must_use]
     pub fn with_action(mut self, action: &str) -> Self {
         self.action = Some(action.to_string());
         self
     }
 
     /// Set repository
-    #[must_use] 
+    #[must_use]
     pub fn with_repository(mut self, owner: &str, name: &str) -> Self {
         self.repository_owner = owner.to_string();
         self.repository_name = name.to_string();
