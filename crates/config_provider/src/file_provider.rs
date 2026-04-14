@@ -46,11 +46,16 @@ pub struct FileConfigurationProvider {
 struct CachedConfig {
     config: ReleaseRegentConfig,
     last_modified: std::time::SystemTime,
+    #[allow(dead_code)] // retained for future cache-invalidation comparisons
     file_path: PathBuf,
 }
 
 impl FileConfigurationProvider {
     /// Create a new file configuration provider
+    ///
+    /// # Errors
+    /// - `ConfigProviderError::Io` — failed to create the base directory
+    #[allow(clippy::result_large_err)] // ConfigProviderError is intentionally large
     pub async fn new<P: AsRef<Path>>(base_directory: P) -> ConfigProviderResult<Self> {
         let base_dir = base_directory.as_ref().to_path_buf();
 
@@ -116,6 +121,8 @@ impl FileConfigurationProvider {
     }
 
     /// Find configuration file in search directories
+    #[allow(clippy::unused_async)] // declared async for interface consistency; may be needed in future
+    #[allow(clippy::result_large_err)] // ConfigProviderError is intentionally large
     async fn find_config_file(&self, filename: &str) -> ConfigProviderResult<Option<PathBuf>> {
         // Check specific paths first
         if filename == "global" {
@@ -165,6 +172,12 @@ impl FileConfigurationProvider {
     }
 
     /// Load configuration from file
+    ///
+    /// # Errors
+    /// - `ConfigProviderError::ConfigFileNotFound` — file does not exist and `create_missing` is false
+    /// - `ConfigProviderError::Io` — file could not be read
+    /// - `ConfigProviderError::ParseError` — file content could not be parsed
+    #[allow(clippy::result_large_err)] // ConfigProviderError is intentionally large
     async fn load_config_from_file(
         &self,
         path: &Path,
@@ -176,11 +189,10 @@ impl FileConfigurationProvider {
             if self.create_missing {
                 warn!("Configuration file not found, creating default: {:?}", path);
                 return self.create_default_config_file(path).await;
-            } else {
-                return Err(ConfigProviderError::ConfigFileNotFound {
-                    path: path.to_path_buf(),
-                });
             }
+            return Err(ConfigProviderError::ConfigFileNotFound {
+                path: path.to_path_buf(),
+            });
         }
 
         // Read file content
@@ -199,7 +211,7 @@ impl FileConfigurationProvider {
             })
             .map_err(|e| ConfigProviderError::InvalidFormat {
                 path: path.to_path_buf(),
-                reason: format!("Could not detect format: {}", e),
+                reason: format!("Could not detect format: {e}"),
             })?;
 
         // Parse content
@@ -217,13 +229,18 @@ impl FileConfigurationProvider {
         })?;
 
         // Apply overrides
-        self.apply_overrides(&mut config)?;
+        self.apply_overrides(&mut config);
 
         info!("Successfully loaded configuration from: {:?}", path);
         Ok(config)
     }
 
     /// Create a default configuration file
+    ///
+    /// # Errors
+    /// - `ConfigProviderError::Io` — failed to create directory or write file
+    /// - `ConfigProviderError::ParseError` — failed to serialize the default config
+    #[allow(clippy::result_large_err)] // ConfigProviderError is intentionally large
     async fn create_default_config_file(
         &self,
         path: &Path,
@@ -257,7 +274,7 @@ impl FileConfigurationProvider {
     }
 
     /// Apply configuration overrides
-    fn apply_overrides(&self, config: &mut ReleaseRegentConfig) -> ConfigProviderResult<()> {
+    fn apply_overrides(&self, config: &mut ReleaseRegentConfig) {
         for (key, value) in &self.overrides {
             match key.as_str() {
                 "versioning.strategy" => {
@@ -265,11 +282,11 @@ impl FileConfigurationProvider {
                     config.versioning.strategy = match value.as_str() {
                         "conventional" => VersioningStrategy::Conventional,
                         "external" => VersioningStrategy::External,
-                        _ => config.versioning.strategy.clone(), // Keep existing if invalid
+                        _ => continue, // Keep existing if unknown
                     };
                 }
                 "branches.main_branch" => {
-                    config.core.branches.main = value.clone();
+                    config.core.branches.main.clone_from(value);
                 }
                 "webhook.url" => {
                     // WebhookConfig only has 'url' and 'headers' fields
@@ -280,7 +297,7 @@ impl FileConfigurationProvider {
                                 headers: std::collections::HashMap::new(),
                             });
                     } else if let Some(webhook) = &mut config.notifications.webhook {
-                        webhook.url = value.clone();
+                        webhook.url.clone_from(value);
                     }
                 }
                 // Add more override patterns as needed
@@ -289,7 +306,6 @@ impl FileConfigurationProvider {
                 }
             }
         }
-        Ok(())
     }
 
     /// Get cached configuration if still valid
@@ -344,10 +360,9 @@ impl FileConfigurationProvider {
 
     /// Merge two configurations (repository overrides global)
     fn merge_configurations(
-        &self,
         global: ReleaseRegentConfig,
         repository: ReleaseRegentConfig,
-    ) -> ConfigProviderResult<ReleaseRegentConfig> {
+    ) -> ReleaseRegentConfig {
         // For now, implement a simple merge where repository config overrides global config
         // In a real implementation, this would be more sophisticated
 
@@ -362,7 +377,7 @@ impl FileConfigurationProvider {
         merged.error_handling = repository.error_handling;
         merged.release_pr = repository.release_pr;
 
-        Ok(merged)
+        merged
     }
 }
 
@@ -427,8 +442,8 @@ impl ConfigurationProvider for FileConfigurationProvider {
         repo: &str,
         _options: LoadOptions,
     ) -> Result<Option<RepositoryConfig>, CoreError> {
-        let cache_key = format!("{}_{}", owner, repo);
-        let filename = format!("{}-{}", owner, repo);
+        let cache_key = format!("{owner}_{repo}");
+        let filename = format!("{owner}-{repo}");
 
         // Try to find repository-specific configuration file
         let config_path = match self
@@ -442,7 +457,7 @@ impl ConfigurationProvider for FileConfigurationProvider {
                 if let Some(repo_path) = &self.repository_config_path {
                     repo_path.clone()
                 } else if self.create_missing {
-                    self.base_directory.join(format!("{}.yaml", filename))
+                    self.base_directory.join(format!("{filename}.yaml"))
                 } else {
                     // No repository config found - return None instead of error
                     return Ok(None);
@@ -499,20 +514,19 @@ impl ConfigurationProvider for FileConfigurationProvider {
         let global_config = self.load_global_config(options.clone()).await?;
 
         // Try to load repository-specific configuration
-        match self.load_repository_config(owner, repo, options).await? {
-            Some(repo_config) => {
-                // Merge configurations
-                self.merge_configurations(global_config, repo_config.config)
-                    .map_err(|e| CoreError::config(e.to_string()))
-            }
-            None => {
-                // If repository config doesn't exist, use global config
-                debug!(
-                    "Using global configuration for {}/{} (no repository-specific config)",
-                    owner, repo
-                );
-                Ok(global_config)
-            }
+        if let Some(repo_config) = self.load_repository_config(owner, repo, options).await? {
+            // Merge configurations
+            Ok(Self::merge_configurations(
+                global_config,
+                repo_config.config,
+            ))
+        } else {
+            // If repository config doesn't exist, use global config
+            debug!(
+                "Using global configuration for {}/{} (no repository-specific config)",
+                owner, repo
+            );
+            Ok(global_config)
         }
     }
 
@@ -550,11 +564,11 @@ impl ConfigurationProvider for FileConfigurationProvider {
         } else {
             match (owner, repo) {
                 (Some(o), Some(r)) => {
-                    let filename = format!("{}-{}", o, r);
+                    let filename = format!("{o}-{r}");
                     let path = self
                         .repository_config_path
                         .clone()
-                        .unwrap_or_else(|| self.base_directory.join(format!("{}.yaml", filename)));
+                        .unwrap_or_else(|| self.base_directory.join(format!("{filename}.yaml")));
                     (path, "yaml")
                 }
                 _ => {
@@ -571,8 +585,7 @@ impl ConfigurationProvider for FileConfigurationProvider {
             "toml" => ConfigFormat::Toml,
             _ => {
                 return Err(CoreError::config(format!(
-                    "Unsupported format: {}",
-                    config_format
+                    "Unsupported format: {config_format}"
                 )))
             }
         };
@@ -586,20 +599,20 @@ impl ConfigurationProvider for FileConfigurationProvider {
         if let Some(parent) = file_path.parent() {
             fs::create_dir_all(parent)
                 .await
-                .map_err(|e| CoreError::config(format!("Failed to create directory: {}", e)))?;
+                .map_err(|e| CoreError::config(format!("Failed to create directory: {e}")))?;
         }
 
         // Write file
         fs::write(&file_path, content)
             .await
-            .map_err(|e| CoreError::config(format!("Failed to write configuration: {}", e)))?;
+            .map_err(|e| CoreError::config(format!("Failed to write configuration: {e}")))?;
 
         // Clear cache for this configuration
         let cache_key = if global {
             "global".to_string()
         } else {
             match (owner, repo) {
-                (Some(o), Some(r)) => format!("{}_{}", o, r),
+                (Some(o), Some(r)) => format!("{o}_{r}"),
                 _ => "global".to_string(),
             }
         };
@@ -628,7 +641,7 @@ impl ConfigurationProvider for FileConfigurationProvider {
                         if let Some(stem) = file_name.split('.').next() {
                             if let Some((owner, repo)) = stem.split_once('-') {
                                 if FormatDetector::is_supported_extension(
-                                    file_name.split('.').last().unwrap_or(""),
+                                    file_name.split('.').next_back().unwrap_or(""),
                                 ) {
                                     // Try to load the configuration to create a RepositoryConfig
                                     if let Ok(config) =
@@ -662,7 +675,7 @@ impl ConfigurationProvider for FileConfigurationProvider {
         repo: Option<&str>,
     ) -> Result<ConfigurationSource, CoreError> {
         let filename = match (owner, repo) {
-            (Some(o), Some(r)) => format!("{}-{}", o, r),
+            (Some(o), Some(r)) => format!("{o}-{r}"),
             _ => "global".to_string(),
         };
 
@@ -694,7 +707,7 @@ impl ConfigurationProvider for FileConfigurationProvider {
         repo: Option<&str>,
     ) -> Result<(), CoreError> {
         let cache_key = match (owner, repo) {
-            (Some(o), Some(r)) => format!("{}_{}", o, r),
+            (Some(o), Some(r)) => format!("{o}_{r}"),
             _ => "global".to_string(),
         };
 
@@ -709,7 +722,7 @@ impl ConfigurationProvider for FileConfigurationProvider {
         repo: Option<&str>,
     ) -> Result<bool, CoreError> {
         let filename = match (owner, repo) {
-            (Some(o), Some(r)) => format!("{}-{}", o, r),
+            (Some(o), Some(r)) => format!("{o}-{r}"),
             _ => "global".to_string(),
         };
 
