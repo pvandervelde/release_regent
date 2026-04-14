@@ -196,29 +196,6 @@ impl ConfigValidator {
             }
         }
     }
-
-    /// Check if a string is a valid semantic version
-    #[allow(dead_code)] // retained for future validation use
-    fn is_valid_semver(version: &str) -> bool {
-        // Simple semantic version validation without regex dependency
-        let parts: Vec<&str> = version.split('.').collect();
-
-        // Must have at least major.minor.patch
-        if parts.len() < 3 {
-            return false;
-        }
-
-        // Check if first three parts are valid numbers
-        for part in parts.iter().take(3) {
-            if part.parse::<u32>().is_err() {
-                return false;
-            }
-        }
-
-        // If there are more than 3 parts, they could be pre-release or build metadata
-        // For now, we'll accept any additional parts as valid
-        true
-    }
 }
 
 impl Default for ConfigValidator {

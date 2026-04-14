@@ -715,7 +715,8 @@ where
 
         // Build orchestrator config honouring the repository PR title template.
         let orch_config = release_orchestrator::OrchestratorConfig {
-            branch_prefix: release_orchestrator::OrchestratorConfig::default().branch_prefix,
+            branch_prefix: release_orchestrator::OrchestratorConfig::DEFAULT_BRANCH_PREFIX
+                .to_string(),
             title_template: repo_config.release_pr.title_template.clone(),
             changelog_header: "## Changelog".to_string(),
         };
@@ -751,7 +752,7 @@ where
                 repo,
                 correlation_id,
                 &orchestrator,
-                &calc_result.next_version.clone(),
+                &calc_result.next_version,
                 &changelog,
                 &base_branch,
                 &base_sha,

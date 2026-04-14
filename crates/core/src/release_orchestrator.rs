@@ -79,10 +79,15 @@ pub struct OrchestratorConfig {
     pub changelog_header: String,
 }
 
+impl OrchestratorConfig {
+    /// The default branch prefix used when no explicit configuration is provided.
+    pub const DEFAULT_BRANCH_PREFIX: &'static str = "release";
+}
+
 impl Default for OrchestratorConfig {
     fn default() -> Self {
         Self {
-            branch_prefix: "release".to_string(),
+            branch_prefix: Self::DEFAULT_BRANCH_PREFIX.to_string(),
             title_template: "chore(release): {version_tag}".to_string(),
             changelog_header: "## Changelog".to_string(),
         }

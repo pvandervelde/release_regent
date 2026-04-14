@@ -201,9 +201,13 @@ async fn webhook_handler(
 ) -> StatusCode {
     let headers_map: HashMap<String, String> = headers
         .iter()
-        .filter_map(|(name, value)| if let Ok(v) = value.to_str() { Some((name.as_str().to_string(), v.to_string())) } else {
-            warn!(header = %name, "Dropping header with non-UTF-8 value");
-            None
+        .filter_map(|(name, value)| {
+            if let Ok(v) = value.to_str() {
+                Some((name.as_str().to_string(), v.to_string()))
+            } else {
+                warn!(header = %name, "Dropping header with non-UTF-8 value");
+                None
+            }
         })
         .collect();
 
@@ -282,13 +286,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     info!("Production processor constructed successfully");
 
     // Allowed repositories: comma-separated "owner/repo" values, or "*" for all.
-    let allowed_repos: Vec<String> = std::env::var("ALLOWED_REPOS").map_or_else(|_| vec!["*".to_string()], |s| {
+    let allowed_repos: Vec<String> = std::env::var("ALLOWED_REPOS").map_or_else(
+        |_| vec!["*".to_string()],
+        |s| {
             s.split(',')
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .map(String::from)
                 .collect()
-        });
+        },
+    );
 
     // Bounded channel capacity for in-flight events.
     let channel_capacity: usize = match std::env::var("EVENT_CHANNEL_CAPACITY") {

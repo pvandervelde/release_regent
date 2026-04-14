@@ -6,7 +6,15 @@
 use crate::mocks::{CallResult, MockConfig, MockState, SharedMockState};
 use async_trait::async_trait;
 use release_regent_core::{
-    traits::{git_operations::{GitCommit, GitTag, GitTagType, GetCommitsOptions, ListTagsOptions, GitRepository}, github_operations::{Repository, PullRequest, Tag, Release, Label, CollaboratorPermission, CreatePullRequestParams, PullRequestBranch, CreateReleaseParams, UpdateReleaseParams}},
+    traits::{
+        git_operations::{
+            GetCommitsOptions, GitCommit, GitRepository, GitTag, GitTagType, ListTagsOptions,
+        },
+        github_operations::{
+            CollaboratorPermission, CreatePullRequestParams, CreateReleaseParams, Label,
+            PullRequest, PullRequestBranch, Release, Repository, Tag, UpdateReleaseParams,
+        },
+    },
     CoreError, CoreResult, GitHubOperations, GitOperations,
 };
 use std::collections::HashMap;
@@ -104,7 +112,7 @@ impl MockGitHubOperations {
     /// - Call tracking enabled
     /// - No failure simulation
     /// - Zero latency simulation
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             state: Arc::new(RwLock::new(MockState::new())),
@@ -149,7 +157,7 @@ impl MockGitHubOperations {
     ///
     /// # Returns
     /// Self for method chaining
-    #[must_use] 
+    #[must_use]
     pub fn with_commits(mut self, owner: &str, name: &str, commits: Vec<GitCommit>) -> Self {
         let key = format!("{owner}/{name}");
         self.commits.insert(key, commits);
@@ -163,7 +171,7 @@ impl MockGitHubOperations {
     ///
     /// # Returns
     /// Configured mock instance
-    #[must_use] 
+    #[must_use]
     pub fn with_config(config: MockConfig) -> Self {
         Self {
             state: Arc::new(RwLock::new(MockState::with_config(config))),
@@ -188,7 +196,7 @@ impl MockGitHubOperations {
     ///
     /// # Returns
     /// Self for method chaining
-    #[must_use] 
+    #[must_use]
     pub fn with_default_branch(mut self, branch: &str) -> Self {
         // Update existing repositories with the new default branch
         for repository in self.repositories.values_mut() {
@@ -206,7 +214,7 @@ impl MockGitHubOperations {
     ///
     /// # Returns
     /// Self for method chaining
-    #[must_use] 
+    #[must_use]
     pub fn with_releases(mut self, owner: &str, name: &str, releases: Vec<Release>) -> Self {
         let key = format!("{owner}/{name}");
         self.releases.insert(key, releases);
@@ -222,7 +230,7 @@ impl MockGitHubOperations {
     ///
     /// # Returns
     /// Self for method chaining
-    #[must_use] 
+    #[must_use]
     pub fn with_repository(mut self, owner: &str, name: &str, repository: Repository) -> Self {
         let key = format!("{owner}/{name}");
         self.repositories.insert(key, repository);
@@ -236,7 +244,7 @@ impl MockGitHubOperations {
     ///
     /// # Returns
     /// Self for method chaining
-    #[must_use] 
+    #[must_use]
     pub fn with_repository_exists(self, exists: bool) -> Self {
         if exists {
             self.with_repository(
@@ -269,7 +277,7 @@ impl MockGitHubOperations {
     ///
     /// # Returns
     /// Self for method chaining
-    #[must_use] 
+    #[must_use]
     pub fn with_pull_requests(mut self, owner: &str, repo: &str, prs: Vec<PullRequest>) -> Self {
         let key = format!("{owner}/{repo}");
         self.pull_requests.insert(key, prs);
@@ -285,7 +293,7 @@ impl MockGitHubOperations {
     ///
     /// # Returns
     /// Self for method chaining
-    #[must_use] 
+    #[must_use]
     pub fn with_tags(mut self, owner: &str, name: &str, tags: Vec<Tag>) -> Self {
         let key = format!("{owner}/{name}");
         self.tags.insert(key, tags);
@@ -305,7 +313,7 @@ impl MockGitHubOperations {
     ///
     /// # Returns
     /// Self for method chaining
-    #[must_use] 
+    #[must_use]
     pub fn with_branches(mut self, owner: &str, name: &str, branches: Vec<String>) -> Self {
         let key = format!("{owner}/{name}");
         self.branches.insert(key, branches);
@@ -319,7 +327,7 @@ impl MockGitHubOperations {
     ///
     /// The key is formatted as `"{owner}/{repo}/{issue_number}"` so that
     /// labels can be scoped to a specific repository.
-    #[must_use] 
+    #[must_use]
     pub fn with_pr_labels(
         self,
         owner: &str,
@@ -336,7 +344,7 @@ impl MockGitHubOperations {
     /// `get_collaborator_permission` for any username.
     ///
     /// Defaults to `CollaboratorPermission::Write` when not set.
-    #[must_use] 
+    #[must_use]
     pub fn with_collaborator_permission(mut self, permission: CollaboratorPermission) -> Self {
         self.collaborator_permission = Some(permission);
         self
@@ -350,7 +358,7 @@ impl MockGitHubOperations {
     ///
     /// `method_name` must match the method name string used internally, e.g.
     /// `"add_labels"`, `"remove_label"`, `"list_pr_labels"`.
-    #[must_use] 
+    #[must_use]
     pub fn with_method_error(mut self, method_name: &str, error_message: &str) -> Self {
         self.method_errors
             .insert(method_name.to_string(), error_message.to_string());

@@ -121,14 +121,12 @@ impl FileConfigurationProvider {
     }
 
     /// Find configuration file in search directories
-    #[allow(clippy::unused_async)] // declared async for interface consistency; may be needed in future
-    #[allow(clippy::result_large_err)] // ConfigProviderError is intentionally large
-    async fn find_config_file(&self, filename: &str) -> ConfigProviderResult<Option<PathBuf>> {
+    fn find_config_file(&self, filename: &str) -> Option<PathBuf> {
         // Check specific paths first
         if filename == "global" {
             if let Some(path) = &self.global_config_path {
                 if path.exists() {
-                    return Ok(Some(path.clone()));
+                    return Some(path.clone());
                 }
             }
         }
@@ -163,12 +161,12 @@ impl FileConfigurationProvider {
                 let path = dir.join(variation);
                 if path.exists() {
                     debug!("Found configuration file: {:?}", path);
-                    return Ok(Some(path));
+                    return Some(path);
                 }
             }
         }
 
-        Ok(None)
+        None
     }
 
     /// Load configuration from file
@@ -390,11 +388,7 @@ impl ConfigurationProvider for FileConfigurationProvider {
         let cache_key = "global".to_string();
 
         // Try to find global configuration file
-        let config_path = match self
-            .find_config_file("global")
-            .await
-            .map_err(|e| CoreError::config(e.to_string()))?
-        {
+        let config_path = match self.find_config_file("global") {
             Some(path) => path,
             None => {
                 if self.create_missing {
@@ -446,11 +440,7 @@ impl ConfigurationProvider for FileConfigurationProvider {
         let filename = format!("{owner}-{repo}");
 
         // Try to find repository-specific configuration file
-        let config_path = match self
-            .find_config_file(&filename)
-            .await
-            .map_err(|e| CoreError::config(e.to_string()))?
-        {
+        let config_path = match self.find_config_file(&filename) {
             Some(path) => path,
             None => {
                 // Try generic repository config
@@ -679,11 +669,7 @@ impl ConfigurationProvider for FileConfigurationProvider {
             _ => "global".to_string(),
         };
 
-        match self
-            .find_config_file(&filename)
-            .await
-            .map_err(|e| CoreError::config(e.to_string()))?
-        {
+        match self.find_config_file(&filename) {
             Some(path) => {
                 let format = FormatDetector::detect_from_path(&path)
                     .unwrap_or(ConfigFormat::Yaml)
@@ -726,10 +712,9 @@ impl ConfigurationProvider for FileConfigurationProvider {
             _ => "global".to_string(),
         };
 
-        match self.find_config_file(&filename).await {
-            Ok(Some(_)) => Ok(true),
-            Ok(None) => Ok(false),
-            Err(e) => Err(CoreError::config(e.to_string())),
+        match self.find_config_file(&filename) {
+            Some(_) => Ok(true),
+            None => Ok(false),
         }
     }
 
