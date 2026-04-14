@@ -12,6 +12,7 @@ mod factory;
 mod version_calculator;
 
 use errors::{CliError, CliResult};
+use factory::{create_mock_processor, create_production_processor};
 
 #[cfg(test)]
 #[path = "main_tests.rs"]
@@ -75,7 +76,7 @@ struct RunArgs {
     #[arg(short, long)]
     event_file: PathBuf,
 
-    /// GitHub event type (e.g. pull_request, push).  Defaults to pull_request.
+    /// GitHub event type (e.g. `pull_request`, push).  Defaults to `pull_request`.
     #[arg(long, default_value = "pull_request")]
     event_type: String,
 
@@ -207,7 +208,7 @@ async fn execute_run(args: RunArgs) -> CliResult<()> {
     info!("Loaded webhook event from: {}", args.event_file.display());
 
     let _payload: serde_json::Value = serde_json::from_str(&event_json)
-        .map_err(|e| CliError::invalid_argument("--event-file", format!("Invalid JSON: {}", e)))?;
+        .map_err(|e| CliError::invalid_argument("--event-file", format!("Invalid JSON: {e}")))?;
 
     info!(
         "Parsed webhook event: type={}, dry_run={}, mock={}",
@@ -216,15 +217,22 @@ async fn execute_run(args: RunArgs) -> CliResult<()> {
 
     if args.dry_run {
         info!("Dry-run mode: no operations performed");
-        println!("🔍 Dry run completed - no changes made");
+        println!("Dry run completed - no changes made");
         return Ok(());
     }
 
-    // Direct single-event processing via the CLI is not yet re-implemented
-    // after the transition to the event-source / run_event_loop pipeline.
-    // Use the `rr-server` binary for production webhook processing.
-    println!("⚠️  Direct webhook processing is pending re-implementation.");
-    println!("    Use the rr-server binary for production event processing.");
+    if args.mock {
+        info!("Mock mode: using in-process mocks (no GitHub credentials required)");
+        let _processor = create_mock_processor();
+        // TODO: dispatch event to processor once CLI event routing is implemented
+        println!("Mock processing complete (event routing not yet implemented)");
+        return Ok(());
+    }
+
+    // Production mode: requires GitHub App credentials in environment
+    let _processor = create_production_processor().await?;
+    // TODO: dispatch event to processor once CLI event routing is implemented
+    println!("Production processing complete (event routing not yet implemented)");
     Ok(())
 }
 
@@ -311,7 +319,7 @@ async fn execute_test(args: TestArgs) -> CliResult<()> {
     let current_version = args.current_version.clone();
     let calculator = if let Some(current) = args.current_version {
         let version = VersionCalculator::parse_version(&current).map_err(|e| {
-            CliError::invalid_argument("current_version", format!("Invalid current version: {}", e))
+            CliError::invalid_argument("current_version", format!("Invalid current version: {e}"))
         })?;
         VersionCalculator::new(Some(version))
     } else {
@@ -322,15 +330,15 @@ async fn execute_test(args: TestArgs) -> CliResult<()> {
         Ok(next_version) => {
             println!("=== Version Calculation ===");
             if let Some(current) = current_version {
-                println!("Current version: {}", current);
+                println!("Current version: {current}");
             } else {
                 println!("Current version: (none - initial release)");
             }
-            println!("Next version: {}", next_version);
+            println!("Next version: {next_version}");
             println!();
         }
         Err(e) => {
-            println!("Version calculation failed: {}", e);
+            println!("Version calculation failed: {e}");
         }
     }
 
@@ -339,7 +347,7 @@ async fn execute_test(args: TestArgs) -> CliResult<()> {
     let changelog = generator.generate_changelog(&parsed_commits);
 
     println!("=== Generated Changelog ===");
-    println!("{}", changelog);
+    println!("{changelog}");
 
     Ok(())
 }
@@ -350,7 +358,7 @@ fn generate_sample_webhook() -> String {
         "action": "closed",
         "number": 42,
         "pull_request": {
-            "id": 123456789,
+            "id": 123_456_789,
             "number": 42,
             "state": "closed",
             "title": "feat: add new feature",
@@ -367,7 +375,7 @@ fn generate_sample_webhook() -> String {
             }
         },
         "repository": {
-            "id": 987654321,
+            "id": 987_654_321,
             "name": "test-repo",
             "full_name": "owner/test-repo",
             "owner": {
@@ -380,7 +388,7 @@ fn generate_sample_webhook() -> String {
 }
 
 /// Set up logging based on verbosity level
-fn setup_logging(verbose: bool) -> CliResult<()> {
+fn setup_logging(verbose: bool) {
     let filter = if verbose { "debug" } else { "info" };
 
     tracing_subscriber::registry()
@@ -392,17 +400,16 @@ fn setup_logging(verbose: bool) -> CliResult<()> {
         )
         .with(tracing_subscriber::EnvFilter::new(filter))
         .init();
-
-    Ok(())
 }
 
 /// Main entry point for the CLI application
 #[tokio::main]
+#[allow(clippy::result_large_err)] // CliError is intentionally large
 async fn main() -> CliResult<()> {
     let cli = Cli::parse();
 
     // Initialize logging
-    setup_logging(cli.verbose)?;
+    setup_logging(cli.verbose);
 
     info!("Starting Release Regent CLI");
     debug!("Parsed CLI arguments: {:?}", cli);
@@ -417,27 +424,28 @@ async fn main() -> CliResult<()> {
 }
 
 /// Get recent commits from git log
+#[allow(clippy::unused_async)] // signature is async to stay consistent with other execute_* functions
 async fn get_recent_commits(count: usize, from: Option<&str>) -> CliResult<Vec<(String, String)>> {
     use std::process::Command;
 
     let mut cmd = Command::new("git");
-    cmd.arg("log").arg("--oneline").arg(format!("-{}", count));
+    cmd.arg("log").arg("--oneline").arg(format!("-{count}"));
 
     if let Some(from_sha) = from {
-        cmd.arg(format!("{}..HEAD", from_sha));
+        cmd.arg(format!("{from_sha}..HEAD"));
     }
 
     let output = cmd.output()
         .map_err(|e| CliError::command_execution(
             "git",
-            format!("Failed to execute git command. Make sure git is installed and you're in a git repository. Error: {}", e),
+            format!("Failed to execute git command. Make sure git is installed and you're in a git repository. Error: {e}"),
         ))?;
 
     if !output.status.success() {
         let error_msg = String::from_utf8_lossy(&output.stderr);
         return Err(CliError::command_execution(
             "git",
-            format!("Git command failed: {}", error_msg),
+            format!("Git command failed: {error_msg}"),
         ));
     }
 
