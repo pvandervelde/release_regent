@@ -83,7 +83,7 @@ fn default_strategy_is_conventional_commits() {
 #[test]
 fn bump_mapping_round_trips_major() {
     use crate::versioning::VersionBump as LocalBump;
-    let trait_bump = DefaultVersionCalculator::local_to_trait_bump(LocalBump::Major);
+    let trait_bump = DefaultVersionCalculator::local_to_trait_bump(&LocalBump::Major);
     let local_back = DefaultVersionCalculator::trait_to_local_bump(&trait_bump);
     assert_eq!(local_back, LocalBump::Major);
 }
@@ -91,7 +91,7 @@ fn bump_mapping_round_trips_major() {
 #[test]
 fn bump_mapping_round_trips_minor() {
     use crate::versioning::VersionBump as LocalBump;
-    let trait_bump = DefaultVersionCalculator::local_to_trait_bump(LocalBump::Minor);
+    let trait_bump = DefaultVersionCalculator::local_to_trait_bump(&LocalBump::Minor);
     let local_back = DefaultVersionCalculator::trait_to_local_bump(&trait_bump);
     assert_eq!(local_back, LocalBump::Minor);
 }
@@ -99,7 +99,7 @@ fn bump_mapping_round_trips_minor() {
 #[test]
 fn bump_mapping_round_trips_patch() {
     use crate::versioning::VersionBump as LocalBump;
-    let trait_bump = DefaultVersionCalculator::local_to_trait_bump(LocalBump::Patch);
+    let trait_bump = DefaultVersionCalculator::local_to_trait_bump(&LocalBump::Patch);
     let local_back = DefaultVersionCalculator::trait_to_local_bump(&trait_bump);
     assert_eq!(local_back, LocalBump::Patch);
 }
@@ -107,7 +107,7 @@ fn bump_mapping_round_trips_patch() {
 #[test]
 fn bump_mapping_round_trips_none() {
     use crate::versioning::VersionBump as LocalBump;
-    let trait_bump = DefaultVersionCalculator::local_to_trait_bump(LocalBump::None);
+    let trait_bump = DefaultVersionCalculator::local_to_trait_bump(&LocalBump::None);
     let local_back = DefaultVersionCalculator::trait_to_local_bump(&trait_bump);
     assert_eq!(local_back, LocalBump::None);
 }

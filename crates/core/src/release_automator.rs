@@ -11,8 +11,8 @@
 //!    - Branch name: `release/v{version}` (e.g. `release/v1.2.3`).
 //!    - PR title: first `v`-prefixed semver token (e.g. `chore(release): v1.2.3`).
 //!    - PR body: first semver token with an optional `v` prefix.
-//!    Fails with [`CoreError::InvalidInput`] only if no valid semver is found in any
-//!    of the three sources.
+//!      Fails with [`CoreError::InvalidInput`] only if no valid semver is found in any
+//!      of the three sources.
 //! 2. **Extracts** the merge commit SHA from the webhook payload.
 //! 3. **Creates an annotated Git tag** pointing to the merge commit.
 //! 4. **Extracts** the changelog from the PR body.

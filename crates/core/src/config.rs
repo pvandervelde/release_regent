@@ -215,6 +215,11 @@ impl ReleaseRegentConfig {
     ///
     /// # Arguments
     /// * `path` - Path to the configuration file
+    ///
+    /// # Errors
+    /// - `CoreError::Io` - Failed to read the file
+    /// - `CoreError::Config` - Failed to parse or validate the configuration
+    #[allow(clippy::result_large_err)] // CoreError is intentionally large; established pattern
     pub async fn load_from_file<P: AsRef<Path>>(path: P) -> CoreResult<Self> {
         let path = path.as_ref();
         info!("Loading configuration from: {}", path.display());
@@ -229,6 +234,11 @@ impl ReleaseRegentConfig {
     }
 
     /// Validate the configuration
+    ///
+    /// # Errors
+    /// - `CoreError::Config` - A required field is empty, contains invalid characters,
+    ///   or is inconsistent with other fields (e.g. webhook URL missing when strategy is `webhook`)
+    #[allow(clippy::result_large_err)] // CoreError is intentionally large; established pattern
     pub fn validate(&self) -> CoreResult<()> {
         // Validate main branch name
         if self.core.branches.main.trim().is_empty() {

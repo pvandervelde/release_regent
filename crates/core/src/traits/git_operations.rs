@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 /// This trait abstracts fundamental Git operations that are needed for version
 /// calculation and release management, independent of the hosting platform.
 ///
-/// The GitHubOperations trait composes this trait to provide platform-specific
+/// The `GitHubOperations` trait composes this trait to provide platform-specific
 /// functionality on top of core Git operations.
 ///
 /// # Design Principles
@@ -222,7 +222,7 @@ pub struct ListTagsOptions {
     pub offset: Option<usize>,
     /// Tag name pattern filter (shell glob pattern, default: all tags)
     pub pattern: Option<String>,
-    /// Sort order (default: CreationDate descending)
+    /// Sort order (default: `CreationDate` descending)
     pub sort: TagSortOrder,
 }
 
@@ -337,6 +337,7 @@ impl GitCommit {
     ///
     /// Returns the first line of the commit message, which is conventionally
     /// used as the subject or summary.
+    #[must_use]
     pub fn extract_subject(message: &str) -> String {
         message.lines().next().unwrap_or("").to_string()
     }
@@ -345,6 +346,7 @@ impl GitCommit {
     ///
     /// Returns everything after the first line and any following blank lines.
     /// Returns None if there's no body content.
+    #[must_use]
     pub fn extract_body(message: &str) -> Option<String> {
         let mut lines = message.lines();
         lines.next(); // Skip subject line
@@ -362,6 +364,7 @@ impl GitCommit {
     /// Check if this is a merge commit
     ///
     /// A merge commit has multiple parents (more than one).
+    #[must_use]
     pub fn is_merge_commit(&self) -> bool {
         self.parents.len() > 1
     }
@@ -372,6 +375,7 @@ impl GitTag {
     ///
     /// Returns true if the tag name matches semantic versioning pattern,
     /// optionally with a 'v' prefix.
+    #[must_use]
     pub fn is_semver(&self) -> bool {
         let name = self.name.strip_prefix('v').unwrap_or(&self.name);
         // Basic semver pattern check
@@ -390,6 +394,7 @@ impl GitTag {
     ///
     /// Attempts to parse the tag name as a semantic version.
     /// Returns None if the tag doesn't follow semantic versioning.
+    #[must_use]
     pub fn parse_semver(&self) -> Option<crate::versioning::SemanticVersion> {
         if !self.is_semver() {
             return None;

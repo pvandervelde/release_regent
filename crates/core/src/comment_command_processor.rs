@@ -169,44 +169,13 @@ impl<'a, G: GitHubOperations + Send + Sync> CommentCommandProcessor<'a, G> {
             return Ok(());
         }
 
-        let Some(issue_number) = event
-            .payload
-            .get("issue")
-            .and_then(|i| i.get("number"))
-            .and_then(serde_json::Value::as_u64)
+        let Some((issue_number, comment_body, commenter_login)) =
+            Self::extract_comment_fields(&event.payload)
         else {
             debug!(
                 event_id = %event.event_id,
-                "payload missing issue.number — ignoring"
-            );
-            return Ok(());
-        };
-
-        let Some(comment_body_str) = event
-            .payload
-            .get("comment")
-            .and_then(|c| c.get("body"))
-            .and_then(serde_json::Value::as_str)
-        else {
-            debug!(
-                event_id = %event.event_id,
-                "payload missing comment.body — ignoring"
-            );
-            return Ok(());
-        };
-        let comment_body = comment_body_str.to_string();
-
-        // Extract the commenter's GitHub login for the authorization check below.
-        let Some(commenter_login) = event
-            .payload
-            .get("comment")
-            .and_then(|c| c.get("user"))
-            .and_then(|u| u.get("login"))
-            .and_then(serde_json::Value::as_str)
-        else {
-            debug!(
-                event_id = %event.event_id,
-                "payload missing comment.user.login — ignoring"
+                "payload missing required comment fields (issue.number, comment.body, or \
+                 comment.user.login) — ignoring"
             );
             return Ok(());
         };
@@ -214,7 +183,7 @@ impl<'a, G: GitHubOperations + Send + Sync> CommentCommandProcessor<'a, G> {
         // Only collaborators with write access or above may issue commands.
         let permission = self
             .github
-            .get_collaborator_permission(owner, repo, commenter_login)
+            .get_collaborator_permission(owner, repo, &commenter_login)
             .await?;
         if !permission.can_issue_commands() {
             warn!(
@@ -256,6 +225,29 @@ impl<'a, G: GitHubOperations + Send + Sync> CommentCommandProcessor<'a, G> {
                 .await
             }
         }
+    }
+
+    /// Extract the fields needed to process a comment command from a webhook payload.
+    ///
+    /// Returns `Some((issue_number, comment_body, commenter_login))` when all
+    /// required fields are present, or `None` if any are missing.
+    fn extract_comment_fields(payload: &serde_json::Value) -> Option<(u64, String, String)> {
+        let issue_number = payload
+            .get("issue")
+            .and_then(|i| i.get("number"))
+            .and_then(serde_json::Value::as_u64)?;
+        let comment_body = payload
+            .get("comment")
+            .and_then(|c| c.get("body"))
+            .and_then(serde_json::Value::as_str)?
+            .to_string();
+        let commenter_login = payload
+            .get("comment")
+            .and_then(|c| c.get("user"))
+            .and_then(|u| u.get("login"))
+            .and_then(serde_json::Value::as_str)?
+            .to_string();
+        Some((issue_number, comment_body, commenter_login))
     }
 
     // ── Private helpers ────────────────────────────────────────────────────

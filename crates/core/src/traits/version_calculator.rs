@@ -155,6 +155,9 @@ pub struct ValidationRules {
 
 /// Version calculation options
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+// The struct legitimately uses four bools for four independent opt-in flags;
+// splitting into enums would add complexity without clarity.
+#[allow(clippy::struct_excessive_bools)]
 pub struct CalculationOptions {
     /// Build metadata to include
     pub build_metadata: Option<String>,
@@ -336,7 +339,7 @@ pub trait VersionCalculator: Send + Sync {
     /// # Parameters
     /// - `context`: Version calculation context
     /// - `strategy`: Versioning strategy to preview
-    /// - `options`: Calculation options (dry_run is forced to true)
+    /// - `options`: Calculation options (`dry_run` is forced to true)
     ///
     /// # Returns
     /// Preview of version calculation result
@@ -382,6 +385,7 @@ pub trait VersionCalculator: Send + Sync {
     ///
     /// # Errors
     /// - `CoreError::InvalidInput` - Invalid commit message format
+    #[allow(clippy::result_large_err)] // CoreError is intentionally large; established pattern
     fn parse_conventional_commit(&self, commit_message: &str)
         -> CoreResult<Option<CommitAnalysis>>;
 
@@ -402,6 +406,7 @@ pub trait VersionCalculator: Send + Sync {
     /// # Errors
     /// - `CoreError::Versioning` - Invalid version bump operation
     /// - `CoreError::InvalidInput` - Invalid version or bump parameters
+    #[allow(clippy::result_large_err)] // CoreError is intentionally large; established pattern
     fn apply_version_bump(
         &self,
         current_version: SemanticVersion,

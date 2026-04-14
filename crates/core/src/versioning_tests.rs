@@ -91,7 +91,6 @@ fn test_semantic_version_display_with_prerelease() {
 
 #[test]
 fn test_version_bump_application() {
-    let calculator = VersionCalculator::new(None);
     let base = SemanticVersion {
         major: 1,
         minor: 2,
@@ -101,32 +100,30 @@ fn test_version_bump_application() {
     };
 
     // Major bump
-    let major_result = calculator.apply_version_bump(&base, VersionBump::Major);
+    let major_result = VersionCalculator::apply_version_bump(&base, &VersionBump::Major);
     assert_eq!(major_result.major, 2);
     assert_eq!(major_result.minor, 0);
     assert_eq!(major_result.patch, 0);
 
     // Minor bump
-    let minor_result = calculator.apply_version_bump(&base, VersionBump::Minor);
+    let minor_result = VersionCalculator::apply_version_bump(&base, &VersionBump::Minor);
     assert_eq!(minor_result.major, 1);
     assert_eq!(minor_result.minor, 3);
     assert_eq!(minor_result.patch, 0);
 
     // Patch bump
-    let patch_result = calculator.apply_version_bump(&base, VersionBump::Patch);
+    let patch_result = VersionCalculator::apply_version_bump(&base, &VersionBump::Patch);
     assert_eq!(patch_result.major, 1);
     assert_eq!(patch_result.minor, 2);
     assert_eq!(patch_result.patch, 4);
 
     // No bump
-    let none_result = calculator.apply_version_bump(&base, VersionBump::None);
+    let none_result = VersionCalculator::apply_version_bump(&base, &VersionBump::None);
     assert_eq!(none_result, base);
 }
 
 #[test]
 fn test_version_bump_determination() {
-    let calculator = VersionCalculator::new(None);
-
     // Test breaking change
     let breaking_commits = vec![ConventionalCommit {
         commit_type: "feat".to_string(),
@@ -137,7 +134,7 @@ fn test_version_bump_determination() {
         sha: "abc123".to_string(),
     }];
     assert_eq!(
-        calculator.determine_version_bump(&breaking_commits),
+        VersionCalculator::determine_version_bump(&breaking_commits),
         VersionBump::Major
     );
 
@@ -151,7 +148,7 @@ fn test_version_bump_determination() {
         sha: "def456".to_string(),
     }];
     assert_eq!(
-        calculator.determine_version_bump(&feature_commits),
+        VersionCalculator::determine_version_bump(&feature_commits),
         VersionBump::Minor
     );
 
@@ -165,7 +162,7 @@ fn test_version_bump_determination() {
         sha: "ghi789".to_string(),
     }];
     assert_eq!(
-        calculator.determine_version_bump(&fix_commits),
+        VersionCalculator::determine_version_bump(&fix_commits),
         VersionBump::Patch
     );
 
@@ -179,7 +176,7 @@ fn test_version_bump_determination() {
         sha: "jkl012".to_string(),
     }];
     assert_eq!(
-        calculator.determine_version_bump(&chore_commits),
+        VersionCalculator::determine_version_bump(&chore_commits),
         VersionBump::None
     );
 }
@@ -928,7 +925,7 @@ fn test_apply_bump_floor_with_prerelease_current_version() {
         build: None,
     };
 
-    let result = apply_bump_floor(&current, &calculated, BumpKind::Major);
+    let result = apply_bump_floor(&current, &calculated, &BumpKind::Major);
 
     assert_eq!(result.to_string(), "3.0.0");
 }
@@ -955,7 +952,7 @@ fn test_apply_bump_floor_raises_patch_to_minor() {
         build: None,
     };
 
-    let result = apply_bump_floor(&current, &calculated, BumpKind::Minor);
+    let result = apply_bump_floor(&current, &calculated, &BumpKind::Minor);
 
     assert_eq!(result.to_string(), "1.3.0");
 }

@@ -15,6 +15,7 @@ pub struct ErrorContext {
 
 impl ErrorContext {
     /// Create a new error context
+    #[must_use]
     pub fn new(operation: impl Into<String>, component: impl Into<String>) -> Self {
         Self {
             operation: operation.into(),
@@ -25,12 +26,14 @@ impl ErrorContext {
     }
 
     /// Add context data
+    #[must_use]
     pub fn with_data(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.context_data.insert(key.into(), value.into());
         self
     }
 
     /// Add correlation ID for tracing
+    #[must_use]
     pub fn with_correlation_id(mut self, id: impl Into<String>) -> Self {
         self.correlation_id = Some(id.into());
         self
@@ -406,7 +409,7 @@ impl CoreError {
     /// Create a conflict (optimistic-lock) error
     ///
     /// Use when a GitHub API update is rejected because the resource was
-    /// modified concurrently (branch already exists, ETag mismatch, etc.).
+    /// modified concurrently (branch already exists, `ETag` mismatch, etc.).
     pub fn conflict(resource: impl Into<String>) -> Self {
         Self::Conflict {
             resource: resource.into(),
@@ -471,6 +474,7 @@ impl CoreError {
     }
 
     /// Get the error context if available
+    #[must_use]
     pub fn context(&self) -> Option<&ErrorContext> {
         match self {
             Self::Config { context, .. }
@@ -485,8 +489,8 @@ impl CoreError {
             | Self::Network { context, .. }
             | Self::Authentication { context, .. }
             | Self::Conflict { context, .. }
-            | Self::RateLimit { context, .. } => context.as_ref(),
-            Self::NotFound { context, .. } => context.as_ref(),
+            | Self::RateLimit { context, .. }
+            | Self::NotFound { context, .. } => context.as_ref(),
             Self::NotSupported { error_context, .. } => error_context.as_ref(),
             _ => None,
         }
@@ -501,20 +505,21 @@ impl CoreError {
     /// | [`Self::Network`] | Connection or transport failure; the remote may recover. |
     /// | [`Self::RateLimit`] | API quota exceeded; back off until `retry_after_seconds`. |
     /// | [`Self::Timeout`] | Operation timed out; a fresh attempt may succeed. |
-    /// | [`Self::Conflict`] | Optimistic-lock collision (ETag mismatch / branch already exists); re-fetch the resource and retry. |
+    /// | [`Self::Conflict`] | Optimistic-lock collision (`ETag` mismatch / branch already exists); re-fetch the resource and retry. |
     ///
     /// All other variants represent permanent errors that will not resolve by retrying:
     /// configuration mistakes, bad input, auth failures, or parse errors.
     ///
     /// # Spec note
     ///
-    /// `docs/specs/design/error-handling.md` lists "Authentication token expiration" under
+    /// `docs/specs/design/error-handling.md` lists `Authentication token expiration` under
     /// transient errors.  In this codebase every `Authentication` error originates from
     /// a permanent credential failure (401/403 from the GitHub API or a missing/invalid
     /// private key) rather than a short-lived token clock skew, so `Authentication` is
     /// classified as non-retryable here.  If a future variant specifically models token
     /// expiry that should be retried after re-authentication, add a dedicated variant
     /// rather than changing the blanket `Authentication` classification.
+    #[must_use]
     pub fn is_retryable(&self) -> bool {
         matches!(
             self,
@@ -537,6 +542,7 @@ impl CoreError {
     /// | [`Self::Timeout`] | `Some(2)` — slightly longer default for timed-out operations. |
     /// | [`Self::Conflict`] | `None` — re-fetch and retry immediately (no prescribed delay). |
     /// | All other variants | `None` — non-retryable; delay is not applicable. |
+    #[must_use]
     pub fn retry_delay_seconds(&self) -> Option<u64> {
         match self {
             Self::RateLimit {
@@ -545,9 +551,10 @@ impl CoreError {
             } => *retry_after_seconds,
             Self::Network { .. } => Some(1), // Default 1 second for network errors
             Self::Timeout { .. } => Some(2), // Default 2 seconds for timeout errors
-            // Conflict is retryable (re-fetch and retry), but the caller should
-            // retry immediately after re-fetching rather than waiting a fixed delay.
-            Self::Conflict { .. } => None,
+            // All other variants (including Conflict) return None:
+            // - Conflict is retryable (re-fetch and retry), but the caller should
+            //   retry immediately after re-fetching rather than waiting a fixed delay.
+            // - All non-retryable variants: delay is not applicable.
             _ => None,
         }
     }

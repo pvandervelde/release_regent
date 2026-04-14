@@ -22,7 +22,7 @@
 //!    If a branch already exists the timestamped fallback is used instead of
 //!    failing.
 //!
-//! ## ETag / concurrency note
+//! ## `ETag` / concurrency note
 //!
 //! The orchestrator always performs a fresh `get_pull_request` call before any
 //! update so that the caller operates on current data.  When task 11.0 adds
@@ -170,6 +170,7 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
     /// Returns `CoreError::GitHub` when a GitHub API call fails, or
     /// `CoreError::InvalidInput` when a version cannot be parsed from an
     /// existing PR branch name.
+    #[allow(clippy::too_many_arguments)] // owner/repo/version/changelog/branch/sha/correlation_id is the minimal release operation surface
     pub async fn orchestrate(
         &self,
         owner: &str,
@@ -357,7 +358,7 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
     /// existing PR body.
     ///
     /// Performs a fresh `get_pull_request` before the update so we operate on
-    /// current data (prep for future ETag enforcement).
+    /// current data (prep for future `ETag` enforcement).
     async fn update_release_pr(
         &self,
         owner: &str,
@@ -408,6 +409,7 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
     /// 2. Create new PR pointing to the new branch.
     /// 3. Close the old PR.
     /// 4. Delete the old branch (non-fatal if it fails — log and continue).
+    #[allow(clippy::too_many_arguments)] // owner/repo/old_pr/version/changelog/sha/branch is the minimal rename surface
     async fn rename_release_pr(
         &self,
         owner: &str,
@@ -539,10 +541,10 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
     ///
     /// The merged result preserves the order of the existing body and appends
     /// any new entries from `new_changelog` that were not already present.
+    #[must_use]
     pub fn merge_changelog_bodies(&self, existing_body: &str, new_changelog: &str) -> String {
         let existing_changelog = self.extract_changelog_from_body(existing_body);
-        let merged = merge_changelog_sections(existing_changelog, new_changelog);
-        merged
+        merge_changelog_sections(existing_changelog, new_changelog)
     }
 
     /// Try to parse a [`SemanticVersion`] from a branch name.

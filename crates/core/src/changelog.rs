@@ -45,6 +45,7 @@ pub struct ChangelogGenerator {
 
 impl ChangelogGenerator {
     /// Create a new changelog generator with default configuration
+    #[must_use]
     pub fn new() -> Self {
         Self {
             config: ChangelogConfig::default(),
@@ -52,6 +53,7 @@ impl ChangelogGenerator {
     }
 
     /// Create a new changelog generator with custom configuration
+    #[must_use]
     pub fn with_config(config: ChangelogConfig) -> Self {
         Self { config }
     }
@@ -64,7 +66,7 @@ impl ChangelogGenerator {
             return "No changes in this release.".to_string();
         }
 
-        let sections = self.organize_commits_by_type(commits);
+        let sections = Self::organize_commits_by_type(commits);
         let mut changelog = String::new();
 
         // Order sections by importance
@@ -92,7 +94,7 @@ impl ChangelogGenerator {
         // Add any other commit types not in the standard list
         for (commit_type, commits) in &sections {
             if !section_order.iter().any(|(t, _)| t == commit_type) {
-                let title = self.format_commit_type_title(commit_type);
+                let title = Self::format_commit_type_title(commit_type);
                 let section_content = self.generate_section(&title, commits);
                 changelog.push_str(&section_content);
             }
@@ -102,10 +104,9 @@ impl ChangelogGenerator {
     }
 
     /// Organize commits by their type
-    fn organize_commits_by_type<'a>(
-        &self,
-        commits: &'a [ConventionalCommit],
-    ) -> HashMap<String, Vec<&'a ConventionalCommit>> {
+    fn organize_commits_by_type(
+        commits: &[ConventionalCommit],
+    ) -> HashMap<String, Vec<&ConventionalCommit>> {
         let mut sections = HashMap::new();
 
         for commit in commits {
@@ -153,12 +154,12 @@ impl ChangelogGenerator {
 
         // Add scope if present
         if let Some(scope) = &commit.scope {
-            description = format!("**{}**: {}", scope, description);
+            description = format!("**{scope}**: {description}");
         }
 
         // Add breaking change indicator
         if commit.breaking_change {
-            description = format!("⚠️ BREAKING: {}", description);
+            description = format!("⚠️ BREAKING: {description}");
         }
 
         let mut entry = self
@@ -182,7 +183,7 @@ impl ChangelogGenerator {
     }
 
     /// Format commit type as a title
-    fn format_commit_type_title(&self, commit_type: &str) -> String {
+    fn format_commit_type_title(commit_type: &str) -> String {
         match commit_type {
             "feat" => "Features".to_string(),
             "fix" => "Bug Fixes".to_string(),
@@ -214,6 +215,10 @@ impl Default for ChangelogGenerator {
 }
 
 /// Enhanced configuration for changelog generation with git-cliff-core support
+///
+/// Uses multiple boolean flags because each controls an independent, orthogonal
+/// rendering option; converting them to enums would add complexity without benefit.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EnhancedChangelogConfig {
     /// Whether to use git-cliff-core for advanced features
@@ -256,6 +261,7 @@ pub struct EnhancedChangelogGenerator {
 
 impl EnhancedChangelogGenerator {
     /// Create a new enhanced changelog generator with default configuration
+    #[must_use]
     pub fn new() -> Self {
         Self {
             config: EnhancedChangelogConfig::default(),
@@ -263,11 +269,18 @@ impl EnhancedChangelogGenerator {
     }
 
     /// Create a new enhanced changelog generator with custom configuration
+    #[must_use]
     pub fn with_config(config: EnhancedChangelogConfig) -> Self {
         Self { config }
     }
 
     /// Generate a changelog using git-cliff-core if enabled, fallback to basic implementation
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::errors::CoreError::ChangelogGeneration`] when git-cliff processing fails.
+    // CoreError is intentionally large; this is the established pattern throughout the codebase.
+    #[allow(clippy::result_large_err)]
     pub fn generate_changelog(
         &self,
         commits: &[ConventionalCommit],
@@ -296,6 +309,8 @@ impl EnhancedChangelogGenerator {
     }
 
     /// Generate changelog using git-cliff-core
+    // CoreError is intentionally large; this is the established pattern throughout the codebase.
+    #[allow(clippy::result_large_err)]
     fn generate_with_git_cliff(
         &self,
         commits: &[ConventionalCommit],
@@ -303,22 +318,24 @@ impl EnhancedChangelogGenerator {
         // Convert our commits to git-cliff format
         let git_cliff_commits: Vec<GitCliffCommit> = commits
             .iter()
-            .map(|commit| self.convert_to_git_cliff_commit(commit))
-            .collect::<Result<Vec<_>, _>>()?;
+            .map(|commit| Self::convert_to_git_cliff_commit(commit))
+            .collect();
 
         // Create git-cliff configuration
-        let git_cliff_config = self.create_git_cliff_config()?;
+        let git_cliff_config = Self::create_git_cliff_config()?;
 
         // Create a release with our commits
-        let mut release = GitCliffRelease::default();
-        release.version = Some("Unreleased".to_string());
-        release.commits = git_cliff_commits;
-        release.timestamp = Some(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs() as i64)
-                .unwrap_or(0),
-        );
+        let release = GitCliffRelease {
+            version: Some("Unreleased".to_string()),
+            commits: git_cliff_commits,
+            timestamp: Some(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+                    .unwrap_or(0),
+            ),
+            ..GitCliffRelease::default()
+        };
 
         // Create changelog
         let mut changelog = GitCliffChangelog::new(vec![release], git_cliff_config, None)
@@ -327,7 +344,7 @@ impl EnhancedChangelogGenerator {
         // Add remote context for link generation if configured
         if self.config.include_links {
             if let Err(e) = changelog.add_remote_context() {
-                debug!("Failed to add remote context: {}", e);
+                debug!(error = %e, "Failed to add remote context");
                 // Continue without remote context
             }
         }
@@ -339,28 +356,28 @@ impl EnhancedChangelogGenerator {
             .map_err(|e| crate::errors::CoreError::changelog_generation(e.to_string()))?;
 
         let changelog_string = String::from_utf8(output).map_err(|e| {
-            crate::errors::CoreError::changelog_generation(format!("UTF-8 conversion error: {}", e))
+            crate::errors::CoreError::changelog_generation(format!("UTF-8 conversion error: {e}"))
         })?;
 
         Ok(changelog_string)
     }
 
-    /// Convert our ConventionalCommit to git-cliff-core Commit
-    fn convert_to_git_cliff_commit(
-        &self,
-        commit: &ConventionalCommit,
-    ) -> crate::errors::CoreResult<GitCliffCommit<'_>> {
-        let git_cliff_commit = GitCliffCommit::new(commit.sha.clone(), commit.message.clone());
-
-        // Set additional fields if available
-        // Note: git-cliff-core Commit might have additional fields we can populate
-        // This is a basic conversion - we might need to adjust based on available fields
-
-        Ok(git_cliff_commit)
+    /// Convert a [`ConventionalCommit`] to a git-cliff-core `Commit`.
+    fn convert_to_git_cliff_commit(commit: &ConventionalCommit) -> GitCliffCommit<'_> {
+        // Basic conversion — git-cliff-core Commit only exposes sha and message
+        // through its public constructor at this SDK version.
+        GitCliffCommit::new(commit.sha.clone(), commit.message.clone())
     }
 
-    /// Create git-cliff-core configuration
-    fn create_git_cliff_config(&self) -> crate::errors::CoreResult<GitCliffConfig> {
+    /// Create git-cliff-core configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::errors::CoreError::ChangelogGeneration`] when the TOML template
+    /// cannot be parsed by git-cliff-core.
+    // CoreError is intentionally large; this is the established pattern throughout the codebase.
+    #[allow(clippy::result_large_err)]
+    fn create_git_cliff_config() -> crate::errors::CoreResult<GitCliffConfig> {
         // Create a basic git-cliff configuration
         // This uses a simplified template that works with our conventional commits
         let config_toml = r#"
@@ -401,8 +418,8 @@ commit_parsers = [
 ]
 "#;
 
-        let config: GitCliffConfig = toml::from_str(&config_toml).map_err(|e| {
-            crate::errors::CoreError::changelog_generation(format!("Config parsing error: {}", e))
+        let config: GitCliffConfig = toml::from_str(config_toml).map_err(|e| {
+            crate::errors::CoreError::changelog_generation(format!("Config parsing error: {e}"))
         })?;
 
         Ok(config)
