@@ -1,4 +1,4 @@
-//! Mock implementation of ConfigurationProvider trait
+//! Mock implementation of `ConfigurationProvider` trait
 //!
 //! Provides a comprehensive mock implementation for testing configuration
 //! loading and validation without requiring actual configuration files.
@@ -6,13 +6,13 @@
 use crate::mocks::{CallResult, MockConfig, MockState, SharedMockState};
 use async_trait::async_trait;
 use release_regent_core::{
-    config::ReleaseRegentConfig, traits::configuration_provider::*, CoreError, CoreResult,
+    config::ReleaseRegentConfig, traits::configuration_provider::{RepositoryConfig, ValidationResult, ConfigurationProvider, LoadOptions, ConfigurationSource}, CoreError, CoreResult,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-/// Mock implementation of ConfigurationProvider trait
+/// Mock implementation of `ConfigurationProvider` trait
 ///
 /// This mock supports:
 /// - Pre-configured configuration data for testing
@@ -54,6 +54,7 @@ impl MockConfigurationProvider {
     /// - Call tracking enabled
     /// - Successful validation by default
     /// - No failure simulation
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             state: Arc::new(RwLock::new(MockState::new())),
@@ -71,6 +72,7 @@ impl MockConfigurationProvider {
     ///
     /// # Returns
     /// Configured mock instance
+    #[must_use] 
     pub fn with_config(config: MockConfig) -> Self {
         Self {
             state: Arc::new(RwLock::new(MockState::with_config(config))),
@@ -89,6 +91,7 @@ impl MockConfigurationProvider {
     ///
     /// # Returns
     /// Self for method chaining
+    #[must_use] 
     pub fn with_configuration(mut self, source_path: &str, config: ReleaseRegentConfig) -> Self {
         self.configurations.insert(source_path.to_string(), config);
         self
@@ -103,13 +106,14 @@ impl MockConfigurationProvider {
     ///
     /// # Returns
     /// Self for method chaining
+    #[must_use] 
     pub fn with_repository_config(
         mut self,
         owner: &str,
         name: &str,
         config: RepositoryConfig,
     ) -> Self {
-        let key = format!("{}/{}", owner, name);
+        let key = format!("{owner}/{name}");
         self.repository_configs.insert(key, config);
         self
     }
@@ -122,6 +126,7 @@ impl MockConfigurationProvider {
     ///
     /// # Returns
     /// Self for method chaining
+    #[must_use] 
     pub fn with_validation_result(mut self, config_key: &str, result: ValidationResult) -> Self {
         self.validation_results
             .insert(config_key.to_string(), result);
@@ -135,6 +140,7 @@ impl MockConfigurationProvider {
     ///
     /// # Returns
     /// Self for method chaining
+    #[must_use] 
     pub fn with_validation_success(mut self, success: bool) -> Self {
         self.default_validation_success = success;
         self
@@ -263,7 +269,7 @@ impl ConfigurationProvider for MockConfigurationProvider {
         _options: LoadOptions,
     ) -> CoreResult<Option<RepositoryConfig>> {
         let method = "load_repository_config";
-        let params = format!("owner={}, repo={}", owner, repo);
+        let params = format!("owner={owner}, repo={repo}");
 
         // Check quota and simulate latency
         self.check_quota().await?;
@@ -277,7 +283,7 @@ impl ConfigurationProvider for MockConfigurationProvider {
             return Err(error);
         }
 
-        let key = format!("{}/{}", owner, repo);
+        let key = format!("{owner}/{repo}");
         let config = self.repository_configs.get(&key).cloned();
 
         self.record_call(method, &params, CallResult::Success).await;
@@ -305,7 +311,7 @@ impl ConfigurationProvider for MockConfigurationProvider {
         options: LoadOptions,
     ) -> CoreResult<ReleaseRegentConfig> {
         let method = "get_merged_config";
-        let params = format!("owner={}, repo={}", owner, repo);
+        let params = format!("owner={owner}, repo={repo}");
 
         // Check quota and simulate latency
         self.check_quota().await?;
@@ -388,7 +394,7 @@ impl ConfigurationProvider for MockConfigurationProvider {
         global: bool,
     ) -> CoreResult<()> {
         let method = "save_config";
-        let params = format!("owner={:?}, repo={:?}, global={}", owner, repo, global);
+        let params = format!("owner={owner:?}, repo={repo:?}, global={global}");
 
         // Check quota and simulate latency
         self.check_quota().await?;
@@ -457,7 +463,7 @@ impl ConfigurationProvider for MockConfigurationProvider {
         repo: Option<&str>,
     ) -> CoreResult<ConfigurationSource> {
         let method = "get_config_source";
-        let params = format!("owner={:?}, repo={:?}", owner, repo);
+        let params = format!("owner={owner:?}, repo={repo:?}");
 
         // Check quota and simulate latency
         self.check_quota().await?;
@@ -472,7 +478,7 @@ impl ConfigurationProvider for MockConfigurationProvider {
         }
 
         let source_path = match (owner, repo) {
-            (Some(o), Some(r)) => format!("mock://repository/{}/{}", o, r),
+            (Some(o), Some(r)) => format!("mock://repository/{o}/{r}"),
             _ => "mock://global".to_string(),
         };
 
@@ -502,7 +508,7 @@ impl ConfigurationProvider for MockConfigurationProvider {
     /// - `CoreError::Config` - Simulated reload error
     async fn reload_config(&self, owner: Option<&str>, repo: Option<&str>) -> CoreResult<()> {
         let method = "reload_config";
-        let params = format!("owner={:?}, repo={:?}", owner, repo);
+        let params = format!("owner={owner:?}, repo={repo:?}");
 
         // Check quota and simulate latency
         self.check_quota().await?;
@@ -535,7 +541,7 @@ impl ConfigurationProvider for MockConfigurationProvider {
     /// - `CoreError::Config` - Simulated existence check error
     async fn config_exists(&self, owner: Option<&str>, repo: Option<&str>) -> CoreResult<bool> {
         let method = "config_exists";
-        let params = format!("owner={:?}, repo={:?}", owner, repo);
+        let params = format!("owner={owner:?}, repo={repo:?}");
 
         // Check quota and simulate latency
         self.check_quota().await?;
@@ -551,7 +557,7 @@ impl ConfigurationProvider for MockConfigurationProvider {
 
         let exists = match (owner, repo) {
             (Some(o), Some(r)) => {
-                let key = format!("{}/{}", o, r);
+                let key = format!("{o}/{r}");
                 self.repository_configs.contains_key(&key)
             }
             _ => true, // Global config always exists in mock
@@ -582,7 +588,7 @@ impl ConfigurationProvider for MockConfigurationProvider {
     /// - `CoreError::Config` - Simulated default config error
     async fn get_default_config(&self) -> CoreResult<ReleaseRegentConfig> {
         let method = "get_default_config";
-        let params = "".to_string();
+        let params = String::new();
 
         // Check quota and simulate latency
         self.check_quota().await?;

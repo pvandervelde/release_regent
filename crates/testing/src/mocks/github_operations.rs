@@ -1,4 +1,4 @@
-//! Mock implementation of GitHubOperations trait
+//! Mock implementation of `GitHubOperations` trait
 //!
 //! Provides a comprehensive mock implementation that supports all GitHub API
 //! operations required by Release Regent without making actual API calls.
@@ -6,7 +6,7 @@
 use crate::mocks::{CallResult, MockConfig, MockState, SharedMockState};
 use async_trait::async_trait;
 use release_regent_core::{
-    traits::{git_operations::*, github_operations::*},
+    traits::{git_operations::{GitCommit, GitTag, GitTagType, GetCommitsOptions, ListTagsOptions, GitRepository}, github_operations::{Repository, PullRequest, Tag, Release, Label, CollaboratorPermission, CreatePullRequestParams, PullRequestBranch, CreateReleaseParams, UpdateReleaseParams}},
     CoreError, CoreResult, GitHubOperations, GitOperations,
 };
 use std::collections::HashMap;
@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-/// Mock implementation of GitHubOperations trait
+/// Mock implementation of `GitHubOperations` trait
 ///
 /// This mock supports:
 /// - Deterministic responses for reproducible testing
@@ -42,7 +42,7 @@ pub struct MockGitHubOperations {
     next_sha: Arc<AtomicU64>,
     /// Pre-configured repository data
     repositories: HashMap<String, Repository>,
-    /// Pre-configured GitCommit data
+    /// Pre-configured `GitCommit` data
     commits: HashMap<String, Vec<GitCommit>>,
     /// Pre-configured pull request data
     pull_requests: HashMap<String, Vec<PullRequest>>,
@@ -104,6 +104,7 @@ impl MockGitHubOperations {
     /// - Call tracking enabled
     /// - No failure simulation
     /// - Zero latency simulation
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             state: Arc::new(RwLock::new(MockState::new())),
@@ -139,7 +140,7 @@ impl MockGitHubOperations {
         self.state.read().await.simulate_latency().await;
     }
 
-    /// Configure the mock with GitCommit data for a repository
+    /// Configure the mock with `GitCommit` data for a repository
     ///
     /// # Parameters
     /// - `owner`: Repository owner
@@ -148,8 +149,9 @@ impl MockGitHubOperations {
     ///
     /// # Returns
     /// Self for method chaining
+    #[must_use] 
     pub fn with_commits(mut self, owner: &str, name: &str, commits: Vec<GitCommit>) -> Self {
-        let key = format!("{}/{}", owner, name);
+        let key = format!("{owner}/{name}");
         self.commits.insert(key, commits);
         self
     }
@@ -161,6 +163,7 @@ impl MockGitHubOperations {
     ///
     /// # Returns
     /// Configured mock instance
+    #[must_use] 
     pub fn with_config(config: MockConfig) -> Self {
         Self {
             state: Arc::new(RwLock::new(MockState::with_config(config))),
@@ -185,6 +188,7 @@ impl MockGitHubOperations {
     ///
     /// # Returns
     /// Self for method chaining
+    #[must_use] 
     pub fn with_default_branch(mut self, branch: &str) -> Self {
         // Update existing repositories with the new default branch
         for repository in self.repositories.values_mut() {
@@ -202,8 +206,9 @@ impl MockGitHubOperations {
     ///
     /// # Returns
     /// Self for method chaining
+    #[must_use] 
     pub fn with_releases(mut self, owner: &str, name: &str, releases: Vec<Release>) -> Self {
-        let key = format!("{}/{}", owner, name);
+        let key = format!("{owner}/{name}");
         self.releases.insert(key, releases);
         self
     }
@@ -217,8 +222,9 @@ impl MockGitHubOperations {
     ///
     /// # Returns
     /// Self for method chaining
+    #[must_use] 
     pub fn with_repository(mut self, owner: &str, name: &str, repository: Repository) -> Self {
-        let key = format!("{}/{}", owner, name);
+        let key = format!("{owner}/{name}");
         self.repositories.insert(key, repository);
         self
     }
@@ -230,6 +236,7 @@ impl MockGitHubOperations {
     ///
     /// # Returns
     /// Self for method chaining
+    #[must_use] 
     pub fn with_repository_exists(self, exists: bool) -> Self {
         if exists {
             self.with_repository(
@@ -262,8 +269,9 @@ impl MockGitHubOperations {
     ///
     /// # Returns
     /// Self for method chaining
+    #[must_use] 
     pub fn with_pull_requests(mut self, owner: &str, repo: &str, prs: Vec<PullRequest>) -> Self {
-        let key = format!("{}/{}", owner, repo);
+        let key = format!("{owner}/{repo}");
         self.pull_requests.insert(key, prs);
         self
     }
@@ -277,8 +285,9 @@ impl MockGitHubOperations {
     ///
     /// # Returns
     /// Self for method chaining
+    #[must_use] 
     pub fn with_tags(mut self, owner: &str, name: &str, tags: Vec<Tag>) -> Self {
-        let key = format!("{}/{}", owner, name);
+        let key = format!("{owner}/{name}");
         self.tags.insert(key, tags);
         self
     }
@@ -296,8 +305,9 @@ impl MockGitHubOperations {
     ///
     /// # Returns
     /// Self for method chaining
+    #[must_use] 
     pub fn with_branches(mut self, owner: &str, name: &str, branches: Vec<String>) -> Self {
-        let key = format!("{}/{}", owner, name);
+        let key = format!("{owner}/{name}");
         self.branches.insert(key, branches);
         self
     }
@@ -309,6 +319,7 @@ impl MockGitHubOperations {
     ///
     /// The key is formatted as `"{owner}/{repo}/{issue_number}"` so that
     /// labels can be scoped to a specific repository.
+    #[must_use] 
     pub fn with_pr_labels(
         self,
         owner: &str,
@@ -325,6 +336,7 @@ impl MockGitHubOperations {
     /// `get_collaborator_permission` for any username.
     ///
     /// Defaults to `CollaboratorPermission::Write` when not set.
+    #[must_use] 
     pub fn with_collaborator_permission(mut self, permission: CollaboratorPermission) -> Self {
         self.collaborator_permission = Some(permission);
         self
@@ -338,6 +350,7 @@ impl MockGitHubOperations {
     ///
     /// `method_name` must match the method name string used internally, e.g.
     /// `"add_labels"`, `"remove_label"`, `"list_pr_labels"`.
+    #[must_use] 
     pub fn with_method_error(mut self, method_name: &str, error_message: &str) -> Self {
         self.method_errors
             .insert(method_name.to_string(), error_message.to_string());
@@ -809,8 +822,8 @@ impl GitHubOperations for MockGitHubOperations {
         }
 
         let state_filter = state.unwrap_or("open").to_string();
-        let head_filter = head.map(|h| h.to_string());
-        let base_filter = base.map(|b| b.to_string());
+        let head_filter = head.map(std::string::ToString::to_string);
+        let base_filter = base.map(std::string::ToString::to_string);
 
         let key = format!("{owner}/{repo}");
         let prs = self.pull_requests.get(&key).cloned().unwrap_or_default();
@@ -913,7 +926,7 @@ impl GitHubOperations for MockGitHubOperations {
                     // iterator closure.
                     let map = self.pr_labels.blocking_read();
                     map.get(&key)
-                        .map_or(false, |labels| labels.iter().any(|lbl| lbl.name == *l))
+                        .is_some_and(|labels| labels.iter().any(|lbl| lbl.name == *l))
                 })
             })
             .collect();
@@ -1083,7 +1096,7 @@ impl GitHubOperations for MockGitHubOperations {
                 if !entry.iter().any(|l| l.name == *label_name) {
                     entry.push(Label {
                         id: 0,
-                        name: label_name.to_string(),
+                        name: (*label_name).to_string(),
                         color: String::new(),
                         description: None,
                     });

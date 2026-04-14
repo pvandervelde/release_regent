@@ -1,8 +1,11 @@
 //! Repository builder for creating test repository data
 
-use crate::builders::{helpers::*, TestDataBuilder};
+use crate::builders::{
+    helpers::{generate_github_login, generate_id, generate_repo_name},
+    TestDataBuilder,
+};
 use chrono::Utc;
-use release_regent_core::traits::github_operations::*;
+use release_regent_core::traits::github_operations::Repository;
 
 /// Builder for creating test repository data
 #[derive(Debug, Clone)]
@@ -12,11 +15,13 @@ pub struct RepositoryBuilder {
     description: Option<String>,
     private: bool,
     default_branch: String,
+    #[allow(dead_code)] // retained for realistic test data structure
     language: Option<String>,
 }
 
 impl RepositoryBuilder {
     /// Create a new repository builder with defaults
+    #[must_use]
     pub fn new() -> Self {
         Self {
             name: generate_repo_name(),
@@ -29,18 +34,21 @@ impl RepositoryBuilder {
     }
 
     /// Set repository name
+    #[must_use]
     pub fn with_name(mut self, name: &str) -> Self {
         self.name = name.to_string();
         self
     }
 
     /// Set repository owner
+    #[must_use]
     pub fn with_owner(mut self, owner: &str) -> Self {
         self.owner_login = owner.to_string();
         self
     }
 
     /// Set default branch
+    #[must_use]
     pub fn with_default_branch(mut self, branch: &str) -> Self {
         self.default_branch = branch.to_string();
         self

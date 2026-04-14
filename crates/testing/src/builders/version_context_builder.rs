@@ -1,6 +1,9 @@
 //! Version context builder for creating test version calculation contexts
 
-use crate::builders::{helpers::*, TestDataBuilder};
+use crate::builders::{
+    helpers::{generate_github_login, generate_repo_name},
+    TestDataBuilder,
+};
 use release_regent_core::{
     traits::version_calculator::VersionContext, versioning::SemanticVersion,
 };
@@ -18,6 +21,7 @@ pub struct VersionContextBuilder {
 
 impl VersionContextBuilder {
     /// Create a new version context builder with defaults
+    #[must_use]
     pub fn new() -> Self {
         Self {
             owner: generate_github_login(),
@@ -36,18 +40,21 @@ impl VersionContextBuilder {
     }
 
     /// Set repository owner
+    #[must_use]
     pub fn with_owner(mut self, owner: &str) -> Self {
         self.owner = owner.to_string();
         self
     }
 
     /// Set repository name
+    #[must_use]
     pub fn with_repo(mut self, repo: &str) -> Self {
         self.repo = repo.to_string();
         self
     }
 
     /// Set repository from owner/repo string
+    #[must_use]
     pub fn with_repository(mut self, repository: &str) -> Self {
         if let Some((owner, repo)) = repository.split_once('/') {
             self.owner = owner.to_string();
@@ -57,20 +64,23 @@ impl VersionContextBuilder {
     }
 
     /// Set current version
+    #[must_use]
     pub fn with_current_version(mut self, version: SemanticVersion) -> Self {
         self.current_version = Some(version);
         self
     }
 
     /// Set current version from semver string
+    #[must_use]
     pub fn with_current_version_string(mut self, version: &str) -> Self {
-        if let Some(parsed) = self.parse_semver(version) {
+        if let Some(parsed) = Self::parse_semver(version) {
             self.current_version = Some(parsed);
         }
         self
     }
 
     /// Set as new repository (no current version)
+    #[must_use]
     pub fn as_new_repository(mut self) -> Self {
         self.current_version = None;
         self.base_ref = None;
@@ -78,24 +88,28 @@ impl VersionContextBuilder {
     }
 
     /// Set target branch
+    #[must_use]
     pub fn with_target_branch(mut self, branch: &str) -> Self {
         self.target_branch = branch.to_string();
         self
     }
 
     /// Set base reference
+    #[must_use]
     pub fn with_base_ref(mut self, base_ref: &str) -> Self {
         self.base_ref = Some(base_ref.to_string());
         self
     }
 
     /// Set head reference
+    #[must_use]
     pub fn with_head_ref(mut self, head_ref: &str) -> Self {
         self.head_ref = head_ref.to_string();
         self
     }
 
     /// Set for release preparation (from last tag to HEAD)
+    #[must_use]
     pub fn for_release_preparation(mut self) -> Self {
         if let Some(ref version) = self.current_version {
             self.base_ref = Some(format!(
@@ -108,6 +122,7 @@ impl VersionContextBuilder {
     }
 
     /// Set for hotfix release
+    #[must_use]
     pub fn for_hotfix_release(mut self, hotfix_branch: &str) -> Self {
         self.target_branch = hotfix_branch.to_string();
         self.head_ref = hotfix_branch.to_string();
@@ -115,6 +130,7 @@ impl VersionContextBuilder {
     }
 
     /// Set for prerelease
+    #[must_use]
     pub fn for_prerelease(mut self, prerelease_id: &str) -> Self {
         if let Some(ref mut version) = self.current_version {
             version.prerelease = Some(prerelease_id.to_string());
@@ -123,6 +139,7 @@ impl VersionContextBuilder {
     }
 
     /// Set version range for analysis
+    #[must_use]
     pub fn with_version_range(mut self, from_version: &str, to_ref: &str) -> Self {
         self.base_ref = Some(from_version.to_string());
         self.head_ref = to_ref.to_string();
@@ -130,7 +147,7 @@ impl VersionContextBuilder {
     }
 
     /// Helper to parse semantic version strings
-    fn parse_semver(&self, version_str: &str) -> Option<SemanticVersion> {
+    fn parse_semver(version_str: &str) -> Option<SemanticVersion> {
         // Simple semver parsing for test purposes
         let version_str = version_str.strip_prefix('v').unwrap_or(version_str);
         let parts: Vec<&str> = version_str.split('.').collect();

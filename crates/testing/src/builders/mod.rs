@@ -38,6 +38,7 @@ pub trait TestDataBuilder<T> {
     ///
     /// # Returns
     /// Builder instance with default values
+    #[must_use]
     fn reset(self) -> Self;
 }
 
@@ -50,6 +51,7 @@ pub mod helpers {
     ///
     /// # Returns
     /// 40-character hexadecimal Git SHA
+    #[must_use]
     pub fn generate_git_sha() -> String {
         let mut rng = rand::rng();
 
@@ -66,6 +68,7 @@ pub mod helpers {
     ///
     /// # Returns
     /// GitHub-style username
+    #[must_use]
     pub fn generate_github_login() -> String {
         let adjectives = ["happy", "clever", "bright", "swift", "gentle"];
         let nouns = ["cat", "dog", "bird", "fish", "bear"];
@@ -83,6 +86,7 @@ pub mod helpers {
     ///
     /// # Returns
     /// Valid email address for testing
+    #[must_use]
     pub fn generate_email() -> String {
         format!("{}@example.com", generate_github_login())
     }
@@ -91,6 +95,7 @@ pub mod helpers {
     ///
     /// # Returns
     /// Recent timestamp for realistic test data
+    #[must_use]
     pub fn generate_recent_timestamp() -> DateTime<Utc> {
         let mut rng = rand::rng();
         let days_ago = rng.random_range(0..30);
@@ -107,6 +112,7 @@ pub mod helpers {
     ///
     /// # Returns
     /// GitHub-style repository name
+    #[must_use]
     pub fn generate_repo_name() -> String {
         let prefixes = ["awesome", "super", "mega", "ultra", "hyper"];
         let subjects = ["tool", "lib", "app", "service", "utility"];
@@ -120,12 +126,14 @@ pub mod helpers {
     }
 
     /// Generate a unique ID
+    #[must_use]
     pub fn generate_id() -> u64 {
         let mut rng = rand::rng();
-        rng.random_range(100000..999999)
+        rng.random_range(100_000..999_999)
     }
 
     /// Generate a full name for testing
+    #[must_use]
     pub fn generate_full_name() -> String {
         let first_names = ["Alice", "Bob", "Charlie", "Diana", "Eve"];
         let last_names = ["Smith", "Johnson", "Williams", "Brown", "Jones"];
@@ -139,12 +147,14 @@ pub mod helpers {
     }
 
     /// Generate a PR number
+    #[must_use]
     pub fn generate_pr_number() -> u32 {
         let mut rng = rand::rng();
         rng.random_range(1..9999)
     }
 
     /// Generate a PR title
+    #[must_use]
     pub fn generate_pr_title() -> String {
         let prefixes = ["Add", "Fix", "Update", "Remove", "Refactor"];
         let subjects = [
@@ -164,21 +174,25 @@ pub mod helpers {
     }
 
     /// Generate a PR description
+    #[must_use]
     pub fn generate_pr_description() -> String {
         "This pull request implements important changes to improve the codebase.".to_string()
     }
 
     /// Generate release notes
+    #[must_use]
     pub fn generate_release_notes() -> String {
         "## What's Changed\n\n* Bug fixes and improvements\n* Performance enhancements".to_string()
     }
 
     /// Generate a commit SHA (alias for git SHA)
+    #[must_use]
     pub fn generate_commit_sha() -> String {
         generate_git_sha()
     }
 
     /// Generate an ISO timestamp string
+    #[must_use]
     pub fn generate_iso_timestamp() -> String {
         generate_recent_timestamp().to_rfc3339()
     }

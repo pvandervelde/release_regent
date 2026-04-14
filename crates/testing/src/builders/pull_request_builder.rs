@@ -1,6 +1,6 @@
 //! Pull request builder for creating test GitHub pull request data
 
-use crate::builders::{helpers::*, TestDataBuilder};
+use crate::builders::{helpers::{generate_github_login, generate_repo_name, generate_id, generate_commit_sha, generate_pr_description, generate_pr_number, generate_pr_title, generate_full_name, generate_email}, TestDataBuilder};
 use chrono::{DateTime, Utc};
 use release_regent_core::traits::github_operations::{
     GitUser, PullRequest, PullRequestBranch, Repository,
@@ -24,6 +24,7 @@ pub struct PullRequestBuilder {
 
 impl PullRequestBuilder {
     /// Create a new pull request builder with defaults
+    #[must_use] 
     pub fn new() -> Self {
         let now = Utc::now();
         let repo = Repository {
@@ -62,7 +63,7 @@ impl PullRequestBuilder {
                 sha: generate_commit_sha(),
             },
             merged_at: None,
-            number: generate_pr_number() as u64,
+            number: u64::from(generate_pr_number()),
             state: "open".to_string(),
             title: generate_pr_title(),
             updated_at: now,
@@ -75,30 +76,35 @@ impl PullRequestBuilder {
     }
 
     /// Set pull request number
+    #[must_use] 
     pub fn with_number(mut self, number: u64) -> Self {
         self.number = number;
         self
     }
 
     /// Set pull request title
+    #[must_use] 
     pub fn with_title(mut self, title: &str) -> Self {
         self.title = title.to_string();
         self
     }
 
     /// Set pull request body
+    #[must_use] 
     pub fn with_body(mut self, body: Option<&str>) -> Self {
-        self.body = body.map(|b| b.to_string());
+        self.body = body.map(std::string::ToString::to_string);
         self
     }
 
     /// Set pull request state
+    #[must_use] 
     pub fn with_state(mut self, state: &str) -> Self {
         self.state = state.to_string();
         self
     }
 
     /// Set as open PR
+    #[must_use] 
     pub fn as_open(mut self) -> Self {
         self.state = "open".to_string();
         self.merged_at = None;
@@ -106,6 +112,7 @@ impl PullRequestBuilder {
     }
 
     /// Set as closed PR
+    #[must_use] 
     pub fn as_closed(mut self) -> Self {
         self.state = "closed".to_string();
         self.merged_at = None;
@@ -113,6 +120,7 @@ impl PullRequestBuilder {
     }
 
     /// Set as merged PR
+    #[must_use] 
     pub fn as_merged(mut self) -> Self {
         self.state = "merged".to_string();
         self.merged_at = Some(Utc::now());
@@ -120,42 +128,49 @@ impl PullRequestBuilder {
     }
 
     /// Set as draft PR
+    #[must_use] 
     pub fn as_draft(mut self) -> Self {
         self.draft = true;
         self
     }
 
     /// Set head branch
+    #[must_use] 
     pub fn with_head_ref(mut self, ref_name: &str) -> Self {
         self.head.ref_name = ref_name.to_string();
         self
     }
 
     /// Set base branch
+    #[must_use] 
     pub fn with_base_ref(mut self, ref_name: &str) -> Self {
         self.base.ref_name = ref_name.to_string();
         self
     }
 
     /// Set head SHA
+    #[must_use] 
     pub fn with_head_sha(mut self, sha: &str) -> Self {
         self.head.sha = sha.to_string();
         self
     }
 
     /// Set base SHA
+    #[must_use] 
     pub fn with_base_sha(mut self, sha: &str) -> Self {
         self.base.sha = sha.to_string();
         self
     }
 
     /// Set pull request author
+    #[must_use] 
     pub fn with_user(mut self, user: GitUser) -> Self {
         self.user = user;
         self
     }
 
     /// Set repository for both head and base
+    #[must_use] 
     pub fn with_repository(mut self, repository: Repository) -> Self {
         self.head.repo = repository.clone();
         self.base.repo = repository;
@@ -163,24 +178,28 @@ impl PullRequestBuilder {
     }
 
     /// Set created timestamp
+    #[must_use] 
     pub fn created_at(mut self, timestamp: DateTime<Utc>) -> Self {
         self.created_at = timestamp;
         self
     }
 
     /// Set updated timestamp
+    #[must_use] 
     pub fn updated_at(mut self, timestamp: DateTime<Utc>) -> Self {
         self.updated_at = timestamp;
         self
     }
 
     /// Set merged timestamp
+    #[must_use] 
     pub fn merged_at(mut self, timestamp: Option<DateTime<Utc>>) -> Self {
         self.merged_at = timestamp;
         self
     }
 
     /// Create feature branch PR
+    #[must_use] 
     pub fn feature_branch() -> Self {
         Self::new()
             .with_head_ref("feature/awesome-feature")
@@ -191,6 +210,7 @@ impl PullRequestBuilder {
     }
 
     /// Create hotfix PR
+    #[must_use] 
     pub fn hotfix() -> Self {
         Self::new()
             .with_head_ref("hotfix/critical-bug")
@@ -201,6 +221,7 @@ impl PullRequestBuilder {
     }
 
     /// Create release PR
+    #[must_use] 
     pub fn release_pr() -> Self {
         Self::new()
             .with_head_ref("release/v1.0.0")

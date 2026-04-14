@@ -12,6 +12,7 @@ use crate::assertions::{
 ///
 /// # Returns
 /// Example spec assertion result
+#[must_use] 
 pub fn example_basic_assertion() -> SpecAssertion {
     let mut assertion = SpecAssertion::new(
         "Version Calculator",
@@ -30,6 +31,7 @@ pub fn example_basic_assertion() -> SpecAssertion {
 ///
 /// # Returns
 /// Example behavior verification result
+#[must_use] 
 pub fn example_behavior_verification() -> crate::assertions::SpecTestResult {
     let verifier = BehaviorVerifier::new()
         .with_context("environment", "test")
@@ -58,6 +60,7 @@ pub fn example_behavior_verification() -> crate::assertions::SpecTestResult {
 ///
 /// # Returns
 /// Example compliance check result
+#[must_use] 
 pub fn example_configuration_compliance() -> crate::assertions::SpecTestResult {
     ComplianceChecker::new("GitHub Configuration Specification")
         .with_requirement(
@@ -103,6 +106,7 @@ pub fn example_configuration_compliance() -> crate::assertions::SpecTestResult {
 ///
 /// # Returns
 /// Example complete test result
+#[must_use] 
 pub fn example_complete_spec_test() -> crate::assertions::SpecTestResult {
     let assertion1 = SpecAssertion::new(
         "Release Automation",
@@ -141,6 +145,7 @@ pub fn example_complete_spec_test() -> crate::assertions::SpecTestResult {
 ///
 /// # Returns
 /// Example error handling verification
+#[must_use] 
 pub fn example_error_handling_spec() -> crate::assertions::SpecTestResult {
     let verifier = BehaviorVerifier::new()
         .with_context("test_scenario", "error_conditions")

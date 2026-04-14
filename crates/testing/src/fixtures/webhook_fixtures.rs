@@ -4,7 +4,11 @@
 //! All fixtures are based on real GitHub webhook examples and can be used for testing
 //! webhook processing logic.
 
-use crate::builders::helpers::*;
+use crate::builders::helpers::{
+    generate_commit_sha, generate_email, generate_full_name, generate_github_login, generate_id,
+    generate_iso_timestamp, generate_pr_description, generate_pr_number, generate_pr_title,
+    generate_release_notes, generate_repo_name,
+};
 // use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
 
@@ -24,6 +28,7 @@ pub struct PushEventBuilder {
 
 impl PushEventBuilder {
     /// Create a new push event builder with defaults
+    #[must_use]
     pub fn new() -> Self {
         Self {
             ref_name: "refs/heads/main".to_string(),
@@ -39,6 +44,7 @@ impl PushEventBuilder {
     }
 
     /// Create a sample commit (static method)
+    #[must_use]
     pub fn sample_commit(message: &str, author: &str) -> Value {
         json!({
             "id": generate_commit_sha(),
@@ -49,12 +55,12 @@ impl PushEventBuilder {
             "url": format!("https://github.com/test-owner/test-repo/commit/{}", generate_commit_sha()),
             "author": {
                 "name": author,
-                "email": format!("{}@example.com", author.replace(" ", ".")),
+                "email": format!("{}@example.com", author.replace(' ', ".")),
                 "username": generate_github_login()
             },
             "committer": {
                 "name": author,
-                "email": format!("{}@example.com", author.replace(" ", ".")),
+                "email": format!("{}@example.com", author.replace(' ', ".")),
                 "username": generate_github_login()
             },
             "added": [],
@@ -64,34 +70,39 @@ impl PushEventBuilder {
     }
 
     /// Set the branch reference
+    #[must_use]
     pub fn with_ref(mut self, ref_name: &str) -> Self {
         self.ref_name = if ref_name.starts_with("refs/") {
             ref_name.to_string()
         } else {
-            format!("refs/heads/{}", ref_name)
+            format!("refs/heads/{ref_name}")
         };
         self
     }
 
     /// Set the branch name (convenience method)
+    #[must_use]
     pub fn with_branch(mut self, branch: &str) -> Self {
-        self.ref_name = format!("refs/heads/{}", branch);
+        self.ref_name = format!("refs/heads/{branch}");
         self
     }
 
     /// Set before SHA (the commit before the push)
+    #[must_use]
     pub fn with_before_sha(mut self, sha: &str) -> Self {
         self.before_sha = sha.to_string();
         self
     }
 
     /// Set after SHA (the commit after the push)
+    #[must_use]
     pub fn with_after_sha(mut self, sha: &str) -> Self {
         self.after_sha = sha.to_string();
         self
     }
 
     /// Set repository details
+    #[must_use]
     pub fn with_repository(mut self, owner: &str, name: &str) -> Self {
         self.repository_owner = owner.to_string();
         self.repository_name = name.to_string();
@@ -99,12 +110,14 @@ impl PushEventBuilder {
     }
 
     /// Add commits to the push
+    #[must_use]
     pub fn with_commits(mut self, commits: Vec<Value>) -> Self {
         self.commits = commits;
         self
     }
 
     /// Add a single commit with conventional commit message
+    #[must_use]
     pub fn with_conventional_commit(mut self, commit_type: &str, description: &str) -> Self {
         let commit = json!({
             "id": generate_commit_sha(),
@@ -133,6 +146,7 @@ impl PushEventBuilder {
     }
 
     /// Create multiple conventional commits
+    #[must_use]
     pub fn with_conventional_commits(mut self) -> Self {
         let commits = vec![
             json!({
@@ -207,12 +221,14 @@ impl PushEventBuilder {
     }
 
     /// Set as forced push
+    #[must_use]
     pub fn as_forced(mut self) -> Self {
         self.forced = true;
         self
     }
 
     /// Set as branch creation
+    #[must_use]
     pub fn as_branch_creation(mut self) -> Self {
         self.created = true;
         self.before_sha = "0000000000000000000000000000000000000000".to_string();
@@ -220,6 +236,7 @@ impl PushEventBuilder {
     }
 
     /// Set as branch deletion
+    #[must_use]
     pub fn as_branch_deletion(mut self) -> Self {
         self.deleted = true;
         self.after_sha = "0000000000000000000000000000000000000000".to_string();
@@ -228,6 +245,7 @@ impl PushEventBuilder {
     }
 
     /// Build the webhook payload
+    #[must_use]
     pub fn build(self) -> Value {
         // Build repository object
         let owner_data = json!({
@@ -381,10 +399,11 @@ pub struct PullRequestEventBuilder {
 
 impl PullRequestEventBuilder {
     /// Create a new pull request event builder with defaults
+    #[must_use]
     pub fn new() -> Self {
         Self {
             action: "opened".to_string(),
-            number: generate_pr_number() as u64,
+            number: u64::from(generate_pr_number()),
             title: generate_pr_title(),
             body: Some(generate_pr_description()),
             state: "open".to_string(),
@@ -398,36 +417,42 @@ impl PullRequestEventBuilder {
     }
 
     /// Set the webhook action
+    #[must_use]
     pub fn with_action(mut self, action: &str) -> Self {
         self.action = action.to_string();
         self
     }
 
     /// Set PR number
+    #[must_use]
     pub fn with_number(mut self, number: u64) -> Self {
         self.number = number;
         self
     }
 
     /// Set PR title
+    #[must_use]
     pub fn with_title(mut self, title: &str) -> Self {
         self.title = title.to_string();
         self
     }
 
     /// Set PR body
+    #[must_use]
     pub fn with_body(mut self, body: Option<&str>) -> Self {
-        self.body = body.map(|b| b.to_string());
+        self.body = body.map(std::string::ToString::to_string);
         self
     }
 
     /// Set as draft PR
+    #[must_use]
     pub fn as_draft(mut self) -> Self {
         self.draft = true;
         self
     }
 
     /// Set branch references
+    #[must_use]
     pub fn with_branches(mut self, base: &str, head: &str) -> Self {
         self.base_ref = base.to_string();
         self.head_ref = head.to_string();
@@ -435,6 +460,7 @@ impl PullRequestEventBuilder {
     }
 
     /// Set repository details
+    #[must_use]
     pub fn with_repository(mut self, owner: &str, name: &str) -> Self {
         self.repository_owner = owner.to_string();
         self.repository_name = name.to_string();
@@ -442,12 +468,14 @@ impl PullRequestEventBuilder {
     }
 
     /// Set user who created the PR
+    #[must_use]
     pub fn with_user(mut self, login: &str) -> Self {
         self.user_login = login.to_string();
         self
     }
 
     /// Create as opened PR
+    #[must_use]
     pub fn as_opened(mut self) -> Self {
         self.action = "opened".to_string();
         self.state = "open".to_string();
@@ -455,6 +483,7 @@ impl PullRequestEventBuilder {
     }
 
     /// Create as closed PR
+    #[must_use]
     pub fn as_closed(mut self) -> Self {
         self.action = "closed".to_string();
         self.state = "closed".to_string();
@@ -462,6 +491,7 @@ impl PullRequestEventBuilder {
     }
 
     /// Create as merged PR
+    #[must_use]
     pub fn as_merged(mut self) -> Self {
         self.action = "closed".to_string();
         self.state = "closed".to_string();
@@ -469,12 +499,15 @@ impl PullRequestEventBuilder {
     }
 
     /// Create as synchronize event (new commits pushed)
+    #[must_use]
     pub fn as_synchronize(mut self) -> Self {
         self.action = "synchronize".to_string();
         self
     }
 
     /// Build the webhook payload
+    #[must_use]
+    #[allow(clippy::too_many_lines)] // complex JSON construction requires many fields
     pub fn build(self) -> Value {
         let merged = self.action == "closed" && self.state == "closed";
         let merged_at = if merged {
@@ -648,6 +681,7 @@ pub struct ReleaseEventBuilder {
 
 impl ReleaseEventBuilder {
     /// Create a new release event builder with defaults
+    #[must_use]
     pub fn new() -> Self {
         Self {
             action: "published".to_string(),
@@ -663,42 +697,49 @@ impl ReleaseEventBuilder {
     }
 
     /// Set the webhook action
+    #[must_use]
     pub fn with_action(mut self, action: &str) -> Self {
         self.action = action.to_string();
         self
     }
 
     /// Set tag name
+    #[must_use]
     pub fn with_tag_name(mut self, tag_name: &str) -> Self {
         self.tag_name = tag_name.to_string();
         self
     }
 
     /// Set release name
+    #[must_use]
     pub fn with_name(mut self, name: Option<&str>) -> Self {
-        self.name = name.map(|n| n.to_string());
+        self.name = name.map(std::string::ToString::to_string);
         self
     }
 
     /// Set release body
+    #[must_use]
     pub fn with_body(mut self, body: Option<&str>) -> Self {
-        self.body = body.map(|b| b.to_string());
+        self.body = body.map(std::string::ToString::to_string);
         self
     }
 
     /// Set as draft release
+    #[must_use]
     pub fn as_draft(mut self) -> Self {
         self.draft = true;
         self
     }
 
     /// Set as prerelease
+    #[must_use]
     pub fn as_prerelease(mut self) -> Self {
         self.prerelease = true;
         self
     }
 
     /// Set repository details
+    #[must_use]
     pub fn with_repository(mut self, owner: &str, name: &str) -> Self {
         self.repository_owner = owner.to_string();
         self.repository_name = name.to_string();
@@ -706,12 +747,14 @@ impl ReleaseEventBuilder {
     }
 
     /// Set release author
+    #[must_use]
     pub fn with_author(mut self, login: &str) -> Self {
         self.author_login = login.to_string();
         self
     }
 
     /// Create as published release
+    #[must_use]
     pub fn as_published(mut self) -> Self {
         self.action = "published".to_string();
         self.draft = false;
@@ -719,6 +762,7 @@ impl ReleaseEventBuilder {
     }
 
     /// Create as created release (draft)
+    #[must_use]
     pub fn as_created(mut self) -> Self {
         self.action = "created".to_string();
         self.draft = true;
@@ -726,18 +770,21 @@ impl ReleaseEventBuilder {
     }
 
     /// Create as edited release
+    #[must_use]
     pub fn as_edited(mut self) -> Self {
         self.action = "edited".to_string();
         self
     }
 
     /// Create as deleted release
+    #[must_use]
     pub fn as_deleted(mut self) -> Self {
         self.action = "deleted".to_string();
         self
     }
 
     /// Build the webhook payload
+    #[must_use]
     pub fn build(self) -> Value {
         json!({
             "action": self.action,
@@ -808,13 +855,15 @@ impl Default for ReleaseEventBuilder {
 }
 
 /// Convenience functions for common webhook scenarios
-
+///
 /// Generate a simple push event payload
+#[must_use]
 pub fn push_event_simple() -> Value {
     PushEventBuilder::new().build()
 }
 
 /// Generate a push event payload with commits
+#[must_use]
 pub fn push_event_with_commits() -> Value {
     PushEventBuilder::new()
         .with_commits(vec![
@@ -825,11 +874,13 @@ pub fn push_event_with_commits() -> Value {
 }
 
 /// Generate a pull request opened event payload
+#[must_use]
 pub fn pull_request_opened() -> Value {
     PullRequestEventBuilder::new().with_action("opened").build()
 }
 
 /// Generate a pull request merged event payload
+#[must_use]
 pub fn pull_request_merged() -> Value {
     PullRequestEventBuilder::new()
         .with_action("closed")
@@ -838,11 +889,13 @@ pub fn pull_request_merged() -> Value {
 }
 
 /// Generate a release published event payload
+#[must_use]
 pub fn release_published() -> Value {
     ReleaseEventBuilder::new().with_action("published").build()
 }
 
 /// Generate a release draft event payload
+#[must_use]
 pub fn release_draft() -> Value {
     ReleaseEventBuilder::new()
         .with_action("created")
@@ -851,36 +904,43 @@ pub fn release_draft() -> Value {
 }
 
 /// Generate a GitHub push event webhook payload
+#[must_use]
 pub fn github_push_event() -> Value {
     PushEventBuilder::new().build()
 }
 
 /// Generate a GitHub push event with conventional commits
+#[must_use]
 pub fn github_push_event_with_conventional_commits() -> Value {
     PushEventBuilder::new().with_conventional_commits().build()
 }
 
 /// Generate a GitHub pull request opened event
+#[must_use]
 pub fn github_pull_request_opened() -> Value {
     PullRequestEventBuilder::new().as_opened().build()
 }
 
 /// Generate a GitHub pull request closed event
+#[must_use]
 pub fn github_pull_request_closed() -> Value {
     PullRequestEventBuilder::new().as_closed().build()
 }
 
 /// Generate a GitHub pull request merged event
+#[must_use]
 pub fn github_pull_request_merged() -> Value {
     PullRequestEventBuilder::new().as_merged().build()
 }
 
 /// Generate a GitHub release published event
+#[must_use]
 pub fn github_release_published() -> Value {
     ReleaseEventBuilder::new().as_published().build()
 }
 
 /// Generate a GitHub release created (draft) event
+#[must_use]
 pub fn github_release_created() -> Value {
     ReleaseEventBuilder::new().as_created().build()
 }

@@ -1,4 +1,4 @@
-//! Mock implementation of VersionCalculator trait
+//! Mock implementation of `VersionCalculator` trait
 //!
 //! Provides a comprehensive mock implementation for testing version calculation
 //! without requiring actual commit analysis or external version calculation.
@@ -6,13 +6,18 @@
 use crate::mocks::{CallResult, MockConfig, MockState, SharedMockState};
 use async_trait::async_trait;
 use release_regent_core::{
-    traits::version_calculator::*, versioning::SemanticVersion, CoreError, CoreResult,
+    traits::version_calculator::{
+        CalculationOptions, ChangelogEntry, CommitAnalysis, ValidationRules, VersionBump,
+        VersionCalculationResult, VersionCalculator, VersionContext, VersioningStrategy,
+    },
+    versioning::SemanticVersion,
+    CoreError, CoreResult,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-/// Mock implementation of VersionCalculator trait
+/// Mock implementation of `VersionCalculator` trait
 ///
 /// This mock supports:
 /// - Pre-configured version calculation results
@@ -39,6 +44,7 @@ pub struct MockVersionCalculator {
     /// Pre-configured version calculation results
     calculation_results: HashMap<String, VersionCalculationResult>,
     /// Pre-configured next versions for different contexts
+    #[allow(dead_code)] // retained for future test configuration use
     next_versions: HashMap<String, SemanticVersion>,
     /// Pre-configured version bumps
     version_bumps: HashMap<String, VersionBump>,
@@ -60,6 +66,7 @@ impl MockVersionCalculator {
     /// - Call tracking enabled
     /// - Default version 1.0.0
     /// - Default minor version bump
+    #[must_use]
     pub fn new() -> Self {
         Self {
             state: Arc::new(RwLock::new(MockState::new())),
@@ -86,6 +93,7 @@ impl MockVersionCalculator {
     ///
     /// # Returns
     /// Configured mock instance
+    #[must_use]
     pub fn with_config(config: MockConfig) -> Self {
         Self {
             state: Arc::new(RwLock::new(MockState::with_config(config))),
@@ -113,6 +121,7 @@ impl MockVersionCalculator {
     ///
     /// # Returns
     /// Self for method chaining
+    #[must_use]
     pub fn with_calculation_result(
         mut self,
         context_key: &str,
@@ -130,6 +139,7 @@ impl MockVersionCalculator {
     ///
     /// # Returns
     /// Self for method chaining
+    #[must_use]
     pub fn with_next_version(mut self, version: SemanticVersion) -> Self {
         self.default_next_version = version;
         self
@@ -142,6 +152,7 @@ impl MockVersionCalculator {
     ///
     /// # Returns
     /// Self for method chaining
+    #[must_use]
     pub fn with_version_bump(mut self, bump: VersionBump) -> Self {
         self.default_version_bump = bump;
         self
@@ -155,6 +166,7 @@ impl MockVersionCalculator {
     ///
     /// # Returns
     /// Self for method chaining
+    #[must_use]
     pub fn with_commit_analyses(
         mut self,
         context_key: &str,
@@ -173,6 +185,7 @@ impl MockVersionCalculator {
     ///
     /// # Returns
     /// Self for method chaining
+    #[must_use]
     pub fn with_changelog_entries(
         mut self,
         context_key: &str,
@@ -230,7 +243,7 @@ impl MockVersionCalculator {
     }
 
     /// Create a context key from version context
-    fn create_context_key(&self, context: &VersionContext) -> String {
+    fn create_context_key(context: &VersionContext) -> String {
         format!(
             "{}/{}/{}",
             context.owner, context.repo, context.target_branch
@@ -303,7 +316,7 @@ impl VersionCalculator for MockVersionCalculator {
             return Err(error);
         }
 
-        let context_key = self.create_context_key(&context);
+        let context_key = Self::create_context_key(&context);
         let result = self
             .calculation_results
             .get(&context_key)
@@ -354,7 +367,7 @@ impl VersionCalculator for MockVersionCalculator {
             return Err(error);
         }
 
-        let context_key = self.create_context_key(&context);
+        let context_key = Self::create_context_key(&context);
         let analyses = self
             .commit_analyses
             .get(&context_key)
@@ -444,7 +457,7 @@ impl VersionCalculator for MockVersionCalculator {
             return Err(error);
         }
 
-        let context_key = self.create_context_key(&context);
+        let context_key = Self::create_context_key(&context);
         let bump = self
             .version_bumps
             .get(&context_key)
@@ -495,7 +508,7 @@ impl VersionCalculator for MockVersionCalculator {
             return Err(error);
         }
 
-        let context_key = self.create_context_key(&context);
+        let context_key = Self::create_context_key(&context);
         let entries = self
             .changelog_entries
             .get(&context_key)
@@ -508,12 +521,12 @@ impl VersionCalculator for MockVersionCalculator {
 
     /// Preview version calculation without side effects
     ///
-    /// Returns the same result as calculate_version with dry_run forced to true.
+    /// Returns the same result as `calculate_version` with `dry_run` forced to true.
     ///
     /// # Parameters
     /// - `context`: Version calculation context
     /// - `strategy`: Versioning strategy to preview
-    /// - `options`: Calculation options (dry_run forced to true)
+    /// - `options`: Calculation options (`dry_run` forced to true)
     ///
     /// # Returns
     /// Preview of version calculation result
@@ -580,7 +593,7 @@ impl VersionCalculator for MockVersionCalculator {
 
     /// Get default versioning strategy
     ///
-    /// Returns the default ConventionalCommits strategy.
+    /// Returns the default `ConventionalCommits` strategy.
     ///
     /// # Returns
     /// Default versioning strategy configuration
@@ -611,13 +624,13 @@ impl VersionCalculator for MockVersionCalculator {
         let conventional_types = ["feat", "fix", "docs", "style", "refactor", "test", "chore"];
 
         for commit_type in &conventional_types {
-            if commit_message.starts_with(&format!("{}:", commit_type)) {
+            if commit_message.starts_with(&format!("{commit_type}:")) {
                 return Ok(Some(CommitAnalysis {
                     sha: "mock_sha".to_string(),
                     author: "mock_author".to_string(),
                     date: chrono::Utc::now(),
                     message: commit_message.to_string(),
-                    commit_type: Some(commit_type.to_string()),
+                    commit_type: Some((*commit_type).to_string()),
                     scope: None,
                     is_breaking: commit_message.contains("BREAKING CHANGE"),
                     version_bump: if commit_message.contains("BREAKING CHANGE") {
