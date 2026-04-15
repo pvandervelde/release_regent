@@ -280,7 +280,7 @@ pub trait ConfigurationProvider: Send + Sync {
     /// supported by this provider.
     ///
     /// # Returns
-    /// List of supported formats (e.g., ["yaml", "toml", "json"])
+    /// List of supported formats (e.g., `yaml`, `toml`, `json`)
     fn supported_formats(&self) -> Vec<String>;
 
     /// Get default configuration

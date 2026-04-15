@@ -87,7 +87,7 @@ pub async fn create_production_processor() -> CliResult<ProductionProcessor> {
         .map_err(|_| CliError::missing_dependency("GITHUB_APP_ID", "environment variable not set"))?
         .parse::<u64>()
         .map_err(|e| {
-            CliError::invalid_argument("GITHUB_APP_ID", format!("Must be a number: {}", e))
+            CliError::invalid_argument("GITHUB_APP_ID", format!("Must be a number: {e}"))
         })?;
 
     let private_key = std::env::var("GITHUB_PRIVATE_KEY").map_err(|_| {
@@ -103,7 +103,7 @@ pub async fn create_production_processor() -> CliResult<ProductionProcessor> {
         })?
         .parse::<u64>()
         .map_err(|e| {
-            CliError::invalid_argument("GITHUB_INSTALLATION_ID", format!("Must be a number: {}", e))
+            CliError::invalid_argument("GITHUB_INSTALLATION_ID", format!("Must be a number: {e}"))
         })?;
 
     let auth_config = release_regent_github_client::AuthConfig {
@@ -118,7 +118,7 @@ pub async fn create_production_processor() -> CliResult<ProductionProcessor> {
     let config_dir = std::env::current_dir().map_err(|e| {
         CliError::command_execution(
             "current_dir",
-            format!("Failed to get working directory: {}", e),
+            format!("Failed to get working directory: {e}"),
         )
     })?;
 

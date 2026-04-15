@@ -95,6 +95,7 @@ const MAX_BODY_BYTES: usize = 10 * 1024 * 1024;
 ///
 /// Returns [`errors::Error::Environment`] if any required variable is absent
 /// or if `GITHUB_APP_ID` / `GITHUB_INSTALLATION_ID` cannot be parsed as `u64`.
+#[allow(clippy::result_large_err)] // errors::Error is intentionally large
 fn read_github_credentials_from_env() -> Result<(u64, String, u64), errors::Error> {
     let app_id: u64 = std::env::var("GITHUB_APP_ID")
         .map_err(|e| errors::Error::environment("GITHUB_APP_ID", e.to_string()))?
@@ -200,9 +201,10 @@ async fn webhook_handler(
 ) -> StatusCode {
     let headers_map: HashMap<String, String> = headers
         .iter()
-        .filter_map(|(name, value)| match value.to_str() {
-            Ok(v) => Some((name.as_str().to_string(), v.to_string())),
-            Err(_) => {
+        .filter_map(|(name, value)| {
+            if let Ok(v) = value.to_str() {
+                Some((name.as_str().to_string(), v.to_string()))
+            } else {
                 warn!(header = %name, "Dropping header with non-UTF-8 value");
                 None
             }
@@ -233,7 +235,7 @@ async fn webhook_handler(
 }
 
 /// Initialise structured logging from `RUST_LOG` or a sensible default filter.
-fn setup_logging() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+fn setup_logging() {
     let filter = tracing_subscriber::filter::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| {
             "release_regent_server=debug,release_regent_core=debug,release_regent_github_client=debug,info".into()
@@ -248,8 +250,6 @@ fn setup_logging() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         )
         .with(filter)
         .init();
-
-    Ok(())
 }
 
 /// Main entry point for the Release Regent webhook server.
@@ -267,7 +267,7 @@ fn setup_logging() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 /// - The Axum server exits with an error.
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    setup_logging()?;
+    setup_logging();
 
     info!("Starting Release Regent webhook server");
 
@@ -286,15 +286,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     info!("Production processor constructed successfully");
 
     // Allowed repositories: comma-separated "owner/repo" values, or "*" for all.
-    let allowed_repos: Vec<String> = std::env::var("ALLOWED_REPOS")
-        .map(|s| {
+    let allowed_repos: Vec<String> = std::env::var("ALLOWED_REPOS").map_or_else(
+        |_| vec!["*".to_string()],
+        |s| {
             s.split(',')
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .map(String::from)
                 .collect()
-        })
-        .unwrap_or_else(|_| vec!["*".to_string()]);
+        },
+    );
 
     // Bounded channel capacity for in-flight events.
     let channel_capacity: usize = match std::env::var("EVENT_CHANNEL_CAPACITY") {

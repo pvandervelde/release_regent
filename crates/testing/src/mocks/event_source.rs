@@ -87,6 +87,7 @@ impl MockEventSource {
     ///
     /// Events are consumed from the front of the `Vec` on successive
     /// `next_event` calls.
+    #[must_use]
     pub fn new(events: Vec<ProcessingEvent>) -> Self {
         Self {
             state: Arc::new(Mutex::new(MockEventSourceState {
@@ -98,6 +99,7 @@ impl MockEventSource {
     }
 
     /// Create an empty mock with no pre-loaded events.
+    #[must_use]
     pub fn empty() -> Self {
         Self::new(vec![])
     }
@@ -106,8 +108,15 @@ impl MockEventSource {
     ///
     /// After the error is returned once the queue reverts to normal operation.
     /// Safe to call from both sync and async contexts.
+    ///
+    /// # Panics
+    /// Panics if the internal mutex is poisoned (indicates a prior thread panic).
+    #[allow(clippy::expect_used)] // mutex poison means a prior thread panicked; re-panic is correct
     pub fn inject_next_error(&self, error: CoreError) {
-        *self.next_error.lock().unwrap() = Some(error);
+        *self
+            .next_error
+            .lock()
+            .expect("next_error mutex should not be poisoned") = Some(error);
     }
 
     // ─── Assertion helpers ────────────────────────────────────────────────
@@ -139,8 +148,14 @@ impl EventSource for MockEventSource {
     ///
     /// If an error was injected via [`inject_next_error`](MockEventSource::inject_next_error),
     /// that error is returned and cleared before any queued event is checked.
+    #[allow(clippy::expect_used)] // mutex poison means a prior thread panicked; re-panic is correct
     async fn next_event(&self) -> CoreResult<Option<ProcessingEvent>> {
-        if let Some(err) = self.next_error.lock().unwrap().take() {
+        if let Some(err) = self
+            .next_error
+            .lock()
+            .expect("next_error mutex should not be poisoned")
+            .take()
+        {
             return Err(err);
         }
         let mut state = self.state.lock().await;

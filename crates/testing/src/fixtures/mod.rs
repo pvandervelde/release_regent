@@ -24,6 +24,7 @@ impl FixtureProvider {
     ///
     /// # Returns
     /// Fixture provider with pre-loaded common fixtures
+    #[must_use]
     pub fn new() -> Self {
         let mut provider = Self {
             fixtures: HashMap::new(),
@@ -84,26 +85,28 @@ impl FixtureProvider {
     /// Get a webhook fixture by event type and action
     ///
     /// # Parameters
-    /// - `event_type`: GitHub event type (e.g., "push", "pull_request", "release")
+    /// - `event_type`: GitHub event type (e.g., "push", "`pull_request`", "release")
     /// - `action`: Event action (e.g., "opened", "closed", "published")
     ///
     /// # Returns
     /// Webhook payload data if found
+    #[must_use]
     pub fn get_webhook_fixture(&self, event_type: &str, action: &str) -> Option<&Value> {
-        let key = format!("webhook.{}.{}", event_type, action);
+        let key = format!("webhook.{event_type}.{action}");
         self.fixtures.get(&key)
     }
 
     /// Get an API response fixture by resource type
     ///
     /// # Parameters
-    /// - `resource`: API resource type (e.g., "repository", "pull_request", "release")
-    /// - `variant`: Response variant (e.g., "sample", "error.not_found")
+    /// - `resource`: API resource type (e.g., "repository", "`pull_request`", "release")
+    /// - `variant`: Response variant (e.g., "sample", "`error.not_found`")
     ///
     /// # Returns
     /// API response data if found
+    #[must_use]
     pub fn get_api_fixture(&self, resource: &str, variant: &str) -> Option<&Value> {
-        let key = format!("api.{}.{}", resource, variant);
+        let key = format!("api.{resource}.{variant}");
         self.fixtures.get(&key)
     }
 
@@ -114,6 +117,7 @@ impl FixtureProvider {
     ///
     /// # Returns
     /// Map of matching fixtures
+    #[must_use]
     pub fn get_fixtures_matching(&self, pattern: &str) -> HashMap<String, &Value> {
         let mut matches = HashMap::new();
         let pattern_prefix = pattern.trim_end_matches('*');
@@ -131,6 +135,7 @@ impl FixtureProvider {
     ///
     /// # Returns
     /// Vector of all fixture names
+    #[must_use]
     pub fn list_fixtures(&self) -> Vec<String> {
         self.fixtures.keys().cloned().collect()
     }
@@ -153,6 +158,7 @@ impl FixtureProvider {
     ///
     /// # Returns
     /// Fixture data if found
+    #[must_use]
     pub fn get_fixture(&self, name: &str) -> Option<&Value> {
         self.fixtures.get(name)
     }

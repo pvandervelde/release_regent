@@ -18,6 +18,7 @@ pub struct ComplianceRequirement {
 
 impl ComplianceRequirement {
     /// Create a new compliance requirement
+    #[must_use]
     pub fn new(id: &str, description: &str) -> Self {
         Self {
             id: id.to_string(),
@@ -28,12 +29,14 @@ impl ComplianceRequirement {
     }
 
     /// Set as optional requirement
+    #[must_use]
     pub fn as_optional(mut self) -> Self {
         self.mandatory = false;
         self
     }
 
     /// Set requirement category
+    #[must_use]
     pub fn with_category(mut self, category: &str) -> Self {
         self.category = category.to_string();
         self
@@ -59,6 +62,7 @@ impl ComplianceChecker {
     ///
     /// # Returns
     /// New compliance checker instance
+    #[must_use]
     pub fn new(specification: &str) -> Self {
         Self {
             specification: specification.to_string(),
@@ -74,6 +78,7 @@ impl ComplianceChecker {
     ///
     /// # Returns
     /// Self for method chaining
+    #[must_use]
     pub fn with_requirement(mut self, requirement: ComplianceRequirement) -> Self {
         self.requirements.push(requirement);
         self
@@ -87,6 +92,7 @@ impl ComplianceChecker {
     ///
     /// # Returns
     /// Self for method chaining
+    #[must_use]
     pub fn with_simple_requirement(mut self, id: &str, description: &str) -> Self {
         self.requirements
             .push(ComplianceRequirement::new(id, description));
@@ -101,6 +107,7 @@ impl ComplianceChecker {
     ///
     /// # Returns
     /// Self for method chaining
+    #[must_use]
     pub fn check_requirement<F>(mut self, requirement_id: &str, checker: F) -> Self
     where
         F: FnOnce() -> bool,
@@ -114,6 +121,7 @@ impl ComplianceChecker {
     ///
     /// # Returns
     /// Compliance test result
+    #[must_use]
     pub fn check_compliance(self) -> SpecTestResult {
         let mut test_result = SpecTestResult::new();
 
@@ -125,7 +133,7 @@ impl ComplianceChecker {
                 &requirement.id,
                 &requirement.description,
             )
-            .with_actual_behavior(&format!("Compliance: {}", compliance_result))
+            .with_actual_behavior(&format!("Compliance: {compliance_result}"))
             .with_metadata("requirement_id", &requirement.id)
             .with_metadata("category", &requirement.category)
             .with_metadata("mandatory", &requirement.mandatory.to_string());
@@ -146,6 +154,7 @@ impl ComplianceChecker {
     ///
     /// # Returns
     /// Requirements in the specified category
+    #[must_use]
     pub fn requirements_by_category(&self, category: &str) -> Vec<&ComplianceRequirement> {
         self.requirements
             .iter()
@@ -157,6 +166,7 @@ impl ComplianceChecker {
     ///
     /// # Returns
     /// All mandatory requirements
+    #[must_use]
     pub fn mandatory_requirements(&self) -> Vec<&ComplianceRequirement> {
         self.requirements
             .iter()
@@ -168,6 +178,7 @@ impl ComplianceChecker {
     ///
     /// # Returns
     /// Whether all mandatory requirements are met
+    #[must_use]
     pub fn check_mandatory_compliance(&self) -> bool {
         self.mandatory_requirements()
             .iter()
@@ -175,22 +186,27 @@ impl ComplianceChecker {
     }
 
     /// Get specification name
+    #[must_use]
     pub fn specification(&self) -> &str {
         &self.specification
     }
 
     /// Get requirement count
+    #[must_use]
     pub fn requirement_count(&self) -> usize {
         self.requirements.len()
     }
 
     /// Get compliance rate
+    #[must_use]
     pub fn compliance_rate(&self) -> f64 {
         if self.requirements.is_empty() {
             100.0
         } else {
             let passing = self.results.values().filter(|&&result| result).count();
-            (passing as f64 / self.requirements.len() as f64) * 100.0
+            #[allow(clippy::cast_precision_loss)] // small test counts; precision loss is acceptable
+            let rate = (passing as f64 / self.requirements.len() as f64) * 100.0;
+            rate
         }
     }
 }

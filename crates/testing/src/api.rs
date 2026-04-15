@@ -88,6 +88,7 @@ impl TestingApi {
     ///     .with_repository_exists(true)
     ///     .with_default_branch("main");
     /// ```
+    #[must_use]
     pub fn mock_github() -> MockGitHubOperations {
         MockGitHubOperations::new()
     }
@@ -104,6 +105,7 @@ impl TestingApi {
     /// let config = TestingApi::mock_config()
     ///     .with_configuration("config.yaml", Default::default());
     /// ```
+    #[must_use]
     pub fn mock_config() -> MockConfigurationProvider {
         MockConfigurationProvider::new()
     }
@@ -122,6 +124,7 @@ impl TestingApi {
     /// let calculator = TestingApi::mock_version_calculator()
     ///     .with_next_version(version);
     /// ```
+    #[must_use]
     pub fn mock_version_calculator() -> MockVersionCalculator {
         MockVersionCalculator::new()
     }
@@ -139,6 +142,7 @@ impl TestingApi {
     ///     .with_conventional_message("feat: add authentication")
     ///     .with_author("Developer", "developer@example.com");
     /// ```
+    #[must_use]
     pub fn build_commit() -> CommitBuilder {
         CommitBuilder::new()
     }
@@ -156,6 +160,7 @@ impl TestingApi {
     ///     .with_owner("my-org")
     ///     .with_name("my-repo");
     /// ```
+    #[must_use]
     pub fn build_configuration() -> ConfigurationBuilder {
         ConfigurationBuilder::new()
     }
@@ -174,6 +179,7 @@ impl TestingApi {
     ///     .with_base_ref("main")
     ///     .with_head_ref("feature/new-feature");
     /// ```
+    #[must_use]
     pub fn build_pull_request() -> PullRequestBuilder {
         PullRequestBuilder::new()
     }
@@ -192,6 +198,7 @@ impl TestingApi {
     ///     .with_name(Some("Release 1.2.3"))
     ///     .with_body(Some("## Changes\n- Added new feature"));
     /// ```
+    #[must_use]
     pub fn build_release() -> ReleaseBuilder {
         ReleaseBuilder::new()
     }
@@ -212,6 +219,7 @@ impl TestingApi {
     ///     .with_default_branch("main")
     ///     .build();
     /// ```
+    #[must_use]
     pub fn build_repository() -> RepositoryBuilder {
         RepositoryBuilder::new()
     }
@@ -231,6 +239,7 @@ impl TestingApi {
     ///     .with_patch(3)
     ///     .with_prerelease("beta.1");
     /// ```
+    #[must_use]
     pub fn build_version() -> VersionBuilder {
         VersionBuilder::new()
     }
@@ -250,6 +259,7 @@ impl TestingApi {
     ///     .with_owner("owner")
     ///     .with_repo("repo");
     /// ```
+    #[must_use]
     pub fn build_version_context() -> VersionContextBuilder {
         VersionContextBuilder::new()
     }
@@ -269,6 +279,7 @@ impl TestingApi {
     ///     .with_repository("owner", "repo")
     ///     .build();
     /// ```
+    #[must_use]
     pub fn build_webhook() -> WebhookBuilder {
         WebhookBuilder::new()
     }
@@ -286,6 +297,7 @@ impl TestingApi {
     /// let push_event = fixtures.get_webhook_fixture("push", "simple");
     /// let pr_merged = fixtures.get_webhook_fixture("pull_request", "merged");
     /// ```
+    #[must_use]
     pub fn fixtures() -> FixtureProvider {
         FixtureProvider::new()
     }
@@ -304,6 +316,7 @@ impl TestingApi {
     ///     .with_conventional_commit("feat", "add new feature")
     ///     .build();
     /// ```
+    #[must_use]
     pub fn github_push_event() -> PushEventBuilder {
         PushEventBuilder::new()
     }
@@ -322,6 +335,7 @@ impl TestingApi {
     ///     .with_title("Add new feature")
     ///     .build();
     /// ```
+    #[must_use]
     pub fn github_pull_request_event() -> PullRequestEventBuilder {
         PullRequestEventBuilder::new()
     }
@@ -340,6 +354,7 @@ impl TestingApi {
     ///     .with_tag_name("v1.0.0")
     ///     .build();
     /// ```
+    #[must_use]
     pub fn github_release_event() -> ReleaseEventBuilder {
         ReleaseEventBuilder::new()
     }
@@ -347,7 +362,7 @@ impl TestingApi {
     /// Start spec verification for behavioral testing
     ///
     /// # Parameters
-    /// - `subject`: What is being tested (e.g., "version_calculator")
+    /// - `subject`: What is being tested (e.g., "`version_calculator`")
     ///
     /// # Returns
     /// Spec assertion builder for configuration
@@ -364,6 +379,7 @@ impl TestingApi {
     ///     .assert_compliance()
     ///     .unwrap();
     /// ```
+    #[must_use]
     pub fn verify_spec(subject: &str) -> SpecVerificationBuilder {
         SpecVerificationBuilder::new(subject)
     }
@@ -381,6 +397,7 @@ impl TestingApi {
     ///     .with_context("test_type", "integration")
     ///     .with_context("environment", "test");
     /// ```
+    #[must_use]
     pub fn behavior_verifier() -> BehaviorVerifier {
         BehaviorVerifier::new()
     }
@@ -402,6 +419,7 @@ impl TestingApi {
     ///     .with_requirement(ComplianceRequirement::new("versioning", "Must follow semver"))
     ///     .with_requirement(ComplianceRequirement::new("changelog", "Must generate changelog"));
     /// ```
+    #[must_use]
     pub fn compliance_checker(specification: &str) -> ComplianceChecker {
         ComplianceChecker::new(specification)
     }
@@ -421,6 +439,7 @@ impl TestingApi {
     ///     .build()?;
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
+    #[must_use]
     pub fn test_environment() -> TestEnvironmentBuilder {
         TestEnvironmentBuilder::new()
     }
@@ -454,6 +473,7 @@ impl SpecVerificationBuilder {
     ///
     /// # Returns
     /// Self for method chaining
+    #[must_use]
     pub fn with_specification(mut self, spec: &str) -> Self {
         self.specification = Some(spec.to_string());
         self
@@ -466,6 +486,7 @@ impl SpecVerificationBuilder {
     ///
     /// # Returns
     /// Self for method chaining
+    #[must_use]
     pub fn with_expected_behavior(mut self, behavior: &str) -> Self {
         self.expected_behavior = Some(behavior.to_string());
         self
@@ -478,8 +499,14 @@ impl SpecVerificationBuilder {
     ///
     /// # Returns
     /// Self for method chaining
+    ///
+    /// # Panics
+    /// Panics if `data` cannot be serialized to JSON.
+    #[must_use]
+    #[allow(clippy::expect_used)] // test helper; serialization failure is a programming error
     pub fn with_input<T: serde::Serialize>(mut self, data: &T) -> Self {
-        self.input_data = Some(serde_json::to_value(data).unwrap());
+        self.input_data =
+            Some(serde_json::to_value(data).expect("test input data must be JSON-serializable"));
         self
     }
 
@@ -491,6 +518,7 @@ impl SpecVerificationBuilder {
     ///
     /// # Returns
     /// Self for method chaining
+    #[must_use]
     pub fn with_metadata(mut self, key: &str, value: &str) -> Self {
         self.metadata.insert(key.to_string(), value.to_string());
         self
@@ -539,6 +567,7 @@ impl TestEnvironmentBuilder {
     ///
     /// # Returns
     /// Self for method chaining
+    #[must_use]
     pub fn with_temporary_directory(mut self) -> Self {
         self.with_temp_dir = true;
         self
@@ -551,6 +580,7 @@ impl TestEnvironmentBuilder {
     ///
     /// # Returns
     /// Self for method chaining
+    #[must_use]
     pub fn with_cleanup_on_drop(mut self, cleanup: bool) -> Self {
         self.config.auto_cleanup = cleanup;
         self
@@ -560,6 +590,7 @@ impl TestEnvironmentBuilder {
     ///
     /// # Returns
     /// Self for method chaining
+    #[must_use]
     pub fn with_debug_logging(mut self) -> Self {
         self.config.debug_logging = true;
         self
@@ -572,6 +603,7 @@ impl TestEnvironmentBuilder {
     ///
     /// # Returns
     /// Self for method chaining
+    #[must_use]
     pub fn with_timeout(mut self, timeout_ms: u64) -> Self {
         self.config.default_timeout_ms = timeout_ms;
         self
@@ -584,6 +616,7 @@ impl TestEnvironmentBuilder {
     ///
     /// # Returns
     /// Self for method chaining
+    #[must_use]
     pub fn with_config(mut self, config: TestConfig) -> Self {
         self.config = config;
         self

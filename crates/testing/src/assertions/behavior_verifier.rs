@@ -12,6 +12,7 @@ pub struct BehaviorVerifier {
 
 impl BehaviorVerifier {
     /// Create a new behavior verifier
+    #[must_use]
     pub fn new() -> Self {
         Self {
             context: HashMap::new(),
@@ -26,6 +27,7 @@ impl BehaviorVerifier {
     ///
     /// # Returns
     /// Self for method chaining
+    #[must_use]
     pub fn with_context(mut self, key: &str, value: &str) -> Self {
         self.context.insert(key.to_string(), value.to_string());
         self
@@ -40,6 +42,7 @@ impl BehaviorVerifier {
     ///
     /// # Returns
     /// Spec assertion result
+    #[must_use]
     pub fn verify_behavior(
         &self,
         spec_name: &str,
@@ -61,10 +64,11 @@ impl BehaviorVerifier {
     /// Verify multiple behaviors
     ///
     /// # Parameters
-    /// - `behaviors`: Vector of (spec_name, expected, actual) tuples
+    /// - `behaviors`: Vector of (`spec_name`, expected, actual) tuples
     ///
     /// # Returns
     /// Test result with all assertions
+    #[must_use]
     pub fn verify_behaviors(&self, behaviors: Vec<(&str, &str, &str)>) -> SpecTestResult {
         let mut result = SpecTestResult::new();
 
@@ -86,17 +90,18 @@ impl BehaviorVerifier {
     ///
     /// # Returns
     /// Spec assertion result
+    #[must_use]
     pub fn verify_configuration_behavior(
         &self,
         config_type: &str,
         expected_keys: &[&str],
         actual_keys: &[&str],
     ) -> SpecAssertion {
-        let expected = format!("Configuration should contain keys: {:?}", expected_keys);
-        let actual = format!("Configuration contains keys: {:?}", actual_keys);
+        let expected = format!("Configuration should contain keys: {expected_keys:?}");
+        let actual = format!("Configuration contains keys: {actual_keys:?}");
 
         let mut assertion = SpecAssertion::new(
-            &format!("{} Configuration", config_type),
+            &format!("{config_type} Configuration"),
             "Configuration Key Presence",
             &expected,
         )
@@ -125,17 +130,18 @@ impl BehaviorVerifier {
     ///
     /// # Returns
     /// Spec assertion result
+    #[must_use]
     pub fn verify_error_handling(
         &self,
         operation: &str,
         expected_error_type: &str,
         actual_error: &str,
     ) -> SpecAssertion {
-        let expected = format!("Should produce {} error", expected_error_type);
-        let actual = format!("Produced error: {}", actual_error);
+        let expected = format!("Should produce {expected_error_type} error");
+        let actual = format!("Produced error: {actual_error}");
 
         let mut assertion = SpecAssertion::new(
-            &format!("{} Error Handling", operation),
+            &format!("{operation} Error Handling"),
             "Error Type Verification",
             &expected,
         )
@@ -158,6 +164,7 @@ impl BehaviorVerifier {
     ///
     /// # Returns
     /// Spec assertion result
+    #[must_use]
     pub fn verify_async_behavior(
         &self,
         operation: &str,
@@ -165,7 +172,7 @@ impl BehaviorVerifier {
         actual_result: &str,
     ) -> SpecAssertion {
         let mut assertion = SpecAssertion::new(
-            &format!("Async {}", operation),
+            &format!("Async {operation}"),
             "Async Operation Behavior",
             expected_result,
         )
@@ -178,6 +185,7 @@ impl BehaviorVerifier {
     }
 
     /// Get current context
+    #[must_use]
     pub fn context(&self) -> &HashMap<String, String> {
         &self.context
     }

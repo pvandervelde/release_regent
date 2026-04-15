@@ -70,6 +70,7 @@ impl TestEnvironment {
     ///
     /// # Returns
     /// Path to temporary directory
+    #[must_use]
     pub fn temp_dir(&self) -> PathBuf {
         self.temp_dir.path().to_path_buf()
     }
@@ -105,6 +106,7 @@ impl TestEnvironment {
     ///
     /// # Returns
     /// Reference to test configuration
+    #[must_use]
     pub fn config(&self) -> &TestConfig {
         &self.config
     }
@@ -129,6 +131,7 @@ pub fn init_test_logging(config: &TestConfig) {
 ///
 /// # Returns
 /// Timeout duration
+#[must_use]
 pub fn test_timeout(config: &TestConfig) -> tokio::time::Duration {
     tokio::time::Duration::from_millis(config.default_timeout_ms)
 }

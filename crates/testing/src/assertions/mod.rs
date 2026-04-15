@@ -40,6 +40,7 @@ impl SpecAssertion {
     ///
     /// # Returns
     /// New spec assertion instance
+    #[must_use]
     pub fn new(subject: &str, specification: &str, expected_behavior: &str) -> Self {
         Self {
             subject: subject.to_string(),
@@ -58,6 +59,7 @@ impl SpecAssertion {
     ///
     /// # Returns
     /// Self for method chaining
+    #[must_use]
     pub fn with_actual_behavior(mut self, behavior: &str) -> Self {
         self.actual_behavior = Some(behavior.to_string());
         self
@@ -71,6 +73,7 @@ impl SpecAssertion {
     ///
     /// # Returns
     /// Self for method chaining
+    #[must_use]
     pub fn with_metadata(mut self, key: &str, value: &str) -> Self {
         self.metadata.insert(key.to_string(), value.to_string());
         self
@@ -122,6 +125,7 @@ impl SpecAssertion {
     ///
     /// # Returns
     /// Whether the assertion passed
+    #[must_use]
     pub fn passed(&self) -> bool {
         self.passed
     }
@@ -147,6 +151,7 @@ impl SpecTestResult {
     ///
     /// # Returns
     /// Empty spec test result
+    #[must_use]
     pub fn new() -> Self {
         Self {
             total_assertions: 0,
@@ -176,11 +181,14 @@ impl SpecTestResult {
     ///
     /// # Returns
     /// Percentage of assertions that passed
+    #[must_use]
     pub fn pass_rate(&self) -> f64 {
         if self.total_assertions == 0 {
             100.0
         } else {
-            (self.passed_assertions as f64 / self.total_assertions as f64) * 100.0
+            #[allow(clippy::cast_precision_loss)] // small test counts; precision loss is acceptable
+            let rate = (self.passed_assertions as f64 / self.total_assertions as f64) * 100.0;
+            rate
         }
     }
 }

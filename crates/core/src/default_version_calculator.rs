@@ -61,7 +61,8 @@ impl DefaultVersionCalculator {
     }
 
     /// Map from core `versioning::VersionBump` to the trait-layer `VersionBump`.
-    fn local_to_trait_bump(bump: LocalVersionBump) -> TraitVersionBump {
+    #[allow(dead_code)] // used in tests; kept for symmetry with trait_to_local_bump
+    fn local_to_trait_bump(bump: &LocalVersionBump) -> TraitVersionBump {
         match bump {
             LocalVersionBump::Major => TraitVersionBump::Major,
             LocalVersionBump::Minor => TraitVersionBump::Minor,
@@ -85,6 +86,7 @@ impl DefaultVersionCalculator {
     ///
     /// Returns `(sha, subject)` pairs for every commit in `base..head` (or
     /// the latest 100 commits when `base_ref` is `None`).
+    #[allow(clippy::unused_async)] // declared async for interface uniformity; no await needed (uses blocking Command)
     async fn fetch_git_commits(
         base_ref: Option<&str>,
         head_ref: &str,
@@ -96,7 +98,7 @@ impl DefaultVersionCalculator {
 
         match base_ref {
             Some(base) => {
-                cmd.arg(format!("{}..{}", base, head_ref));
+                cmd.arg(format!("{base}..{head_ref}"));
             }
             None => {
                 cmd.arg(head_ref).arg("-n").arg("100");

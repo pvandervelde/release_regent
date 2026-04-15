@@ -4,8 +4,14 @@
 //! All fixtures are based on real GitHub API responses and can be used for testing
 //! API integration logic.
 
-use crate::builders::helpers::*;
-use release_regent_core::traits::github_operations::*;
+use crate::builders::helpers::{
+    generate_commit_sha, generate_email, generate_full_name, generate_github_login, generate_id,
+    generate_iso_timestamp, generate_pr_description, generate_pr_number, generate_pr_title,
+    generate_release_notes, generate_repo_name,
+};
+use release_regent_core::traits::github_operations::{
+    GitUser, PullRequest, PullRequestBranch, Release, Repository,
+};
 use serde_json::{json, Value};
 
 /// Builder for GitHub repository API responses
@@ -22,6 +28,7 @@ pub struct RepositoryResponseBuilder {
 
 impl RepositoryResponseBuilder {
     /// Create a new repository response builder with defaults
+    #[must_use]
     pub fn new() -> Self {
         let owner = generate_github_login();
         let name = generate_repo_name();
@@ -29,7 +36,7 @@ impl RepositoryResponseBuilder {
         Self {
             id: generate_id(),
             name: name.clone(),
-            full_name: format!("{}/{}", owner, name),
+            full_name: format!("{owner}/{name}"),
             owner,
             description: Some("A test repository for Release Regent".to_string()),
             private: false,
@@ -38,12 +45,14 @@ impl RepositoryResponseBuilder {
     }
 
     /// Set repository ID
+    #[must_use]
     pub fn with_id(mut self, id: u64) -> Self {
         self.id = id;
         self
     }
 
     /// Set repository name
+    #[must_use]
     pub fn with_name(mut self, name: &str) -> Self {
         self.name = name.to_string();
         self.full_name = format!("{}/{}", self.owner, name);
@@ -51,6 +60,7 @@ impl RepositoryResponseBuilder {
     }
 
     /// Set repository owner
+    #[must_use]
     pub fn with_owner(mut self, owner: &str) -> Self {
         self.owner = owner.to_string();
         self.full_name = format!("{}/{}", owner, self.name);
@@ -58,24 +68,28 @@ impl RepositoryResponseBuilder {
     }
 
     /// Set repository description
+    #[must_use]
     pub fn with_description(mut self, description: Option<&str>) -> Self {
-        self.description = description.map(|d| d.to_string());
+        self.description = description.map(std::string::ToString::to_string);
         self
     }
 
     /// Set as private repository
+    #[must_use]
     pub fn as_private(mut self) -> Self {
         self.private = true;
         self
     }
 
     /// Set default branch
+    #[must_use]
     pub fn with_default_branch(mut self, branch: &str) -> Self {
         self.default_branch = branch.to_string();
         self
     }
 
     /// Build the API response
+    #[must_use]
     pub fn build(self) -> Repository {
         Repository {
             id: self.id,
@@ -92,6 +106,7 @@ impl RepositoryResponseBuilder {
     }
 
     /// Build as JSON response
+    #[must_use]
     pub fn build_json(self) -> Value {
         let owner_data = json!({
             "login": self.owner,
@@ -211,10 +226,11 @@ pub struct PullRequestResponseBuilder {
 
 impl PullRequestResponseBuilder {
     /// Create a new pull request response builder with defaults
+    #[must_use]
     pub fn new() -> Self {
         Self {
             id: generate_id(),
-            number: generate_pr_number() as u64,
+            number: u64::from(generate_pr_number()),
             title: generate_pr_title(),
             body: Some(generate_pr_description()),
             state: "open".to_string(),
@@ -228,30 +244,35 @@ impl PullRequestResponseBuilder {
     }
 
     /// Set PR number
+    #[must_use]
     pub fn with_number(mut self, number: u64) -> Self {
         self.number = number;
         self
     }
 
     /// Set PR title
+    #[must_use]
     pub fn with_title(mut self, title: &str) -> Self {
         self.title = title.to_string();
         self
     }
 
     /// Set PR state
+    #[must_use]
     pub fn with_state(mut self, state: &str) -> Self {
         self.state = state.to_string();
         self
     }
 
     /// Set as draft
+    #[must_use]
     pub fn as_draft(mut self) -> Self {
         self.draft = true;
         self
     }
 
     /// Set branch references
+    #[must_use]
     pub fn with_branches(mut self, base: &str, head: &str) -> Self {
         self.base_ref = base.to_string();
         self.head_ref = head.to_string();
@@ -259,6 +280,7 @@ impl PullRequestResponseBuilder {
     }
 
     /// Set repository details
+    #[must_use]
     pub fn with_repository(mut self, owner: &str, name: &str) -> Self {
         self.repository_owner = owner.to_string();
         self.repository_name = name.to_string();
@@ -266,6 +288,7 @@ impl PullRequestResponseBuilder {
     }
 
     /// Build as core struct
+    #[must_use]
     pub fn build(self) -> PullRequest {
         let repo = Repository {
             id: generate_id(),
@@ -314,6 +337,7 @@ impl PullRequestResponseBuilder {
     }
 
     /// Build as JSON response
+    #[must_use]
     pub fn build_json(self) -> Value {
         let user_data = json!({
             "login": self.user_login,
@@ -426,6 +450,7 @@ pub struct ReleaseResponseBuilder {
 
 impl ReleaseResponseBuilder {
     /// Create a new release response builder with defaults
+    #[must_use]
     pub fn new() -> Self {
         Self {
             id: generate_id(),
@@ -441,30 +466,35 @@ impl ReleaseResponseBuilder {
     }
 
     /// Set tag name
+    #[must_use]
     pub fn with_tag_name(mut self, tag_name: &str) -> Self {
         self.tag_name = tag_name.to_string();
         self
     }
 
     /// Set release name
+    #[must_use]
     pub fn with_name(mut self, name: Option<&str>) -> Self {
-        self.name = name.map(|n| n.to_string());
+        self.name = name.map(std::string::ToString::to_string);
         self
     }
 
     /// Set as draft
+    #[must_use]
     pub fn as_draft(mut self) -> Self {
         self.draft = true;
         self
     }
 
     /// Set as prerelease
+    #[must_use]
     pub fn as_prerelease(mut self) -> Self {
         self.prerelease = true;
         self
     }
 
     /// Set repository details
+    #[must_use]
     pub fn with_repository(mut self, owner: &str, name: &str) -> Self {
         self.repository_owner = owner.to_string();
         self.repository_name = name.to_string();
@@ -472,6 +502,7 @@ impl ReleaseResponseBuilder {
     }
 
     /// Build as core struct
+    #[must_use]
     pub fn build(self) -> Release {
         Release {
             id: self.id,
@@ -496,6 +527,7 @@ impl ReleaseResponseBuilder {
     }
 
     /// Build as JSON response
+    #[must_use]
     pub fn build_json(self) -> Value {
         let author_data = json!({
             "login": self.author_login,
@@ -574,36 +606,43 @@ impl Default for ReleaseResponseBuilder {
 }
 
 /// Generate a sample repository response
+#[must_use]
 pub fn sample_repository() -> Repository {
     RepositoryResponseBuilder::new().build()
 }
 
 /// Generate a sample repository JSON response
+#[must_use]
 pub fn sample_repository_json() -> Value {
     RepositoryResponseBuilder::new().build_json()
 }
 
 /// Generate a sample pull request response
+#[must_use]
 pub fn sample_pull_request() -> PullRequest {
     PullRequestResponseBuilder::new().build()
 }
 
 /// Generate a sample pull request JSON response
+#[must_use]
 pub fn sample_pull_request_json() -> Value {
     PullRequestResponseBuilder::new().build_json()
 }
 
 /// Generate a sample release response
+#[must_use]
 pub fn sample_release() -> Release {
     ReleaseResponseBuilder::new().build()
 }
 
 /// Generate a sample release JSON response
+#[must_use]
 pub fn sample_release_json() -> Value {
     ReleaseResponseBuilder::new().build_json()
 }
 
 /// Generate a list of commits response
+#[must_use]
 pub fn sample_commits_list() -> Value {
     json!([
         {
@@ -651,6 +690,7 @@ pub fn sample_commits_list() -> Value {
 }
 
 /// Generate error response for API calls
+#[must_use]
 pub fn error_response(_status: u16, message: &str) -> Value {
     json!({
         "message": message,
@@ -659,6 +699,7 @@ pub fn error_response(_status: u16, message: &str) -> Value {
 }
 
 /// Generate rate limit exceeded response
+#[must_use]
 pub fn rate_limit_exceeded_response() -> Value {
     error_response(403, "API rate limit exceeded for user")
 }

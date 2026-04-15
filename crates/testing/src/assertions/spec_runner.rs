@@ -22,6 +22,7 @@ impl SpecRunner {
     ///
     /// # Returns
     /// New spec runner instance
+    #[must_use]
     pub fn new(name: &str) -> Self {
         Self {
             name: name.to_string(),
@@ -36,6 +37,7 @@ impl SpecRunner {
     ///
     /// # Returns
     /// Self for method chaining
+    #[must_use]
     pub fn with_assertion(mut self, assertion: SpecAssertion) -> Self {
         self.assertions.push(assertion);
         self
@@ -48,6 +50,7 @@ impl SpecRunner {
     ///
     /// # Returns
     /// Self for method chaining
+    #[must_use]
     pub fn with_assertions(mut self, assertions: Vec<SpecAssertion>) -> Self {
         self.assertions.extend(assertions);
         self
@@ -57,7 +60,8 @@ impl SpecRunner {
     ///
     /// # Returns
     /// Test result with all assertion outcomes
-    pub fn run(mut self) -> SpecTestResult {
+    #[must_use]
+    pub fn run(self) -> SpecTestResult {
         let mut result = SpecTestResult::new();
 
         for mut assertion in self.assertions {
@@ -75,7 +79,7 @@ impl SpecRunner {
     ///
     /// # Returns
     /// Test result with all assertion outcomes
-    pub fn run_with_evaluator<F>(mut self, evaluator: F) -> SpecTestResult
+    pub fn run_with_evaluator<F>(self, evaluator: F) -> SpecTestResult
     where
         F: Fn(&str, &Option<String>) -> bool,
     {

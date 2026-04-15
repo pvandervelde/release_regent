@@ -8,10 +8,10 @@
 //!
 //! The versioning module is built around several key components:
 //!
-//! - **SemanticVersion**: Core version representation with full semver support
-//! - **VersionCalculator**: Engine for calculating next versions from commit history
-//! - **ConventionalCommit**: Structured representation of conventional commit messages
-//! - **VersionBump**: Type-safe version increment operations
+//! - **[`SemanticVersion`]**: Core version representation with full semver support
+//! - **[`VersionCalculator`]**: Engine for calculating next versions from commit history
+//! - **[`ConventionalCommit`]**: Structured representation of conventional commit messages
+//! - **[`VersionBump`]**: Type-safe version increment operations
 //!
 //! ## Usage Examples
 //!
@@ -198,11 +198,11 @@ impl fmt::Display for SemanticVersion {
         write!(f, "{}.{}.{}", self.major, self.minor, self.patch)?;
 
         if let Some(prerelease) = &self.prerelease {
-            write!(f, "-{}", prerelease)?;
+            write!(f, "-{prerelease}")?;
         }
 
         if let Some(build) = &self.build {
-            write!(f, "+{}", build)?;
+            write!(f, "+{build}")?;
         }
 
         Ok(())
@@ -211,16 +211,18 @@ impl fmt::Display for SemanticVersion {
 
 impl SemanticVersion {
     /// Format the version as a string with optional prefix
+    #[must_use]
     pub fn to_string_with_prefix(&self, include_prefix: bool) -> String {
         let base = self.to_string();
         if include_prefix {
-            format!("v{}", base)
+            format!("v{base}")
         } else {
             base
         }
     }
 
     /// Check if this version is a pre-release
+    #[must_use]
     pub fn is_prerelease(&self) -> bool {
         self.prerelease.is_some()
     }
@@ -300,11 +302,13 @@ impl SemanticVersion {
     }
 
     /// Check if this version has build metadata
+    #[must_use]
     pub fn has_build_metadata(&self) -> bool {
         self.build.is_some()
     }
 
     /// Compare versions ignoring build metadata (as per semver spec)
+    #[must_use]
     pub fn compare_precedence(&self, other: &Self) -> Ordering {
         // Compare major.minor.patch first
         match (self.major, self.minor, self.patch).cmp(&(other.major, other.minor, other.patch)) {
@@ -342,6 +346,7 @@ pub struct VersionCalculator {
 
 impl VersionCalculator {
     /// Create a new version calculator
+    #[must_use]
     pub fn new(current_version: Option<SemanticVersion>) -> Self {
         Self { current_version }
     }
@@ -350,14 +355,23 @@ impl VersionCalculator {
     ///
     /// # Arguments
     /// * `commits` - List of conventional commits since last release
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError::Versioning`] when version calculation logic fails.
+    // CoreError is intentionally large; this is the established pattern throughout the codebase.
+    #[allow(clippy::result_large_err)]
     pub fn calculate_next_version(
         &self,
         commits: &[ConventionalCommit],
     ) -> CoreResult<SemanticVersion> {
-        info!("Calculating next version from {} commits", commits.len());
+        info!(
+            commit_count = commits.len(),
+            "Calculating next version from commits"
+        );
 
-        let bump = self.determine_version_bump(commits);
-        debug!("Determined version bump: {:?}", bump);
+        let bump = Self::determine_version_bump(commits);
+        debug!(bump = ?bump, "Determined version bump");
 
         let base_version = self.current_version.clone().unwrap_or_else(|| {
             debug!("No current version found, starting from 0.1.0");
@@ -370,14 +384,14 @@ impl VersionCalculator {
             }
         });
 
-        let next_version = self.apply_version_bump(&base_version, bump);
-        info!("Calculated next version: {}", next_version);
+        let next_version = Self::apply_version_bump(&base_version, &bump);
+        info!(next_version = %next_version, "Calculated next version");
 
         Ok(next_version)
     }
 
     /// Determine the type of version bump needed
-    fn determine_version_bump(&self, commits: &[ConventionalCommit]) -> VersionBump {
+    fn determine_version_bump(commits: &[ConventionalCommit]) -> VersionBump {
         let mut has_breaking = false;
         let mut has_features = false;
         let mut has_fixes = false;
@@ -404,7 +418,7 @@ impl VersionCalculator {
     }
 
     /// Apply version bump to base version
-    fn apply_version_bump(&self, base: &SemanticVersion, bump: VersionBump) -> SemanticVersion {
+    fn apply_version_bump(base: &SemanticVersion, bump: &VersionBump) -> SemanticVersion {
         match bump {
             VersionBump::Major => SemanticVersion {
                 major: base.major + 1,
@@ -437,9 +451,16 @@ impl VersionCalculator {
     /// - Core format: MAJOR.MINOR.PATCH
     /// - Pre-release: 1.0.0-alpha.1, 1.0.0-beta.2
     /// - Build metadata: 1.0.0+20210101.abcd123
-    /// - Version prefix: configurable 'v' prefix support
+    /// - Version prefix: configurable `v` prefix support
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError::Versioning`] when the version string is empty, has wrong format,
+    /// contains leading zeros, or has invalid pre-release/build metadata identifiers.
+    // CoreError is intentionally large; this is the established pattern throughout the codebase.
+    #[allow(clippy::result_large_err)]
     pub fn parse_version(version_str: &str) -> CoreResult<SemanticVersion> {
-        debug!("Parsing version string: {}", version_str);
+        debug!(version_str, "Parsing version string");
 
         if version_str.trim().is_empty() {
             return Err(CoreError::versioning(
@@ -466,8 +487,7 @@ impl VersionCalculator {
         let parts: Vec<&str> = core_version.split('.').collect();
         if parts.len() != 3 {
             return Err(CoreError::versioning(format!(
-                "Invalid version format: expected MAJOR.MINOR.PATCH, got {}",
-                version_str
+                "Invalid version format: expected MAJOR.MINOR.PATCH, got {version_str}"
             )));
         }
 
@@ -496,31 +516,32 @@ impl VersionCalculator {
     }
 
     /// Parse and validate a single version component
+    // CoreError is intentionally large; this is the established pattern throughout the codebase.
+    #[allow(clippy::result_large_err)]
     fn parse_version_component(component: &str, component_name: &str) -> CoreResult<u64> {
         if component.is_empty() {
             return Err(CoreError::versioning(format!(
-                "{} version component cannot be empty",
-                component_name
+                "{component_name} version component cannot be empty"
             )));
         }
 
         // Check for leading zeros (not allowed except for "0")
         if component.len() > 1 && component.starts_with('0') {
             return Err(CoreError::versioning(format!(
-                "{} version component cannot have leading zeros: {}",
-                component_name, component
+                "{component_name} version component cannot have leading zeros: {component}"
             )));
         }
 
         component.parse().map_err(|_| {
             CoreError::versioning(format!(
-                "Invalid {} version component: {} (must be a non-negative integer)",
-                component_name, component
+                "Invalid {component_name} version component: {component} (must be a non-negative integer)"
             ))
         })
     }
 
     /// Validate pre-release version format
+    // CoreError is intentionally large; this is the established pattern throughout the codebase.
+    #[allow(clippy::result_large_err)]
     fn validate_prerelease(prerelease: &str) -> CoreResult<()> {
         if prerelease.is_empty() {
             return Err(CoreError::versioning(
@@ -543,8 +564,7 @@ impl VersionCalculator {
                 .all(|c| c.is_ascii_alphanumeric() || c == '-')
             {
                 return Err(CoreError::versioning(format!(
-                    "Invalid pre-release identifier: {} (only ASCII alphanumeric characters and hyphens allowed)",
-                    identifier
+                    "Invalid pre-release identifier: {identifier} (only ASCII alphanumeric characters and hyphens allowed)"
                 )));
             }
 
@@ -554,8 +574,7 @@ impl VersionCalculator {
                 && identifier.starts_with('0')
             {
                 return Err(CoreError::versioning(format!(
-                    "Numeric pre-release identifier cannot have leading zeros: {}",
-                    identifier
+                    "Numeric pre-release identifier cannot have leading zeros: {identifier}"
                 )));
             }
         }
@@ -564,6 +583,8 @@ impl VersionCalculator {
     }
 
     /// Validate build metadata format
+    // CoreError is intentionally large; this is the established pattern throughout the codebase.
+    #[allow(clippy::result_large_err)]
     fn validate_build_metadata(build: &str) -> CoreResult<()> {
         if build.is_empty() {
             return Err(CoreError::versioning(
@@ -586,8 +607,7 @@ impl VersionCalculator {
                 .all(|c| c.is_ascii_alphanumeric() || c == '-')
             {
                 return Err(CoreError::versioning(format!(
-                    "Invalid build metadata identifier: {} (only ASCII alphanumeric characters and hyphens allowed)",
-                    identifier
+                    "Invalid build metadata identifier: {identifier} (only ASCII alphanumeric characters and hyphens allowed)"
                 )));
             }
         }
@@ -599,10 +619,11 @@ impl VersionCalculator {
     ///
     /// Parses commit messages according to the conventional commits specification
     /// using the git-conventional library for robust parsing.
+    #[must_use]
     pub fn parse_conventional_commits(
         commit_messages: &[(String, String)],
     ) -> Vec<ConventionalCommit> {
-        debug!("Parsing {} commit messages", commit_messages.len());
+        debug!(count = commit_messages.len(), "Parsing commit messages");
 
         commit_messages
             .iter()
@@ -676,25 +697,25 @@ impl VersionCalculator {
 ///                                    prerelease: None, build: None };
 ///
 /// // !release major → floor = 2.0.0, which is greater than 1.2.4.
-/// let effective = apply_bump_floor(&current, &calculated, BumpKind::Major);
+/// let effective = apply_bump_floor(&current, &calculated, &BumpKind::Major);
 /// assert_eq!(effective.to_string(), "2.0.0");
 ///
 /// // !release patch → floor = 1.2.4, which equals the calculated version.
-/// let effective = apply_bump_floor(&current, &calculated, BumpKind::Patch);
+/// let effective = apply_bump_floor(&current, &calculated, &BumpKind::Patch);
 /// assert_eq!(effective.to_string(), "1.2.4");
 ///
 /// // If conventional commits already force a higher version, the floor
 /// // has no effect.
 /// let major_calc = SemanticVersion { major: 2, minor: 0, patch: 0,
 ///                                    prerelease: None, build: None };
-/// let effective  = apply_bump_floor(&current, &major_calc, BumpKind::Minor);
+/// let effective  = apply_bump_floor(&current, &major_calc, &BumpKind::Minor);
 /// assert_eq!(effective.to_string(), "2.0.0");
 /// ```
 #[must_use]
 pub fn apply_bump_floor(
     current: &SemanticVersion,
     calculated: &SemanticVersion,
-    floor: BumpKind,
+    floor: &BumpKind,
 ) -> SemanticVersion {
     let floor_version = match floor {
         BumpKind::Major => current.next_major(),

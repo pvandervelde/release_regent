@@ -33,6 +33,7 @@ pub struct ConfigurationBuilder {
 
 impl ConfigurationBuilder {
     /// Create a new configuration builder
+    #[must_use]
     pub fn new() -> Self {
         Self {
             global_config_path: None,
@@ -47,18 +48,21 @@ impl ConfigurationBuilder {
     }
 
     /// Set the global configuration file path
+    #[must_use]
     pub fn with_global_config_path<P: AsRef<Path>>(mut self, path: P) -> Self {
         self.global_config_path = Some(path.as_ref().to_path_buf());
         self
     }
 
     /// Set the repository configuration file path
+    #[must_use]
     pub fn with_repository_config_path<P: AsRef<Path>>(mut self, path: P) -> Self {
         self.repository_config_path = Some(path.as_ref().to_path_buf());
         self
     }
 
     /// Add a directory to search for configuration files
+    #[must_use]
     pub fn with_search_directory<P: AsRef<Path>>(mut self, directory: P) -> Self {
         self.search_directories
             .push(directory.as_ref().to_path_buf());
@@ -66,6 +70,7 @@ impl ConfigurationBuilder {
     }
 
     /// Add multiple search directories
+    #[must_use]
     pub fn with_search_directories<P: AsRef<Path>>(mut self, directories: Vec<P>) -> Self {
         for dir in directories {
             self.search_directories.push(dir.as_ref().to_path_buf());
@@ -74,12 +79,14 @@ impl ConfigurationBuilder {
     }
 
     /// Add a configuration override
+    #[must_use]
     pub fn with_override<K: Into<String>, V: Into<String>>(mut self, key: K, value: V) -> Self {
         self.overrides.insert(key.into(), value.into());
         self
     }
 
     /// Add multiple configuration overrides
+    #[must_use]
     pub fn with_overrides<K: Into<String>, V: Into<String>>(
         mut self,
         overrides: HashMap<K, V>,
@@ -91,12 +98,14 @@ impl ConfigurationBuilder {
     }
 
     /// Set a custom validator
+    #[must_use]
     pub fn with_validator(mut self, validator: ConfigValidator) -> Self {
         self.validator = Some(validator);
         self
     }
 
     /// Add a custom validation rule
+    #[must_use]
     pub fn with_validation_rule(mut self, rule: Box<dyn ValidationRule>) -> Self {
         if let Some(validator) = self.validator.take() {
             self.validator = Some(validator.with_rule(rule));
@@ -107,24 +116,32 @@ impl ConfigurationBuilder {
     }
 
     /// Enable strict validation (warnings become errors)
+    #[must_use]
     pub fn with_strict_validation(mut self) -> Self {
         self.strict_validation = true;
         self
     }
 
     /// Set the default format for files without clear extensions
+    #[must_use]
     pub fn with_default_format(mut self, format: ConfigFormat) -> Self {
         self.default_format = Some(format);
         self
     }
 
     /// Enable creation of missing configuration files
+    #[must_use]
     pub fn with_create_missing(mut self) -> Self {
         self.create_missing = true;
         self
     }
 
     /// Build the configuration provider
+    ///
+    /// # Errors
+    /// - `ConfigProviderError::Builder` — the base directory cannot be determined
+    /// - `ConfigProviderError::Io` — file-system access failed
+    #[allow(clippy::result_large_err)] // ConfigProviderError is intentionally large
     pub async fn build(self) -> ConfigProviderResult<FileConfigurationProvider> {
         // Determine the base directory for the configuration provider
         let base_dir = self.determine_base_directory()?;
@@ -173,6 +190,11 @@ impl ConfigurationBuilder {
     }
 
     /// Build and load a merged configuration
+    ///
+    /// # Errors
+    /// - `ConfigProviderError::Builder` — owner or repo is `None`
+    /// - `ConfigProviderError::Core` — loading or merging configuration failed
+    #[allow(clippy::result_large_err)] // ConfigProviderError is intentionally large
     pub async fn build_and_load(
         self,
         owner: Option<&str>,
@@ -194,6 +216,10 @@ impl ConfigurationBuilder {
     }
 
     /// Build and load just the global configuration
+    ///
+    /// # Errors
+    /// - `ConfigProviderError::Core` — loading the configuration failed
+    #[allow(clippy::result_large_err)] // ConfigProviderError is intentionally large
     pub async fn build_and_load_global(self) -> ConfigProviderResult<ReleaseRegentConfig> {
         let provider = self.build().await?;
         provider
@@ -203,6 +229,10 @@ impl ConfigurationBuilder {
     }
 
     /// Determine the base directory for the configuration provider
+    ///
+    /// # Errors
+    /// - `ConfigProviderError::Builder` — no valid directory can be determined
+    #[allow(clippy::result_large_err)] // ConfigProviderError is intentionally large
     fn determine_base_directory(&self) -> ConfigProviderResult<PathBuf> {
         // If global config path is specified, use its parent directory
         if let Some(global_path) = &self.global_config_path {
@@ -238,6 +268,7 @@ impl Default for ConfigurationBuilder {
 /// Convenient builder methods for common configurations
 impl ConfigurationBuilder {
     /// Create a builder for development/testing with common defaults
+    #[must_use]
     pub fn for_development() -> Self {
         Self::new()
             .with_search_directory("./config")
@@ -247,6 +278,7 @@ impl ConfigurationBuilder {
     }
 
     /// Create a builder for production with strict validation
+    #[must_use]
     pub fn for_production() -> Self {
         Self::new()
             .with_strict_validation()
@@ -254,6 +286,7 @@ impl ConfigurationBuilder {
     }
 
     /// Create a builder for testing with minimal configuration
+    #[must_use]
     pub fn for_testing() -> Self {
         Self::new()
             .with_default_format(ConfigFormat::Yaml)
@@ -261,6 +294,10 @@ impl ConfigurationBuilder {
     }
 
     /// Create a builder with automatic directory detection
+    ///
+    /// # Errors
+    /// - `ConfigProviderError` — not currently returned but declared for future use
+    #[allow(clippy::result_large_err)] // ConfigProviderError is intentionally large
     pub fn auto_detect() -> ConfigProviderResult<Self> {
         let mut builder = Self::new();
 
@@ -287,10 +324,10 @@ impl ConfigurationBuilder {
 
         // Try to find existing configuration files
         if let Ok(current_dir) = std::env::current_dir() {
-            for entry in
-                std::fs::read_dir(&current_dir).unwrap_or_else(|_| std::fs::read_dir(".").unwrap())
+            if let Ok(read_dir) =
+                std::fs::read_dir(&current_dir).or_else(|_| std::fs::read_dir("."))
             {
-                if let Ok(entry) = entry {
+                for entry in read_dir.flatten() {
                     let path = entry.path();
                     if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
                         // Look for common configuration file names

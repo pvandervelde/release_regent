@@ -1,7 +1,7 @@
 //! GitHub API operations trait
 //!
 //! This trait defines the contract for all GitHub API interactions required
-//! by Release Regent. It extends the core GitOperations trait with GitHub-specific
+//! by Release Regent. It extends the core `GitOperations` trait with GitHub-specific
 //! functionality like pull requests, releases, and GitHub-specific metadata.
 
 use super::git_operations::GitOperations;
@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 /// GitHub API operations contract
 ///
-/// This trait extends GitOperations with GitHub-specific functionality including
+/// This trait extends `GitOperations` with GitHub-specific functionality including
 /// pull requests, releases, and GitHub's enhanced metadata and collaboration features.
 ///
 /// It composes the core Git operations to provide a complete GitHub API interface
@@ -25,8 +25,8 @@ use serde::{Deserialize, Serialize};
 /// GitOperations (core Git functionality)
 /// ```
 ///
-/// Version calculators should depend on GitOperations for commit access,
-/// while release management depends on GitHubOperations for PR and release creation.
+/// Version calculators should depend on `GitOperations` for commit access,
+/// while release management depends on `GitHubOperations` for PR and release creation.
 ///
 /// # Error Handling
 ///
@@ -336,6 +336,7 @@ pub trait GitHubOperations: GitOperations + Send + Sync {
     /// # Errors
     /// - `CoreError::GitHub` - API communication failed
     /// - `CoreError::InvalidInput` - Invalid parameters
+    #[allow(clippy::too_many_arguments)] // owner/repo + 5 optional filter params is the minimal API surface
     async fn list_pull_requests(
         &self,
         owner: &str,

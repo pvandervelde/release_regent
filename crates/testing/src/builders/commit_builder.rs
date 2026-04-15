@@ -1,10 +1,13 @@
-//! GitCommit builder for creating test GitCommit data
+//! `GitCommit` builder for creating test `GitCommit` data
 
-use crate::builders::{helpers::*, TestDataBuilder};
+use crate::builders::{
+    helpers::{generate_email, generate_git_sha, generate_github_login, generate_recent_timestamp},
+    TestDataBuilder,
+};
 use chrono::{DateTime, Utc};
-use release_regent_core::traits::git_operations::*;
+use release_regent_core::traits::git_operations::{GitCommit, GitUser};
 
-/// Builder for creating test GitCommit data
+/// Builder for creating test `GitCommit` data
 #[derive(Debug, Clone)]
 pub struct CommitBuilder {
     sha: String,
@@ -15,12 +18,14 @@ pub struct CommitBuilder {
     committer_email: String,
     author_date: DateTime<Utc>,
     committer_date: DateTime<Utc>,
+    #[allow(dead_code)] // retained for realistic test data structure
     tree_sha: String,
     parents: Vec<String>,
 }
 
 impl CommitBuilder {
-    /// Create a new GitCommit builder with defaults
+    /// Create a new `GitCommit` builder with defaults
+    #[must_use]
     pub fn new() -> Self {
         let timestamp = generate_recent_timestamp();
         let author_email = generate_email();
@@ -39,25 +44,29 @@ impl CommitBuilder {
         }
     }
 
-    /// Set GitCommit message
+    /// Set `GitCommit` message
+    #[must_use]
     pub fn with_message(mut self, message: &str) -> Self {
         self.message = message.to_string();
         self
     }
 
-    /// Set conventional GitCommit message
+    /// Set conventional `GitCommit` message
+    #[must_use]
     pub fn with_conventional(mut self, commit_type: &str, description: &str) -> Self {
-        self.message = format!("{}: {}", commit_type, description);
+        self.message = format!("{commit_type}: {description}");
         self
     }
 
-    /// Set conventional GitCommit message (convenience method for single string)
+    /// Set conventional `GitCommit` message (convenience method for single string)
+    #[must_use]
     pub fn with_conventional_message(mut self, message: &str) -> Self {
         self.message = message.to_string();
         self
     }
 
-    /// Set GitCommit author
+    /// Set `GitCommit` author
+    #[must_use]
     pub fn with_author(mut self, name: &str, email: &str) -> Self {
         self.author_name = name.to_string();
         self.author_email = email.to_string();
@@ -106,7 +115,7 @@ impl TestDataBuilder<GitCommit> for CommitBuilder {
             message: message.clone(),
             subject,
             body,
-            parents: self.parents.into_iter().map(|sha| sha).collect(),
+            parents: self.parents.into_iter().collect(),
             files: Vec::new(), // Empty files list for testing
         }
     }

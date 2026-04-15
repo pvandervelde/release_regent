@@ -19,6 +19,7 @@ pub struct ValidationResult {
 
 impl ValidationResult {
     /// Create a new valid result
+    #[must_use]
     pub fn valid() -> Self {
         Self {
             is_valid: true,
@@ -29,6 +30,7 @@ impl ValidationResult {
     }
 
     /// Create a new invalid result with errors
+    #[must_use]
     pub fn invalid(errors: Vec<String>) -> Self {
         Self {
             is_valid: false,
@@ -39,24 +41,28 @@ impl ValidationResult {
     }
 
     /// Add a warning to the result
+    #[must_use]
     pub fn with_warning(mut self, warning: String) -> Self {
         self.warnings.push(warning);
         self
     }
 
     /// Add warnings to the result
+    #[must_use]
     pub fn with_warnings(mut self, warnings: Vec<String>) -> Self {
         self.warnings.extend(warnings);
         self
     }
 
     /// Add metadata to the result
+    #[must_use]
     pub fn with_metadata(mut self, key: String, value: String) -> Self {
         self.metadata.insert(key, value);
         self
     }
 
     /// Check if there are any validation issues (errors or warnings)
+    #[must_use]
     pub fn has_issues(&self) -> bool {
         !self.errors.is_empty() || !self.warnings.is_empty()
     }
@@ -72,6 +78,7 @@ pub struct ConfigValidator {
 
 impl ConfigValidator {
     /// Create a new validator
+    #[must_use]
     pub fn new() -> Self {
         Self {
             strict_mode: false,
@@ -80,6 +87,7 @@ impl ConfigValidator {
     }
 
     /// Create a new validator in strict mode
+    #[must_use]
     pub fn strict() -> Self {
         Self {
             strict_mode: true,
@@ -88,19 +96,24 @@ impl ConfigValidator {
     }
 
     /// Add a custom validation rule
+    #[must_use]
     pub fn with_rule(mut self, rule: Box<dyn ValidationRule>) -> Self {
         self.custom_rules.push(rule);
         self
     }
 
     /// Validate a configuration
+    ///
+    /// # Errors
+    /// - `ConfigProviderError` — a custom validation rule returned an unexpected error
+    #[allow(clippy::result_large_err)] // ConfigProviderError is intentionally large
     pub fn validate(&self, config: &ReleaseRegentConfig) -> ConfigProviderResult<ValidationResult> {
         let mut errors = Vec::new();
         let mut warnings = Vec::new();
         let mut metadata = HashMap::new();
 
         // Basic structural validation
-        self.validate_structure(config, &mut errors, &mut warnings)?;
+        Self::validate_structure(config, &mut errors, &mut warnings);
 
         // Custom rules validation
         for rule in &self.custom_rules {
@@ -111,7 +124,7 @@ impl ConfigValidator {
                     metadata.extend(result.metadata);
                 }
                 Err(e) => {
-                    errors.push(format!("Custom validation rule failed: {}", e));
+                    errors.push(format!("Custom validation rule failed: {e}"));
                 }
             }
         }
@@ -133,11 +146,10 @@ impl ConfigValidator {
 
     /// Validate basic configuration structure
     fn validate_structure(
-        &self,
         config: &ReleaseRegentConfig,
         errors: &mut Vec<String>,
         warnings: &mut Vec<String>,
-    ) -> ConfigProviderResult<()> {
+    ) {
         // Validate branch configuration
         let branch_config = &config.core.branches;
         if branch_config.main.is_empty() {
@@ -183,30 +195,6 @@ impl ConfigValidator {
                 }
             }
         }
-
-        Ok(())
-    }
-
-    /// Check if a string is a valid semantic version
-    fn is_valid_semver(&self, version: &str) -> bool {
-        // Simple semantic version validation without regex dependency
-        let parts: Vec<&str> = version.split('.').collect();
-
-        // Must have at least major.minor.patch
-        if parts.len() < 3 {
-            return false;
-        }
-
-        // Check if first three parts are valid numbers
-        for i in 0..3 {
-            if parts[i].parse::<u32>().is_err() {
-                return false;
-            }
-        }
-
-        // If there are more than 3 parts, they could be pre-release or build metadata
-        // For now, we'll accept any additional parts as valid
-        true
     }
 }
 
@@ -219,6 +207,10 @@ impl Default for ConfigValidator {
 /// Trait for custom validation rules
 pub trait ValidationRule: Send + Sync {
     /// Validate a configuration and return a validation result
+    ///
+    /// # Errors
+    /// Returns `Err` if the validation rule itself encounters an unexpected error.
+    #[allow(clippy::result_large_err)] // ConfigProviderError is intentionally large
     fn validate(&self, config: &ReleaseRegentConfig) -> ConfigProviderResult<ValidationResult>;
 
     /// Get the name of this validation rule
@@ -232,8 +224,11 @@ pub trait ValidationRule: Send + Sync {
 pub struct GitHubRepositoryRule;
 
 impl ValidationRule for GitHubRepositoryRule {
+    /// # Errors
+    /// This implementation never returns `Err` but the trait requires it for custom rules that may fail.
+    #[allow(clippy::result_large_err)] // ConfigProviderError is intentionally large
     fn validate(&self, config: &ReleaseRegentConfig) -> ConfigProviderResult<ValidationResult> {
-        let mut errors = Vec::new();
+        let errors = Vec::new();
         let mut warnings = Vec::new();
 
         // Validate GitHub-specific settings
@@ -263,11 +258,11 @@ impl ValidationRule for GitHubRepositoryRule {
         })
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "github_repository"
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Validates GitHub repository-specific configuration settings"
     }
 }
@@ -276,6 +271,9 @@ impl ValidationRule for GitHubRepositoryRule {
 pub struct WebhookSecurityRule;
 
 impl ValidationRule for WebhookSecurityRule {
+    /// # Errors
+    /// This implementation never returns `Err` but the trait requires it for custom rules that may fail.
+    #[allow(clippy::result_large_err)] // ConfigProviderError is intentionally large
     fn validate(&self, config: &ReleaseRegentConfig) -> ConfigProviderResult<ValidationResult> {
         let mut errors = Vec::new();
         let mut warnings = Vec::new();
@@ -335,11 +333,11 @@ impl ValidationRule for WebhookSecurityRule {
         })
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "webhook_security"
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Validates webhook security configuration"
     }
 }
