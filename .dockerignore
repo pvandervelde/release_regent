@@ -1,0 +1,30 @@
+# Exclude the build output directory — it is large and rebuilt inside Docker.
+target/
+
+# Version control metadata
+.git/
+.gitignore
+.gitattributes
+
+# GitHub-specific directories (not needed at build time)
+.github/
+
+# Developer tooling
+.llm/
+.vscode/
+.idea/
+
+# Temporary and local files
+*.tmp
+*.log
+*.swp
+*.bak
+
+# Documentation sources (not needed in the container)
+docs/
+
+# Test fixtures and examples
+crates/testing/
+
+# Root-level markdown files
+*.md
