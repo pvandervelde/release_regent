@@ -12,6 +12,10 @@ name: Release
 #
 # Once self-hosted, the release PR workflow will create these tags automatically.
 #
+# Safety note: always push release tags on commits where CI is green.
+# This workflow does not gate on CI status; a tag pushed on a red commit
+# will still produce and publish an image.
+#
 # Image registry
 # --------------
 # Images are published to GitHub Container Registry:
@@ -42,11 +46,6 @@ jobs:
                   # Full history is not required for image builds, but fetch-depth: 1
                   # is the default and is correct here.
                   fetch-depth: 1
-
-            # QEMU enables cross-compilation for non-native platforms if required
-            # in the future. For now we target linux/amd64 only.
-            - name: Set up QEMU
-              uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
 
             - name: Set up Docker Buildx
               uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3

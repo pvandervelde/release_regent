@@ -30,7 +30,10 @@
 # This layer is cached as long as Cargo.toml / Cargo.lock are unchanged,
 # so external crate compilation is skipped on source-only changes.
 # =============================================================================
-FROM rust:1-slim AS deps
+# Pin to a specific Rust release so that builds on different days produce
+# identical binaries.  Update this together with rust-version in Cargo.toml
+# when raising the MSRV.  Current stable at the time of writing: 1.85.
+FROM rust:1.85-slim AS deps
 
 # aws-lc-sys (pulled in by rustls through azure and reqwest) requires cmake,
 # clang, and nasm.  pkg-config is used by several crates to locate system libs.
@@ -70,7 +73,7 @@ RUN mkdir -p \
     && printf 'pub fn _stub() {}\n' > crates/github_client/src/lib.rs \
     && printf 'fn main() {}\n' > crates/server/src/main.rs \
     && printf 'pub fn _stub() {}\n' > crates/testing/src/lib.rs \
-    && cargo build --release --package release-regent-server || true
+    && cargo build --release --locked --package release-regent-server || true
 
 # =============================================================================
 # Stage 2 — final compilation
@@ -85,7 +88,7 @@ COPY crates/ crates/
 
 # Touch all .rs files so that Cargo detects them as newer than the stubs.
 RUN find crates -name '*.rs' -exec touch {} + \
-    && cargo build --release --package release-regent-server
+    && cargo build --release --locked --package release-regent-server
 
 # =============================================================================
 # Stage 3 — minimal runtime image
@@ -111,5 +114,10 @@ USER rr
 
 # Webhook server port.
 EXPOSE 8080
+
+# Container health check — polls the /health endpoint.
+# start-period gives the server time to bind and start accepting connections.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD wget -q --spider http://localhost:8080/health || exit 1
 
 ENTRYPOINT ["/usr/local/bin/rr-server"]

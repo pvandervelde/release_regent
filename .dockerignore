@@ -23,8 +23,10 @@ target/
 # Documentation sources (not needed in the container)
 docs/
 
-# Test fixtures and examples
-crates/testing/
+# Exclude test sources and fixtures from the build context but keep the
+# Cargo.toml manifest — Cargo requires it to resolve the workspace graph.
+crates/testing/src/
+crates/testing/tests/
 
 # Root-level markdown files
 *.md
