@@ -36,14 +36,17 @@
 FROM rust:1.95-slim AS deps
 
 # TARGETARCH is injected by BuildKit (values: amd64, arm64, etc.).
+# cmake, clang, pkg-config are required on all platforms by aws-lc-sys.
+# libssl-dev provides OpenSSL headers required by openssl-sys, which is a
+# transitive dependency: typespec_client_core (Azure SDK) and jsonschema pull
+# in reqwest 0.12 whose default TLS backend on Linux is native-tls → openssl.
 # nasm is only available for x86/amd64 in Debian; aws-lc-sys uses it for
 # x86 assembly optimisations.  On arm64 it is not available and not needed
 # (aws-lc-sys uses ARMv8 crypto intrinsics instead).
-# cmake, clang, and pkg-config are required on all platforms.
 ARG TARGETARCH
 RUN set -e; \
     apt-get update; \
-    apt-get install -y --no-install-recommends cmake clang pkg-config; \
+    apt-get install -y --no-install-recommends cmake clang pkg-config libssl-dev; \
     if [ "${TARGETARCH}" = "amd64" ]; then \
     apt-get install -y --no-install-recommends nasm; \
     fi; \
