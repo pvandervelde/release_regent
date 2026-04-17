@@ -182,10 +182,7 @@ impl GitOperations for GitHubClient {
         head: &str,
         _options: GetCommitsOptions,
     ) -> CoreResult<Vec<GitCommit>> {
-        info!(
-            "Getting commits between {} and {} for {}/{}",
-            base, head, owner, repo
-        );
+        info!(owner, repo, base, head, "Getting commits between");
 
         let installation = self.installation().await?;
         let comparison = installation
@@ -202,7 +199,7 @@ impl GitOperations for GitHubClient {
 
     #[instrument(skip(self))]
     async fn get_commit(&self, owner: &str, repo: &str, commit_sha: &str) -> CoreResult<GitCommit> {
-        info!("Getting commit {} for {}/{}", commit_sha, owner, repo);
+        info!(owner, repo, commit_sha, "Getting commit");
 
         let installation = self.installation().await?;
         let sdk_commit = installation
@@ -220,7 +217,7 @@ impl GitOperations for GitHubClient {
         repo: &str,
         options: ListTagsOptions,
     ) -> CoreResult<Vec<GitTag>> {
-        info!("Listing tags for {}/{}", owner, repo);
+        info!(owner, repo, "Listing tags");
 
         let installation = self.installation().await?;
         let sdk_tags = installation
@@ -249,7 +246,7 @@ impl GitOperations for GitHubClient {
 
     #[instrument(skip(self))]
     async fn get_tag(&self, owner: &str, repo: &str, tag_name: &str) -> CoreResult<GitTag> {
-        info!("Getting tag {} for {}/{}", tag_name, owner, repo);
+        info!(owner, repo, tag_name, "Getting tag");
 
         // SDK doesn't have get_tag, so we list all tags and find the one we need
         let installation = self.installation().await?;
@@ -267,7 +264,7 @@ impl GitOperations for GitHubClient {
 
     #[instrument(skip(self))]
     async fn tag_exists(&self, owner: &str, repo: &str, tag_name: &str) -> CoreResult<bool> {
-        debug!("Checking if tag {} exists for {}/{}", tag_name, owner, repo);
+        debug!(owner, repo, tag_name, "Checking if tag exists");
 
         match self.get_tag(owner, repo, tag_name).await {
             Ok(_) => Ok(true),
@@ -283,10 +280,7 @@ impl GitOperations for GitHubClient {
         repo: &str,
         branch: Option<&str>,
     ) -> CoreResult<GitCommit> {
-        info!(
-            "Getting HEAD commit for {}/{} (branch: {:?})",
-            owner, repo, branch
-        );
+        info!(owner, repo, branch = ?branch, "Getting HEAD commit");
 
         let installation = self.installation().await?;
 
@@ -317,7 +311,7 @@ impl GitOperations for GitHubClient {
 
     #[instrument(skip(self))]
     async fn get_repository_info(&self, owner: &str, repo: &str) -> CoreResult<GitRepository> {
-        info!("Getting repository info for {}/{}", owner, repo);
+        info!(owner, repo, "Getting repository info");
 
         let installation = self.installation().await?;
         let sdk_repo = installation
@@ -347,10 +341,7 @@ impl GitHubOperations for GitHubClient {
         repo: &str,
         params: CreatePullRequestParams,
     ) -> CoreResult<PullRequest> {
-        info!(
-            "Creating pull request in {}/{}: {}",
-            owner, repo, params.title
-        );
+        info!(owner, repo, title = %params.title, "Creating pull request");
 
         let installation = self.installation().await?;
 
@@ -379,10 +370,7 @@ impl GitHubOperations for GitHubClient {
         repo: &str,
         params: CreateReleaseParams,
     ) -> CoreResult<Release> {
-        info!(
-            "Creating release in {}/{}: {}",
-            owner, repo, params.tag_name
-        );
+        info!(owner, repo, tag_name = %params.tag_name, "Creating release");
 
         let installation = self.installation().await?;
 
@@ -414,10 +402,7 @@ impl GitHubOperations for GitHubClient {
         message: Option<String>,
         tagger: Option<GitHubUser>,
     ) -> CoreResult<Tag> {
-        info!(
-            "Creating tag {} at {} for {}/{}",
-            tag_name, commit_sha, owner, repo
-        );
+        info!(owner, repo, tag_name, commit_sha, "Creating tag");
 
         let installation = self.installation().await?;
 
@@ -438,7 +423,7 @@ impl GitHubOperations for GitHubClient {
 
     #[instrument(skip(self))]
     async fn get_latest_release(&self, owner: &str, repo: &str) -> CoreResult<Option<Release>> {
-        info!("Getting latest release for {}/{}", owner, repo);
+        info!(owner, repo, "Getting latest release");
 
         let installation = self.installation().await?;
 
@@ -458,7 +443,7 @@ impl GitHubOperations for GitHubClient {
         repo: &str,
         pr_number: u64,
     ) -> CoreResult<PullRequest> {
-        info!("Getting pull request #{} for {}/{}", pr_number, owner, repo);
+        info!(owner, repo, pr_number, "Getting pull request");
 
         let installation = self.installation().await?;
         let sdk_pr = installation
@@ -471,7 +456,7 @@ impl GitHubOperations for GitHubClient {
 
     #[instrument(skip(self))]
     async fn get_release_by_tag(&self, owner: &str, repo: &str, tag: &str) -> CoreResult<Release> {
-        info!("Getting release by tag {} for {}/{}", tag, owner, repo);
+        info!(owner, repo, tag, "Getting release by tag");
 
         let installation = self.installation().await?;
         let sdk_release = installation
@@ -490,7 +475,7 @@ impl GitHubOperations for GitHubClient {
         _per_page: Option<u8>,
         _page: Option<u32>,
     ) -> CoreResult<Vec<Release>> {
-        info!("Listing releases for {}/{}", owner, repo);
+        info!(owner, repo, "Listing releases");
 
         let installation = self.installation().await?;
         let sdk_releases = installation
@@ -514,10 +499,7 @@ impl GitHubOperations for GitHubClient {
         body: Option<String>,
         state: Option<String>,
     ) -> CoreResult<PullRequest> {
-        info!(
-            "Updating pull request #{} for {}/{}",
-            pr_number, owner, repo
-        );
+        info!(owner, repo, pr_number, "Updating pull request");
 
         let installation = self.installation().await?;
 
@@ -610,10 +592,7 @@ impl GitHubOperations for GitHubClient {
         repo: &str,
         query: &str,
     ) -> CoreResult<Vec<PullRequest>> {
-        info!(
-            "Searching pull requests for {}/{} with query: {}",
-            owner, repo, query
-        );
+        info!(owner, repo, query, "Searching pull requests");
 
         // Determine desired state from the query.  Default to "open" if
         // not specified, which matches the most common usage pattern.
@@ -678,7 +657,7 @@ impl GitHubOperations for GitHubClient {
         release_id: u64,
         params: UpdateReleaseParams,
     ) -> CoreResult<Release> {
-        info!("Updating release {} for {}/{}", release_id, owner, repo);
+        info!(owner, repo, release_id, "Updating release");
 
         let installation = self.installation().await?;
 
@@ -706,7 +685,7 @@ impl GitHubOperations for GitHubClient {
         branch_name: &str,
         sha: &str,
     ) -> CoreResult<()> {
-        info!("Creating branch {branch_name} at {sha} for {owner}/{repo}");
+        info!(owner, repo, branch_name, sha, "Creating branch");
 
         let installation = self.installation().await?;
 
@@ -726,7 +705,7 @@ impl GitHubOperations for GitHubClient {
     }
 
     async fn delete_branch(&self, owner: &str, repo: &str, branch_name: &str) -> CoreResult<()> {
-        info!("Deleting branch {branch_name} for {owner}/{repo}");
+        info!(owner, repo, branch_name, "Deleting branch");
 
         let installation = self.installation().await?;
 

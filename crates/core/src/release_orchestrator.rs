@@ -176,6 +176,7 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
     /// `CoreError::InvalidInput` when a version cannot be parsed from an
     /// existing PR branch name.
     #[allow(clippy::too_many_arguments)] // owner/repo/version/changelog/branch/sha/correlation_id is the minimal release operation surface
+    #[tracing::instrument(skip(self, changelog, version), fields(owner, repo, correlation_id, version = %version))]
     pub async fn orchestrate(
         &self,
         owner: &str,
@@ -186,16 +187,7 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
         base_sha: &str,
         correlation_id: &str,
     ) -> CoreResult<OrchestratorResult> {
-        let span = tracing::info_span!(
-            "release_orchestrator.orchestrate",
-            owner,
-            repo,
-            version = %version,
-            correlation_id,
-        );
-        let _enter = span.enter();
-
-        info!(owner, repo, version = %version, "Starting release orchestration");
+        info!(owner, repo, version = %version, correlation_id, "Starting release orchestration");
 
         let existing = self.search_for_existing_release_pr(owner, repo).await?;
 
