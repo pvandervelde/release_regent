@@ -1,0 +1,32 @@
+# Exclude the build output directory — it is large and rebuilt inside Docker.
+target/
+
+# Version control metadata
+.git/
+.gitignore
+.gitattributes
+
+# GitHub-specific directories (not needed at build time)
+.github/
+
+# Developer tooling
+.llm/
+.vscode/
+.idea/
+
+# Temporary and local files
+*.tmp
+*.log
+*.swp
+*.bak
+
+# Documentation sources (not needed in the container)
+docs/
+
+# Exclude test sources and fixtures from the build context but keep the
+# Cargo.toml manifest — Cargo requires it to resolve the workspace graph.
+crates/testing/src/
+crates/testing/tests/
+
+# Root-level markdown files
+*.md

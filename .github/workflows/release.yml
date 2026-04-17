@@ -1,0 +1,95 @@
+name: Release
+
+# Triggered by a push of a semantic-version tag (e.g. v0.1.0, v1.2.3-beta.1).
+#
+# Versioning strategy (pre-self-hosting)
+# ---------------------------------------
+# Until Release Regent processes its own repository, versions are managed via
+# manually pushed git tags on the master branch:
+#
+#   git tag -a v0.1.0 -m "Release v0.1.0"
+#   git push origin v0.1.0
+#
+# Once self-hosted, the release PR workflow will create these tags automatically.
+#
+# Safety note: always push release tags on commits where CI is green.
+# This workflow does not gate on CI status; a tag pushed on a red commit
+# will still produce and publish an image.
+#
+# Image registry
+# --------------
+# Images are published to GitHub Container Registry:
+#   ghcr.io/pvandervelde/release-regent:<version>
+#   ghcr.io/pvandervelde/release-regent:latest   (stable releases only)
+#   ghcr.io/pvandervelde/release-regent:sha-<short-sha>
+
+on:
+    push:
+        tags:
+            # Stable releases: v0.1.0, v1.2.3
+            - "v[0-9]+.[0-9]+.[0-9]+"
+            # Pre-releases: v0.1.0-beta.1, v1.0.0-rc.2
+            - "v[0-9]+.[0-9]+.[0-9]+-*"
+
+permissions:
+    contents: read
+    packages: write
+
+jobs:
+    release-container:
+        name: Build and publish container image
+        runs-on: ubuntu-latest
+
+        steps:
+            - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+              with:
+                  # Full history is not required for image builds, but fetch-depth: 1
+                  # is the default and is correct here.
+                  fetch-depth: 1
+
+            - name: Set up QEMU
+              uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+
+            - name: Set up Docker Buildx
+              uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+            - name: Login to GitHub Container Registry
+              uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+              with:
+                  registry: ghcr.io
+                  username: ${{ github.actor }}
+                  password: ${{ secrets.GITHUB_TOKEN }}
+
+            # Extract OCI-compatible tags and labels from the Git context.
+            # For a tag push of v0.1.0 this produces:
+            #   ghcr.io/pvandervelde/release-regent:0.1.0
+            #   ghcr.io/pvandervelde/release-regent:0.1
+            #   ghcr.io/pvandervelde/release-regent:0
+            #   ghcr.io/pvandervelde/release-regent:latest  (stable only)
+            #   ghcr.io/pvandervelde/release-regent:sha-<abbrev>
+            - name: Extract Docker metadata
+              id: meta
+              uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+              with:
+                  images: ghcr.io/${{ github.repository_owner }}/release-regent
+                  tags: |
+                      type=semver,pattern={{version}}
+                      type=semver,pattern={{major}}.{{minor}}
+                      type=semver,pattern={{major}}
+                      type=sha,prefix=sha-
+                  labels: |
+                      org.opencontainers.image.title=Release Regent
+                      org.opencontainers.image.description=Automated semantic versioning and release management webhook server
+                      org.opencontainers.image.vendor=pvandervelde
+                      org.opencontainers.image.documentation=https://github.com/pvandervelde/release_regent/blob/master/README.md
+
+            - name: Build and push container image
+              uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+              with:
+                  context: .
+                  platforms: linux/amd64,linux/arm64
+                  push: true
+                  tags: ${{ steps.meta.outputs.tags }}
+                  labels: ${{ steps.meta.outputs.labels }}
+                  cache-from: type=gha
+                  cache-to: type=gha,mode=max
