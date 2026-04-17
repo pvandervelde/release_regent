@@ -28,4 +28,5 @@ toml = { workspace = true }
 
 [dev-dependencies]
 tokio-test = { workspace = true }
+tracing-test = { workspace = true }
 release_regent_testing = { path = "../testing" }
