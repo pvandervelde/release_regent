@@ -32,17 +32,22 @@
 # =============================================================================
 # Pin to a specific Rust release so that builds on different days produce
 # identical binaries.  Update this together with rust-version in Cargo.toml
-# when raising the MSRV.  Current stable at the time of writing: 1.85.
-FROM rust:1.85-slim AS deps
+# when raising the MSRV.  Current stable at the time of writing: 1.95.
+FROM rust:1.95-slim AS deps
 
-# aws-lc-sys (pulled in by rustls through azure and reqwest) requires cmake,
-# clang, and nasm.  pkg-config is used by several crates to locate system libs.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    cmake \
-    clang \
-    nasm \
-    pkg-config \
-    && rm -rf /var/lib/apt/lists/*
+# TARGETARCH is injected by BuildKit (values: amd64, arm64, etc.).
+# nasm is only available for x86/amd64 in Debian; aws-lc-sys uses it for
+# x86 assembly optimisations.  On arm64 it is not available and not needed
+# (aws-lc-sys uses ARMv8 crypto intrinsics instead).
+# cmake, clang, and pkg-config are required on all platforms.
+ARG TARGETARCH
+RUN set -e; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends cmake clang pkg-config; \
+    if [ "${TARGETARCH}" = "amd64" ]; then \
+    apt-get install -y --no-install-recommends nasm; \
+    fi; \
+    rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
 
@@ -96,8 +101,10 @@ RUN find crates -name '*.rs' -exec touch {} + \
 FROM debian:bookworm-slim AS runtime
 
 # ca-certificates is required for outbound TLS connections to the GitHub API.
+# wget is used by the HEALTHCHECK instruction below.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
+    wget \
     && rm -rf /var/lib/apt/lists/*
 
 # Run as a dedicated non-root system account.
