@@ -100,8 +100,14 @@ RUN find crates -name '*.rs' -exec touch {} + \
 
 # =============================================================================
 # Stage 3 — minimal runtime image
+#
+# Must use the same Debian release as the builder image so that the compiled
+# binary and the glibc version in the runtime layer match.
+# rust:1.95-slim is based on Debian trixie (glibc 2.41).
+# bookworm-slim only ships glibc 2.36 and would fail with a version-not-found
+# error at startup.  Keep this in sync with the FROM in the deps stage.
 # =============================================================================
-FROM debian:bookworm-slim AS runtime
+FROM debian:trixie-slim AS runtime
 
 # ca-certificates is required for outbound TLS connections to the GitHub API.
 # wget is used by the HEALTHCHECK instruction below.
