@@ -60,6 +60,7 @@ azure_security_keyvault_secrets = "0.10"
 
 # Test dependencies
 tempfile = "3.8"
+tracing-test = "0.2"
 tokio-test = "0.4"
 mockall = "0.13"
 pretty_assertions = "=1.4.1"

@@ -48,12 +48,12 @@ struct TestState {
 }
 
 #[derive(Clone, Default)]
-struct TestGitHub {
+pub(super) struct TestGitHub {
     state: Arc<Mutex<TestState>>,
 }
 
 impl TestGitHub {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             state: Arc::new(Mutex::new(TestState {
                 next_pr_number: 100,
@@ -402,7 +402,7 @@ impl GitHubOperations for TestGitHub {
 }
 // ─────────────────────────────────────────────────────────────────────────────
 
-fn stub_repo(owner: &str, repo: &str) -> Repository {
+pub(super) fn stub_repo(owner: &str, repo: &str) -> Repository {
     Repository {
         id: 1,
         name: repo.to_string(),
@@ -417,7 +417,7 @@ fn stub_repo(owner: &str, repo: &str) -> Repository {
     }
 }
 
-fn stub_git_user() -> GitHubUser {
+pub(super) fn stub_git_user() -> GitHubUser {
     GitHubUser {
         name: "test-user".to_string(),
         email: "test@example.com".to_string(),
@@ -425,7 +425,7 @@ fn stub_git_user() -> GitHubUser {
     }
 }
 
-fn make_open_release_pr(number: u64, branch: &str, body: Option<&str>) -> PullRequest {
+pub(super) fn make_open_release_pr(number: u64, branch: &str, body: Option<&str>) -> PullRequest {
     let now = Utc::now();
     let r = stub_repo("testorg", "testrepo");
     PullRequest {
@@ -451,7 +451,7 @@ fn make_open_release_pr(number: u64, branch: &str, body: Option<&str>) -> PullRe
     }
 }
 
-fn ver(major: u64, minor: u64, patch: u64) -> SemanticVersion {
+pub(super) fn ver(major: u64, minor: u64, patch: u64) -> SemanticVersion {
     SemanticVersion {
         major,
         minor,
@@ -461,9 +461,17 @@ fn ver(major: u64, minor: u64, patch: u64) -> SemanticVersion {
     }
 }
 
-fn default_config() -> OrchestratorConfig {
+pub(super) fn default_config() -> OrchestratorConfig {
     OrchestratorConfig::default()
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Structured logging sub-module
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+#[path = "release_orchestrator_tracing_tests.rs"]
+mod tracing_tests;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests
