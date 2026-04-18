@@ -678,6 +678,7 @@ impl GitHubOperations for GitHubClient {
         Ok(convert_sdk_release_to_release_regent_release(sdk_release))
     }
 
+    #[instrument(skip(self))]
     async fn create_branch(
         &self,
         owner: &str,
@@ -704,6 +705,7 @@ impl GitHubOperations for GitHubClient {
         Ok(())
     }
 
+    #[instrument(skip(self))]
     async fn delete_branch(&self, owner: &str, repo: &str, branch_name: &str) -> CoreResult<()> {
         info!(owner, repo, branch_name, "Deleting branch");
 
@@ -717,6 +719,7 @@ impl GitHubOperations for GitHubClient {
         Ok(())
     }
 
+    #[instrument(skip(self, body))]
     async fn create_issue_comment(
         &self,
         owner: &str,
@@ -739,6 +742,7 @@ impl GitHubOperations for GitHubClient {
         Ok(())
     }
 
+    #[instrument(skip(self))]
     async fn get_collaborator_permission(
         &self,
         owner: &str,
@@ -781,6 +785,7 @@ impl GitHubOperations for GitHubClient {
         })
     }
 
+    #[instrument(skip(self, labels))]
     async fn add_labels(
         &self,
         owner: &str,
@@ -800,6 +805,7 @@ impl GitHubOperations for GitHubClient {
         Ok(())
     }
 
+    #[instrument(skip(self))]
     async fn remove_label(
         &self,
         owner: &str,
@@ -829,6 +835,7 @@ impl GitHubOperations for GitHubClient {
         }
     }
 
+    #[instrument(skip(self))]
     async fn list_pr_labels(
         &self,
         owner: &str,

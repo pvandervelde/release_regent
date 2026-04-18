@@ -176,7 +176,7 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
     /// `CoreError::InvalidInput` when a version cannot be parsed from an
     /// existing PR branch name.
     #[allow(clippy::too_many_arguments)] // owner/repo/version/changelog/branch/sha/correlation_id is the minimal release operation surface
-    #[tracing::instrument(skip(self, changelog, version), fields(owner, repo, correlation_id, version = %version))]
+    #[tracing::instrument(skip(self, changelog, version), fields(owner, repo, base_branch, base_sha, correlation_id, version = %version))]
     pub async fn orchestrate(
         &self,
         owner: &str,
