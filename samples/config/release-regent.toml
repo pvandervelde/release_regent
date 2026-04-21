@@ -1,0 +1,96 @@
+# =============================================================================
+# Release Regent — sample repository configuration
+# =============================================================================
+# This file shows all available options with sensible defaults for local
+# testing. Mount this directory into the Docker container by passing
+# -ConfigDir to run-local.ps1.
+#
+# The server looks for a file named release-regent.toml (or release-regent.yaml)
+# in the CONFIG_DIR directory. Rename or copy this file as release-regent.toml.
+#
+# Full reference: docs/configuration-reference.md
+# =============================================================================
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Repository settings
+# ─────────────────────────────────────────────────────────────────────────────
+
+[repository]
+# Base URL of the repository being managed.
+# Used to generate links in changelogs and release PR bodies.
+remote_url = "https://github.com/your-org/your-repo"
+
+# Branch that triggers release processing when pull requests are merged into it.
+main_branch = "main"
+
+# Pattern for the release branch created by Release Regent.
+# {version} is replaced with the computed semantic version.
+release_branch_pattern = "release/v{version}"
+
+# Pattern for the Git tag applied when a release is finalised.
+tag_pattern = "v{version}"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Versioning
+# ─────────────────────────────────────────────────────────────────────────────
+
+[versioning]
+# Prefix prepended to version numbers in tags, PR titles, and changelogs.
+prefix = "v"
+
+# Allow pre-release versions (e.g. 1.0.0-beta.1, 2.3.0-rc.2).
+allow_prerelease = true
+
+# Version used when no previous release tag exists in the repository.
+initial_version = "0.1.0"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Release pull request
+# ─────────────────────────────────────────────────────────────────────────────
+
+[release_pr]
+# Template for the release PR title.
+# Available variables: {version}, {version_tag}, {date}
+title_template = "chore(release): prepare version {version}"
+
+# Create release PRs as drafts. Useful when you want a human to review before
+# the PR is opened for review by the wider team.
+draft = false
+
+# Enable auto-merge on the release PR once all required status checks pass.
+# Requires auto-merge to be enabled in the repository branch-protection settings.
+auto_merge = false
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Changelog
+# ─────────────────────────────────────────────────────────────────────────────
+
+[changelog]
+# Include the author name alongside each changelog entry.
+include_authors = false
+
+# Link each entry to the commit on GitHub.
+include_commit_links = true
+
+# Link each entry to its pull request when a PR number is detected in the
+# commit message or branch name.
+include_pr_links = true
+
+# Group changelog entries by conventional commit type (feat, fix, etc.).
+# Options: "type" | "scope" | "none"
+group_by = "type"
+
+# Sort order for commits within each group.
+# Options: "date" | "type" | "scope"
+sort_commits = "date"
+
+[changelog.commit_types]
+feat = "Features"
+fix = "Bug Fixes"
+docs = "Documentation"
+refactor = "Code Refactoring"
+perf = "Performance Improvements"
+test = "Tests"
+chore = "Chores"
+ci = "Continuous Integration"
+revert = "Reverts"
