@@ -87,7 +87,6 @@ Open `samples\.env` and fill in the four required values:
 | Variable | Where to find it |
 | :------- | :--------------- |
 | `GITHUB_APP_ID` | GitHub Settings → Developer settings → GitHub Apps → your app |
-| `GITHUB_INSTALLATION_ID` | URL after installing the app: `github.com/settings/installations/XXXXXXXX` |
 | `GITHUB_WEBHOOK_SECRET` | The secret you entered when configuring the app's webhook |
 | `GITHUB_PRIVATE_KEY_FILE` | Path to the `.pem` file downloaded from the app's *Private keys* section |
 
@@ -168,7 +167,7 @@ docker logs release-regent-local
 Common causes:
 
 - A required environment variable is missing or empty in `.env`.
-- `GITHUB_APP_ID` or `GITHUB_INSTALLATION_ID` is not a number.
+- `GITHUB_APP_ID` is not a number.
 - The private key file does not contain a valid PEM-encoded key.
 
 ### Webhooks are not arriving

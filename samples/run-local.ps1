@@ -224,7 +224,6 @@ if ($PrivateKeyFile)
 # Validate that all required variables are present and non-empty.
 $requiredVars = @(
     'GITHUB_APP_ID',
-    'GITHUB_INSTALLATION_ID',
     'GITHUB_WEBHOOK_SECRET',
     'GITHUB_PRIVATE_KEY_FILE'
 )
@@ -385,7 +384,6 @@ $dockerArgs = @(
     '--volume', "${configDirAbs}:/config:ro",
     '--env', "GITHUB_APP_ID=$($envVars['GITHUB_APP_ID'])",
     '--env', 'GITHUB_PRIVATE_KEY',        # inherited from host process env
-    '--env', "GITHUB_INSTALLATION_ID=$($envVars['GITHUB_INSTALLATION_ID'])",
     '--env', "GITHUB_WEBHOOK_SECRET=$($envVars['GITHUB_WEBHOOK_SECRET'])",
     '--env', "ALLOWED_REPOS=$allowedRepos",
     '--env', "RUST_LOG=$rustLog",

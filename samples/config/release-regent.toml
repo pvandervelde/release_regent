@@ -1,96 +1,88 @@
 # =============================================================================
 # Release Regent — sample repository configuration
 # =============================================================================
-# This file shows all available options with sensible defaults for local
-# testing. Mount this directory into the Docker container by passing
-# -ConfigDir to run-local.ps1.
+# All fields shown here are optional — they match the built-in defaults.
+# You only need to include the fields you want to override.
 #
-# The server looks for a file named release-regent.toml (or release-regent.yaml)
-# in the CONFIG_DIR directory. Rename or copy this file as release-regent.toml.
+# The server looks for a file named release-regent.toml (or .yaml) in
+# the CONFIG_DIR directory (default: /config inside the container).
 #
 # Full reference: docs/configuration-reference.md
 # =============================================================================
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Repository settings
+# Core settings
 # ─────────────────────────────────────────────────────────────────────────────
 
-[repository]
-# Base URL of the repository being managed.
-# Used to generate links in changelogs and release PR bodies.
-remote_url = "https://github.com/your-org/your-repo"
+[core]
+# Prefix prepended to version numbers in tags and PR titles.
+version_prefix = "v"
 
-# Branch that triggers release processing when pull requests are merged into it.
-main_branch = "main"
-
-# Pattern for the release branch created by Release Regent.
-# {version} is replaced with the computed semantic version.
-release_branch_pattern = "release/v{version}"
-
-# Pattern for the Git tag applied when a release is finalised.
-tag_pattern = "v{version}"
+[core.branches]
+# The default branch of the repository.
+main = "main"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Versioning
 # ─────────────────────────────────────────────────────────────────────────────
 
 [versioning]
-# Prefix prepended to version numbers in tags, PR titles, and changelogs.
-prefix = "v"
+# How to calculate the next version.
+# Options: "conventional" (conventional commits) | "external" (custom command)
+strategy = "conventional"
 
-# Allow pre-release versions (e.g. 1.0.0-beta.1, 2.3.0-rc.2).
-allow_prerelease = true
-
-# Version used when no previous release tag exists in the repository.
-initial_version = "0.1.0"
+# Allow contributors to override the calculated bump via PR comments
+# (e.g. /override-bump minor).
+allow_override = true
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Release pull request
 # ─────────────────────────────────────────────────────────────────────────────
 
 [release_pr]
-# Template for the release PR title.
-# Available variables: {version}, {version_tag}, {date}
-title_template = "chore(release): prepare version {version}"
+# Template for the release PR title. ${version} is replaced at runtime.
+title_template = "chore(release): ${version}"
 
-# Create release PRs as drafts. Useful when you want a human to review before
-# the PR is opened for review by the wider team.
+# Template for the release PR body. ${changelog} is replaced at runtime.
+body_template = "## Changelog\n\n${changelog}"
+
+# Create release PRs as drafts.
 draft = false
 
-# Enable auto-merge on the release PR once all required status checks pass.
-# Requires auto-merge to be enabled in the repository branch-protection settings.
-auto_merge = false
-
 # ─────────────────────────────────────────────────────────────────────────────
-# Changelog
+# GitHub releases
 # ─────────────────────────────────────────────────────────────────────────────
 
-[changelog]
-# Include the author name alongside each changelog entry.
-include_authors = false
+[releases]
+# Publish releases as drafts (not publicly visible until manually published).
+draft = false
 
-# Link each entry to the commit on GitHub.
-include_commit_links = true
+# Mark releases as pre-releases.
+prerelease = false
 
-# Link each entry to its pull request when a PR number is detected in the
-# commit message or branch name.
-include_pr_links = true
+# Auto-generate release notes from merged PRs in addition to the changelog.
+generate_notes = true
 
-# Group changelog entries by conventional commit type (feat, fix, etc.).
-# Options: "type" | "scope" | "none"
-group_by = "type"
+# ─────────────────────────────────────────────────────────────────────────────
+# Error handling / retries
+# ─────────────────────────────────────────────────────────────────────────────
 
-# Sort order for commits within each group.
-# Options: "date" | "type" | "scope"
-sort_commits = "date"
+[error_handling]
+max_retries = 5
+backoff_multiplier = 2.0
+initial_delay_ms = 1000
 
-[changelog.commit_types]
-feat = "Features"
-fix = "Bug Fixes"
-docs = "Documentation"
-refactor = "Code Refactoring"
-perf = "Performance Improvements"
-test = "Tests"
-chore = "Chores"
-ci = "Continuous Integration"
-revert = "Reverts"
+# ─────────────────────────────────────────────────────────────────────────────
+# Notifications
+# ─────────────────────────────────────────────────────────────────────────────
+
+[notifications]
+enabled = true
+
+# How to report errors encountered during processing.
+# Options: "github_issue" | "webhook" | "slack" | "none"
+strategy = "github_issue"
+
+[notifications.github_issue]
+labels = ["release-regent", "bug"]
+assignees = []
