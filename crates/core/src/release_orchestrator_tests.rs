@@ -399,6 +399,12 @@ impl GitHubOperations for TestGitHub {
     ) -> CoreResult<Vec<crate::traits::github_operations::Label>> {
         Ok(vec![])
     }
+
+    fn scoped_to(&self, _installation_id: u64) -> Self {
+        Self {
+            state: Arc::clone(&self.state),
+        }
+    }
 }
 // ─────────────────────────────────────────────────────────────────────────────
 

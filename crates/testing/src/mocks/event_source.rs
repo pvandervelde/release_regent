@@ -26,6 +26,7 @@
 //!     payload: serde_json::json!({}),
 //!     received_at: Utc::now(),
 //!     source: EventSourceKind::Webhook,
+//!     installation_id: 0,
 //! };
 //!
 //! let mock = MockEventSource::new(vec![event]);

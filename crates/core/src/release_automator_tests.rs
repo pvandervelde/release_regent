@@ -422,6 +422,12 @@ impl GitHubOperations for TestGitHub {
     ) -> CoreResult<Release> {
         Err(CoreError::not_supported("update_release", "stub"))
     }
+
+    fn scoped_to(&self, _installation_id: u64) -> Self {
+        Self {
+            state: Arc::clone(&self.state),
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -496,6 +502,7 @@ fn make_release_pr_event(branch: &str, merge_sha: &str, body: &str) -> Processin
         payload,
         received_at: Utc::now(),
         source: EventSourceKind::Webhook,
+        installation_id: 0,
     }
 }
 
@@ -577,6 +584,7 @@ fn make_release_pr_event_with_title(
         payload,
         received_at: Utc::now(),
         source: EventSourceKind::Webhook,
+        installation_id: 0,
     }
 }
 
@@ -981,6 +989,7 @@ async fn test_automate_missing_head_ref_returns_invalid_input() {
         payload: serde_json::json!({ "pull_request": { "number": 1 } }),
         received_at: Utc::now(),
         source: EventSourceKind::Webhook,
+        installation_id: 0,
     };
 
     let err = automator
@@ -1015,6 +1024,7 @@ async fn test_automate_missing_merge_sha_returns_invalid_input() {
         }),
         received_at: Utc::now(),
         source: EventSourceKind::Webhook,
+        installation_id: 0,
     };
 
     let err = automator
@@ -1109,6 +1119,7 @@ async fn test_automate_fallback_sha_used_when_merge_commit_sha_absent() {
         }),
         received_at: Utc::now(),
         source: EventSourceKind::Webhook,
+        installation_id: 0,
     };
 
     automator

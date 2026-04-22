@@ -468,6 +468,12 @@ impl GitHubOperations for TestGitHub {
             .cloned()
             .unwrap_or_default())
     }
+
+    fn scoped_to(&self, _installation_id: u64) -> Self {
+        Self {
+            state: Arc::clone(&self.state),
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -619,6 +625,7 @@ fn test_event(pr_number: u64, comment_body: &str, pr_state: &str) -> ProcessingE
         }),
         received_at: Utc::now(),
         source: EventSourceKind::Webhook,
+        installation_id: 0,
     }
 }
 
