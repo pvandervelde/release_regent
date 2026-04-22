@@ -477,6 +477,19 @@ pub trait GitHubOperations: GitOperations + Send + Sync {
         release_id: u64,
         params: UpdateReleaseParams,
     ) -> CoreResult<Release>;
+
+    /// Return a clone of this client scoped to the given GitHub App installation.
+    ///
+    /// All subsequent API calls on the returned client will use an installation
+    /// access token obtained for `installation_id` rather than the token used
+    /// by `self`.  This allows a single top-level client to serve webhooks from
+    /// any installation of the GitHub App without re-initialisation.
+    ///
+    /// Implementations must not make any network calls in this method — the
+    /// installation token is obtained lazily on the first API call.
+    fn scoped_to(&self, installation_id: u64) -> Self
+    where
+        Self: Sized;
 }
 
 // Note: Git commit information is now provided by GitOperations trait

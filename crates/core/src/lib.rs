@@ -309,7 +309,7 @@ where
             changelog_header: "## Changelog".to_string(),
         };
 
-        match ReleaseAutomator::new(config, &self.github_operations)
+        match ReleaseAutomator::new(config, &self.github_operations.scoped_to(event.installation_id))
             .automate(owner, repo, event, correlation_id)
             .await
         {
@@ -345,7 +345,7 @@ where
             allow_override: repo_config.versioning.allow_override,
         };
 
-        CommentCommandProcessor::new(config, &self.github_operations)
+        CommentCommandProcessor::new(config, &self.github_operations.scoped_to(event.installation_id))
             .process(event)
             .await
     }
@@ -743,8 +743,9 @@ where
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(0);
 
+        let scoped_github = self.github_operations.scoped_to(event.installation_id);
         let orchestrator =
-            release_orchestrator::ReleaseOrchestrator::new(orch_config, &self.github_operations);
+            release_orchestrator::ReleaseOrchestrator::new(orch_config, &scoped_github);
 
         if is_release_pr {
             self.process_release_pr_merged(

@@ -265,6 +265,14 @@ pub fn convert_envelope(
         release_branch_prefix,
     );
 
+    let installation_id = envelope
+        .payload
+        .raw()
+        .get("installation")
+        .and_then(|i| i.get("id"))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+
     Ok(ProcessingEvent {
         event_id: envelope.event_id.to_string(),
         correlation_id: envelope.correlation_id().to_string(),
@@ -273,6 +281,7 @@ pub fn convert_envelope(
         payload: envelope.payload.raw().clone(),
         received_at: Utc::now(),
         source: EventSourceKind::Webhook,
+        installation_id,
     })
 }
 

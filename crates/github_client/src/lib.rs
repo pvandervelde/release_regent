@@ -62,6 +62,12 @@ pub struct GitHubClient {
 impl GitHubClient {
     /// Create a new GitHub client with authentication provider.
     ///
+    /// `installation_id` is the GitHub App installation identifier extracted
+    /// from the incoming webhook payload (`installation.id`).  Pass `0` when
+    /// constructing the client at startup before any webhook is received; call
+    /// [`scoped_to`](GitHubClient::scoped_to) to obtain a per-request client
+    /// with the correct installation ID before making any API calls.
+    ///
     /// # Errors
     ///
     /// Returns [`CoreError::GitHub`] if the underlying SDK client cannot be built.
@@ -91,6 +97,10 @@ impl GitHubClient {
 
     /// Create a new GitHub client directly from [`AuthConfig`].
     ///
+    /// The client is constructed without a bound installation ID (ID `0`).
+    /// Call [`scoped_to`](GitHubClient::scoped_to) with the installation ID
+    /// from each incoming webhook before making any API calls.
+    ///
     /// This convenience constructor wires together all required SDK components:
     /// - [`auth::EnvSecretProvider`] for secret retrieval
     /// - [`auth::DefaultJwtSigner`] for RS256 JWT signing
@@ -102,7 +112,7 @@ impl GitHubClient {
     /// Returns an error if the private key in `auth_config` is malformed or
     /// if the underlying SDK client cannot be initialised.
     #[allow(clippy::result_large_err)]
-    pub fn from_config(auth_config: AuthConfig, installation_id: u64) -> CoreResult<Self> {
+    pub fn from_config(auth_config: AuthConfig) -> CoreResult<Self> {
         let secret_provider =
             auth::EnvSecretProvider::new(auth_config).map_err(|e| CoreError::GitHub {
                 source: Box::new(e),
@@ -122,7 +132,9 @@ impl GitHubClient {
             auth_config_sdk,
         );
 
-        Self::new(auth_provider, installation_id)
+        // Installation ID 0 is a placeholder; the real ID is supplied per-request
+        // via `scoped_to()` after extracting it from the webhook payload.
+        Self::new(auth_provider, 0)
     }
 
     /// Get the SDK client for direct access if needed
@@ -860,6 +872,13 @@ impl GitHubOperations for GitHubClient {
             .collect();
 
         Ok(labels)
+    }
+
+    fn scoped_to(&self, installation_id: u64) -> Self {
+        Self {
+            sdk_client: self.sdk_client.clone(),
+            installation_id: InstallationId::new(installation_id),
+        }
     }
 }
 

@@ -11,7 +11,6 @@
 //! | `GITHUB_WEBHOOK_SECRET`  | HMAC-SHA256 secret shared with GitHub (**required**) | —                  |
 //! | `GITHUB_APP_ID`          | Numeric GitHub App ID (**required**)                 | —                  |
 //! | `GITHUB_PRIVATE_KEY`     | PEM-encoded GitHub App private key (**required**)    | —                  |
-//! | `GITHUB_INSTALLATION_ID` | GitHub App installation ID (**required**)            | —                  |
 //! | `CONFIG_DIR`             | Directory to search for `.release-regent.toml`       | current directory  |
 //! | `ALLOWED_REPOS`          | Comma-separated `owner/repo` values, or `*`          | `*`                |
 //! | `EVENT_CHANNEL_CAPACITY` | Bounded channel depth for in-flight events           | `1024`             |
@@ -89,14 +88,19 @@ const MAX_BODY_BYTES: usize = 10 * 1024 * 1024;
 
 /// Parse GitHub App credentials from environment variables.
 ///
-/// Returns `(app_id, private_key, installation_id)` on success.
+/// Returns `(app_id, private_key)` on success.
+///
+/// The GitHub App installation ID is **not** read here.  It is present in every
+/// GitHub App webhook payload as `installation.id` and is extracted from the
+/// incoming event by [`handler::convert_envelope`] so that the server can serve
+/// webhooks from any installation of the same GitHub App without reconfiguration.
 ///
 /// # Errors
 ///
 /// Returns [`errors::Error::Environment`] if any required variable is absent
-/// or if `GITHUB_APP_ID` / `GITHUB_INSTALLATION_ID` cannot be parsed as `u64`.
+/// or if `GITHUB_APP_ID` cannot be parsed as `u64`.
 #[allow(clippy::result_large_err)] // errors::Error is intentionally large
-fn read_github_credentials_from_env() -> Result<(u64, String, u64), errors::Error> {
+fn read_github_credentials_from_env() -> Result<(u64, String), errors::Error> {
     let app_id: u64 = std::env::var("GITHUB_APP_ID")
         .map_err(|e| errors::Error::environment("GITHUB_APP_ID", e.to_string()))?
         .parse::<u64>()
@@ -107,31 +111,28 @@ fn read_github_credentials_from_env() -> Result<(u64, String, u64), errors::Erro
     let private_key = std::env::var("GITHUB_PRIVATE_KEY")
         .map_err(|e| errors::Error::environment("GITHUB_PRIVATE_KEY", e.to_string()))?;
 
-    let installation_id: u64 = std::env::var("GITHUB_INSTALLATION_ID")
-        .map_err(|e| errors::Error::environment("GITHUB_INSTALLATION_ID", e.to_string()))?
-        .parse::<u64>()
-        .map_err(|e| {
-            errors::Error::environment("GITHUB_INSTALLATION_ID", format!("must be a number: {e}"))
-        })?;
-
-    Ok((app_id, private_key, installation_id))
+    Ok((app_id, private_key))
 }
 
 /// Construct the production [`ServerProcessor`] from environment variables.
 ///
-/// Reads `GITHUB_APP_ID`, `GITHUB_PRIVATE_KEY`, and `GITHUB_INSTALLATION_ID`
-/// from the environment, builds a [`release_regent_github_client::GitHubClient`],
-/// initialises a [`release_regent_config_provider::FileConfigurationProvider`]
+/// Reads `GITHUB_APP_ID` and `GITHUB_PRIVATE_KEY` from the environment, builds
+/// a [`release_regent_github_client::GitHubClient`] without a bound installation
+/// ID, initialises a [`release_regent_config_provider::FileConfigurationProvider`]
 /// from the directory specified by `CONFIG_DIR` (falling back to the current
 /// working directory when `CONFIG_DIR` is absent), and wires them together with
 /// [`DefaultVersionCalculator`] into a [`ServerProcessor`].
+///
+/// The installation ID is intentionally omitted here.  It is extracted from each
+/// webhook payload at event-processing time so that one server instance can handle
+/// webhooks from any installation of the same GitHub App.
 ///
 /// # Errors
 ///
 /// Returns an error if any required variable is absent, if the GitHub App
 /// private key is malformed, or if the configuration directory is inaccessible.
 async fn build_server_processor(webhook_secret: String) -> Result<ServerProcessor, errors::Error> {
-    let (app_id, private_key, installation_id) = read_github_credentials_from_env()?;
+    let (app_id, private_key) = read_github_credentials_from_env()?;
 
     let auth_config = release_regent_github_client::AuthConfig {
         app_id,
@@ -140,7 +141,7 @@ async fn build_server_processor(webhook_secret: String) -> Result<ServerProcesso
     };
 
     let github_client =
-        release_regent_github_client::GitHubClient::from_config(auth_config, installation_id)?;
+        release_regent_github_client::GitHubClient::from_config(auth_config)?;
 
     let config_dir = match std::env::var("CONFIG_DIR") {
         Ok(dir) => std::path::PathBuf::from(dir),

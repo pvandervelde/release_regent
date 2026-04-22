@@ -1197,6 +1197,25 @@ impl GitHubOperations for MockGitHubOperations {
             .await;
         Ok(labels)
     }
+
+    fn scoped_to(&self, _installation_id: u64) -> Self {
+        // Shares Arc-based state (call history, labels, etc.) so tests can
+        // observe calls made through the scoped client.
+        Self {
+            state: Arc::clone(&self.state),
+            next_id: Arc::clone(&self.next_id),
+            next_sha: Arc::clone(&self.next_sha),
+            repositories: self.repositories.clone(),
+            commits: self.commits.clone(),
+            pull_requests: self.pull_requests.clone(),
+            tags: self.tags.clone(),
+            releases: self.releases.clone(),
+            branches: self.branches.clone(),
+            pr_labels: Arc::clone(&self.pr_labels),
+            collaborator_permission: self.collaborator_permission.clone(),
+            method_errors: self.method_errors.clone(),
+        }
+    }
 }
 
 /// `GitOperations` implementation for `MockGitHubOperations`
