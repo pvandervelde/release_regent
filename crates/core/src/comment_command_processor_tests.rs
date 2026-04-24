@@ -469,6 +469,14 @@ impl GitHubOperations for TestGitHub {
             .unwrap_or_default())
     }
 
+    async fn get_installation_id_for_repo(
+        &self,
+        _owner: &str,
+        _repo: &str,
+    ) -> CoreResult<u64> {
+        Ok(0)
+    }
+
     fn scoped_to(&self, _installation_id: u64) -> Self {
         Self {
             state: Arc::clone(&self.state),

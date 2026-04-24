@@ -309,7 +309,9 @@ where
             changelog_header: "## Changelog".to_string(),
         };
 
-        match ReleaseAutomator::new(config, &self.github_operations.scoped_to(event.installation_id))
+        match ReleaseAutomator::new(config, &self.github_operations.scoped_to(
+            self.resolve_installation_id(owner, repo).await?,
+        ))
             .automate(owner, repo, event, correlation_id)
             .await
         {
@@ -345,7 +347,9 @@ where
             allow_override: repo_config.versioning.allow_override,
         };
 
-        CommentCommandProcessor::new(config, &self.github_operations.scoped_to(event.installation_id))
+        CommentCommandProcessor::new(config, &self.github_operations.scoped_to(
+            self.resolve_installation_id(owner, repo).await?,
+        ))
             .process(event)
             .await
     }
@@ -632,6 +636,20 @@ where
         &self.version_calculator
     }
 
+    /// Resolve a reliable installation ID for `owner/repo`.
+    ///
+    /// Calls the GitHub App API to look up the installation ID for the given
+    /// repository.
+    async fn resolve_installation_id(
+        &self,
+        owner: &str,
+        repo: &str,
+    ) -> CoreResult<u64> {
+        self.github_operations
+            .get_installation_id_for_repo(owner, repo)
+            .await
+    }
+
     /// Handle a merged pull request event by orchestrating the creation or
     /// update of a release PR.
     ///
@@ -704,13 +722,17 @@ where
             })?
             .to_string();
 
+        let installation_id = self
+            .resolve_installation_id(owner, repo)
+            .await?;
+
         let MergeCalcResult {
             calc_result,
             changelog,
             current_version,
             repo_config,
         } = self
-            .calculate_version_for_merge(owner, repo, &base_sha, &base_branch)
+            .calculate_version_for_merge(owner, repo, &base_sha, &base_branch, installation_id)
             .await?;
 
         // Build orchestrator config honouring the repository PR title template.
@@ -743,7 +765,7 @@ where
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(0);
 
-        let scoped_github = self.github_operations.scoped_to(event.installation_id);
+        let scoped_github = self.github_operations.scoped_to(installation_id);
         let orchestrator =
             release_orchestrator::ReleaseOrchestrator::new(orch_config, &scoped_github);
 
@@ -783,6 +805,7 @@ where
         repo: &str,
         base_sha: &str,
         base_branch: &str,
+        installation_id: u64,
     ) -> CoreResult<MergeCalcResult> {
         use traits::configuration_provider::LoadOptions;
         use traits::version_calculator::{CalculationOptions, VersionContext, VersioningStrategy};
@@ -792,8 +815,9 @@ where
             .get_merged_config(owner, repo, LoadOptions::default())
             .await?;
 
+        let scoped_github = self.github_operations.scoped_to(installation_id);
         let current_version =
-            versioning::resolve_current_version(&self.github_operations, owner, repo, false)
+            versioning::resolve_current_version(&scoped_github, owner, repo, false)
                 .await?;
 
         let ctx = VersionContext {

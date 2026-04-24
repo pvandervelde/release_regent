@@ -874,6 +874,30 @@ impl GitHubOperations for GitHubClient {
         Ok(labels)
     }
 
+    #[instrument(skip(self))]
+    async fn get_installation_id_for_repo(
+        &self,
+        owner: &str,
+        repo: &str,
+    ) -> CoreResult<u64> {
+        info!(owner, repo, "Looking up installation ID for repository");
+        let path = format!("/repos/{owner}/{repo}/installation");
+        let response = self
+            .sdk_client
+            .get_as_app(&path)
+            .await
+            .map_err(map_sdk_error)?;
+        let body: serde_json::Value = response.json().await.map_err(CoreError::github)?;
+        body["id"]
+            .as_u64()
+            .ok_or_else(|| CoreError::GitHub {
+                source: Box::new(std::io::Error::other(
+                    "installation lookup response missing 'id' field",
+                )),
+                context: None,
+            })
+    }
+
     fn scoped_to(&self, installation_id: u64) -> Self {
         Self {
             sdk_client: self.sdk_client.clone(),

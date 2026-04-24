@@ -285,6 +285,7 @@ pub struct WebhookConfig {
 #[serde(rename_all = "snake_case")]
 pub enum NotificationStrategy {
     /// Create GitHub issues for errors
+    #[serde(rename = "github_issue")]
     GitHubIssue,
     /// Send webhook notifications
     Webhook,

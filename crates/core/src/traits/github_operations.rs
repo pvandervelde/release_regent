@@ -478,6 +478,24 @@ pub trait GitHubOperations: GitOperations + Send + Sync {
         params: UpdateReleaseParams,
     ) -> CoreResult<Release>;
 
+    /// Look up the GitHub App installation ID for a specific repository.
+    ///
+    /// Calls `GET /repos/{owner}/{repo}/installation` using app-level JWT
+    /// authentication and returns the numeric installation ID.
+    ///
+    /// Use this when no installation ID is available in the incoming event
+    /// (e.g. queue-sourced events that do not carry the `installation` field).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError::GitHub`] if the API call fails or if the App is not
+    /// installed on the repository.
+    async fn get_installation_id_for_repo(
+        &self,
+        owner: &str,
+        repo: &str,
+    ) -> CoreResult<u64>;
+
     /// Return a clone of this client scoped to the given GitHub App installation.
     ///
     /// All subsequent API calls on the returned client will use an installation
