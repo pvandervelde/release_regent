@@ -469,11 +469,7 @@ impl GitHubOperations for TestGitHub {
             .unwrap_or_default())
     }
 
-    async fn get_installation_id_for_repo(
-        &self,
-        _owner: &str,
-        _repo: &str,
-    ) -> CoreResult<u64> {
+    async fn get_installation_id_for_repo(&self, _owner: &str, _repo: &str) -> CoreResult<u64> {
         Ok(0)
     }
 
@@ -609,6 +605,15 @@ fn make_semver_tag(name: &str) -> GitTag {
 }
 
 fn test_event(pr_number: u64, comment_body: &str, pr_state: &str) -> ProcessingEvent {
+    test_event_with_login(pr_number, comment_body, pr_state, "test-user")
+}
+
+fn test_event_with_login(
+    pr_number: u64,
+    comment_body: &str,
+    pr_state: &str,
+    commenter_login: &str,
+) -> ProcessingEvent {
     use crate::traits::event_source::{EventSourceKind, EventType, RepositoryInfo};
     ProcessingEvent {
         event_id: "evt-001".to_string(),
@@ -627,7 +632,7 @@ fn test_event(pr_number: u64, comment_body: &str, pr_state: &str) -> ProcessingE
             "comment": {
                 "body": comment_body,
                 "user": {
-                    "login": "test-user"
+                    "login": commenter_login
                 }
             }
         }),
@@ -801,8 +806,38 @@ async fn test_process_unrecognised_comment_body_is_noop() {
     let result = processor.process(&event).await;
 
     assert!(result.is_ok());
+    // No GitHub API calls should be made for unrecognised comment bodies —
+    // not even a permission check — so the issue_comments list stays empty.
     assert!(github.issue_comments().await.is_empty());
     assert!(github.created_prs().await.is_empty());
+}
+
+#[tokio::test]
+async fn test_process_bot_comment_with_command_is_noop() {
+    // Simulates the feedback loop: a bot (e.g. our own app posting a reply)
+    // includes text that looks like a command.  We must never act on it.
+    let github = TestGitHub::new().with_pr(make_open_pr(42, "abc123")).await;
+    let processor = CommentCommandProcessor::new(default_config(true), &github);
+
+    let event = test_event_with_login(42, "!release minor", "open", "gg-release-regent[bot]");
+    let result = processor.process(&event).await;
+
+    assert!(result.is_ok());
+    assert!(github.issue_comments().await.is_empty());
+}
+
+#[tokio::test]
+async fn test_process_other_bot_comment_with_command_is_noop() {
+    // A third-party bot that happens to include command-like text should also
+    // be ignored.
+    let github = TestGitHub::new().with_pr(make_open_pr(42, "abc123")).await;
+    let processor = CommentCommandProcessor::new(default_config(true), &github);
+
+    let event = test_event_with_login(42, "!set-version 1.0.0", "open", "some-other-app[bot]");
+    let result = processor.process(&event).await;
+
+    assert!(result.is_ok());
+    assert!(github.issue_comments().await.is_empty());
 }
 
 #[tokio::test]
