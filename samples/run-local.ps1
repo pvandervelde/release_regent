@@ -143,13 +143,13 @@ function Read-EnvFile
         $line = $rawLine.Trim()
         if (-not $line -or $line.StartsWith('#'))
         {
-            continue 
+            continue
         }
 
         $eqIndex = $line.IndexOf('=')
         if ($eqIndex -le 0)
         {
-            continue 
+            continue
         }
 
         $key = $line.Substring(0, $eqIndex).Trim()
@@ -309,10 +309,15 @@ if ($Build)
     # The Dockerfile lives in the repository root, one level above samples/.
     $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 
-    & docker build --tag $ImageName $repoRoot
+    # Use 'docker buildx build --load' so that BuildKit cache mounts are active.
+    # --load pushes the result into the local Docker image store (equivalent to
+    # the plain 'docker build' output).  BuildKit persists the cargo registry
+    # and compiled artifacts in named cache mounts between builds, so only
+    # changed workspace crates are recompiled on subsequent runs.
+    & docker buildx build --tag $ImageName --load $repoRoot
     if ($LASTEXITCODE -ne 0)
     {
-        Write-Fatal "docker build failed (exit code $LASTEXITCODE)."
+        Write-Fatal "docker buildx build failed (exit code $LASTEXITCODE)."
     }
 
     Write-Success "Image built successfully."
