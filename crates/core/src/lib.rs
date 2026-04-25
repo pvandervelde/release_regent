@@ -208,6 +208,7 @@ pub mod comment_command_processor;
 pub mod config;
 pub(crate) mod default_version_calculator;
 pub mod errors;
+pub(crate) mod github_version_calculator;
 pub mod release_automator;
 pub mod release_orchestrator;
 pub mod traits;
@@ -215,6 +216,7 @@ pub mod versioning;
 
 pub use default_version_calculator::DefaultVersionCalculator;
 pub use errors::{CoreError, CoreResult};
+pub use github_version_calculator::GitHubVersionCalculator;
 pub use traits::{ConfigurationProvider, GitHubOperations, GitOperations, VersionCalculator};
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -843,10 +845,10 @@ where
             ..Default::default()
         };
 
-        let calc_result = self
-            .version_calculator
-            .calculate_version(ctx, strategy, options)
-            .await?;
+        // Scope the calculator to the resolved installation before calling it,
+        // keeping authentication concerns out of VersionContext.
+        let scoped_calc = self.version_calculator.scoped_to(installation_id);
+        let calc_result = scoped_calc.calculate_version(ctx, strategy, options).await?;
 
         let changelog = format_changelog_for_release(&calc_result.changelog_entries);
 

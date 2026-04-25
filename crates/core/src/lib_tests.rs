@@ -937,11 +937,7 @@ impl GitHubOperations for TestGitHubForLib {
             .unwrap_or_default())
     }
 
-    async fn get_installation_id_for_repo(
-        &self,
-        _owner: &str,
-        _repo: &str,
-    ) -> CoreResult<u64> {
+    async fn get_installation_id_for_repo(&self, _owner: &str, _repo: &str) -> CoreResult<u64> {
         Ok(0)
     }
 
@@ -1168,6 +1164,13 @@ impl VersionCalculator for TestVersionCalcForLib {
         _build: Option<String>,
     ) -> CoreResult<SemanticVersion> {
         Ok(current_version)
+    }
+
+    fn scoped_to(&self, _installation_id: u64) -> Arc<dyn VersionCalculator + Send + Sync> {
+        Arc::new(TestVersionCalcForLib {
+            next_version: self.next_version.clone(),
+            changelog_entries: self.changelog_entries.clone(),
+        })
     }
 }
 

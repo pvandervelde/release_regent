@@ -7,6 +7,7 @@ use crate::{versioning::SemanticVersion, CoreResult};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// Version calculation context
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -414,6 +415,125 @@ pub trait VersionCalculator: Send + Sync {
         prerelease: Option<String>,
         build: Option<String>,
     ) -> CoreResult<SemanticVersion>;
+
+    /// Scope this calculator to the given GitHub App installation ID.
+    ///
+    /// GitHub-backed calculators use this to construct a scoped API client that
+    /// authenticates with the correct installation token.  Calculators that do
+    /// not interact with the GitHub API (e.g. the CLI's local-git calculator)
+    /// should return a fresh instance of the same calculator — the installation
+    /// ID is irrelevant to them.
+    ///
+    /// The processor calls this method once at the start of each event, passing
+    /// the resolved installation ID, and then calls `calculate_version` on the
+    /// returned scoped calculator.  This keeps authentication concerns out of
+    /// [`VersionContext`].
+    fn scoped_to(&self, installation_id: u64) -> Arc<dyn VersionCalculator + Send + Sync>;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Blanket impl — allows Arc<dyn VersionCalculator + Send + Sync> to be used
+// wherever V: VersionCalculator is required (e.g. as the V type parameter in
+// ReleaseRegentProcessor).
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[async_trait]
+impl VersionCalculator for Arc<dyn VersionCalculator + Send + Sync> {
+    async fn calculate_version(
+        &self,
+        context: VersionContext,
+        strategy: VersioningStrategy,
+        options: CalculationOptions,
+    ) -> CoreResult<VersionCalculationResult> {
+        (**self).calculate_version(context, strategy, options).await
+    }
+
+    async fn analyze_commits(
+        &self,
+        context: VersionContext,
+        strategy: VersioningStrategy,
+        commit_shas: Vec<String>,
+    ) -> CoreResult<Vec<CommitAnalysis>> {
+        (**self)
+            .analyze_commits(context, strategy, commit_shas)
+            .await
+    }
+
+    async fn validate_version(
+        &self,
+        context: VersionContext,
+        proposed_version: SemanticVersion,
+        rules: ValidationRules,
+    ) -> CoreResult<bool> {
+        (**self)
+            .validate_version(context, proposed_version, rules)
+            .await
+    }
+
+    async fn get_version_bump(
+        &self,
+        context: VersionContext,
+        strategy: VersioningStrategy,
+        commit_analyses: Vec<CommitAnalysis>,
+    ) -> CoreResult<VersionBump> {
+        (**self)
+            .get_version_bump(context, strategy, commit_analyses)
+            .await
+    }
+
+    async fn generate_changelog_entries(
+        &self,
+        context: VersionContext,
+        strategy: VersioningStrategy,
+        commit_analyses: Vec<CommitAnalysis>,
+        version: SemanticVersion,
+    ) -> CoreResult<Vec<ChangelogEntry>> {
+        (**self)
+            .generate_changelog_entries(context, strategy, commit_analyses, version)
+            .await
+    }
+
+    async fn preview_calculation(
+        &self,
+        context: VersionContext,
+        strategy: VersioningStrategy,
+        options: CalculationOptions,
+    ) -> CoreResult<VersionCalculationResult> {
+        (**self)
+            .preview_calculation(context, strategy, options)
+            .await
+    }
+
+    fn supported_strategies(&self) -> HashMap<String, String> {
+        (**self).supported_strategies()
+    }
+
+    fn default_strategy(&self) -> VersioningStrategy {
+        (**self).default_strategy()
+    }
+
+    #[allow(clippy::result_large_err)]
+    fn parse_conventional_commit(
+        &self,
+        commit_message: &str,
+    ) -> CoreResult<Option<CommitAnalysis>> {
+        (**self).parse_conventional_commit(commit_message)
+    }
+
+    #[allow(clippy::result_large_err)]
+    fn apply_version_bump(
+        &self,
+        current_version: SemanticVersion,
+        bump_type: VersionBump,
+        prerelease: Option<String>,
+        build: Option<String>,
+    ) -> CoreResult<SemanticVersion> {
+        (**self).apply_version_bump(current_version, bump_type, prerelease, build)
+    }
+
+    fn scoped_to(&self, installation_id: u64) -> Arc<dyn VersionCalculator + Send + Sync> {
+        (**self).scoped_to(installation_id)
+    }
 }
 
 // TODO: implement - placeholder for compilation
@@ -536,5 +656,9 @@ impl VersionCalculator for MockVersionCalculator {
             "MockVersionCalculator",
             "not yet implemented",
         ))
+    }
+
+    fn scoped_to(&self, _installation_id: u64) -> Arc<dyn VersionCalculator + Send + Sync> {
+        Arc::new(MockVersionCalculator)
     }
 }

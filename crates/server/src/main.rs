@@ -49,7 +49,7 @@ use github_bot_sdk::{
     events::{EventProcessor, ProcessorConfig},
     webhook::{WebhookReceiver, WebhookRequest, WebhookResponse},
 };
-use release_regent_core::{run_event_loop, DefaultVersionCalculator};
+use release_regent_core::{run_event_loop, GitHubVersionCalculator, VersionCalculator};
 use std::{collections::HashMap, sync::Arc};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
@@ -70,10 +70,13 @@ use handler::WebhookSecretProvider;
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Concrete production processor type used by the server.
+///
+/// The version calculator is held as a trait object so that the server's type
+/// alias does not leak the concrete `GitHubVersionCalculator` type.
 type ServerProcessor = release_regent_core::ReleaseRegentProcessor<
     release_regent_github_client::GitHubClient,
     release_regent_config_provider::FileConfigurationProvider,
-    DefaultVersionCalculator,
+    Arc<dyn VersionCalculator + Send + Sync>,
 >;
 
 /// Maximum allowed webhook payload size (10 MiB).
@@ -121,7 +124,7 @@ fn read_github_credentials_from_env() -> Result<(u64, String), errors::Error> {
 /// ID, initialises a [`release_regent_config_provider::FileConfigurationProvider`]
 /// from the directory specified by `CONFIG_DIR` (falling back to the current
 /// working directory when `CONFIG_DIR` is absent), and wires them together with
-/// [`DefaultVersionCalculator`] into a [`ServerProcessor`].
+/// [`GitHubVersionCalculator`] into a [`ServerProcessor`].
 ///
 /// The installation ID is intentionally omitted here.  It is extracted from each
 /// webhook payload at event-processing time so that one server instance can handle
@@ -140,8 +143,7 @@ async fn build_server_processor(webhook_secret: String) -> Result<ServerProcesso
         webhook_secret,
     };
 
-    let github_client =
-        release_regent_github_client::GitHubClient::from_config(auth_config)?;
+    let github_client = release_regent_github_client::GitHubClient::from_config(auth_config)?;
 
     let config_dir = match std::env::var("CONFIG_DIR") {
         Ok(dir) => std::path::PathBuf::from(dir),
@@ -156,7 +158,12 @@ async fn build_server_processor(webhook_secret: String) -> Result<ServerProcesso
             .await
             .map_err(|e| errors::Error::config_provider(e.to_string()))?;
 
-    let version_calculator = DefaultVersionCalculator::new();
+    // The GitHubVersionCalculator is constructed with a clone of the (unscoped)
+    // GitHub client and held as a trait object.  The processor calls
+    // `VersionCalculator::scoped_to(installation_id)` on it before each version
+    // calculation so the concrete type never leaks into the processor type alias.
+    let version_calculator: Arc<dyn VersionCalculator + Send + Sync> =
+        Arc::new(GitHubVersionCalculator::new(github_client.clone()));
 
     Ok(release_regent_core::ReleaseRegentProcessor::new(
         github_client,
