@@ -196,16 +196,24 @@ impl GitOperations for GitHubClient {
     ) -> CoreResult<Vec<GitCommit>> {
         info!(owner, repo, base, head, "Getting commits between");
 
+        // Use the raw HTTP endpoint directly instead of the SDK helper.
+        // The SDK's `compare_commits` deserialises the response into `FullCommit`
+        // which has a required `comment_count: u32` field.  GitHub does not
+        // include that field at the commit envelope level (it returns
+        // `comments_url` there instead), so serde rejects the response with
+        // "error decoding response body".
         let installation = self.installation().await?;
-        let comparison = installation
-            .compare_commits(owner, repo, base, head)
+        let path = format!("/repos/{owner}/{repo}/compare/{base}...{head}");
+        let response = installation.get(&path).await.map_err(map_sdk_error)?;
+        let comparison: CompareApiResponse = response
+            .json()
             .await
-            .map_err(map_sdk_error)?;
+            .map_err(|e| CoreError::network(format!("GitHub HTTP client error: {e}")))?;
 
         Ok(comparison
             .commits
             .into_iter()
-            .map(convert_sdk_commit_to_git_commit)
+            .map(compare_envelope_to_git_commit)
             .collect())
     }
 
@@ -875,11 +883,7 @@ impl GitHubOperations for GitHubClient {
     }
 
     #[instrument(skip(self))]
-    async fn get_installation_id_for_repo(
-        &self,
-        owner: &str,
-        repo: &str,
-    ) -> CoreResult<u64> {
+    async fn get_installation_id_for_repo(&self, owner: &str, repo: &str) -> CoreResult<u64> {
         info!(owner, repo, "Looking up installation ID for repository");
         let path = format!("/repos/{owner}/{repo}/installation");
         let response = self
@@ -888,14 +892,12 @@ impl GitHubOperations for GitHubClient {
             .await
             .map_err(map_sdk_error)?;
         let body: serde_json::Value = response.json().await.map_err(CoreError::github)?;
-        body["id"]
-            .as_u64()
-            .ok_or_else(|| CoreError::GitHub {
-                source: Box::new(std::io::Error::other(
-                    "installation lookup response missing 'id' field",
-                )),
-                context: None,
-            })
+        body["id"].as_u64().ok_or_else(|| CoreError::GitHub {
+            source: Box::new(std::io::Error::other(
+                "installation lookup response missing 'id' field",
+            )),
+            context: None,
+        })
     }
 
     fn scoped_to(&self, installation_id: u64) -> Self {
@@ -910,9 +912,94 @@ impl GitHubOperations for GitHubClient {
 // Type conversion utilities
 // ============================================================================
 
-// Note: Placeholder for when SDK has commit support
-// Currently SDK's Tag type only has { sha, url } not full commit details
-#[allow(dead_code)]
+// Local types for GitHub compare API response deserialization.
+//
+// The SDK's `Comparison` / `FullCommit` structs require `comment_count` at the
+// commit-envelope level, but GitHub's REST API does not include that field
+// there (it places it inside the nested `commit` object and returns
+// `comments_url` at the envelope level instead).  Deserialising the real
+// GitHub response with the SDK types therefore fails at runtime.
+//
+// These private types map exactly to what GitHub actually returns.
+
+#[derive(serde::Deserialize)]
+struct CompareApiResponse {
+    commits: Vec<CompareCommitEnvelope>,
+}
+
+#[derive(serde::Deserialize)]
+struct CompareCommitEnvelope {
+    sha: String,
+    commit: CompareCommitDetails,
+    /// GitHub user record for the author (nullable — absent when the commit
+    /// email doesn't match any GitHub account).
+    author: Option<CompareGitHubUser>,
+    /// GitHub user record for the committer (same nullability rules).
+    committer: Option<CompareGitHubUser>,
+    #[serde(default)]
+    parents: Vec<CompareCommitParent>,
+}
+
+#[derive(serde::Deserialize)]
+struct CompareCommitDetails {
+    message: String,
+    author: CompareGitSignature,
+    committer: CompareGitSignature,
+}
+
+#[derive(serde::Deserialize)]
+struct CompareGitSignature {
+    name: String,
+    email: String,
+    date: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(serde::Deserialize)]
+struct CompareGitHubUser {
+    login: String,
+}
+
+#[derive(serde::Deserialize)]
+struct CompareCommitParent {
+    sha: String,
+}
+
+/// Convert a raw GitHub compare-API commit envelope into the core `GitCommit` type.
+fn compare_envelope_to_git_commit(commit: CompareCommitEnvelope) -> GitCommit {
+    let message = commit.commit.message.clone();
+    let subject = message.lines().next().unwrap_or("").to_string();
+    let body_start: String = message.lines().skip(1).collect::<Vec<&str>>().join("\n");
+    let body = {
+        let trimmed = body_start.trim_start_matches('\n');
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    };
+
+    GitCommit {
+        sha: commit.sha,
+        author: GitOpsUser {
+            name: commit.commit.author.name,
+            email: commit.commit.author.email,
+            username: commit.author.map(|u| u.login),
+        },
+        committer: GitOpsUser {
+            name: commit.commit.committer.name,
+            email: commit.commit.committer.email,
+            username: commit.committer.map(|u| u.login),
+        },
+        author_date: commit.commit.author.date,
+        commit_date: commit.commit.committer.date,
+        message,
+        subject,
+        body,
+        parents: commit.parents.into_iter().map(|p| p.sha).collect(),
+        files: vec![],
+    }
+}
+
 fn convert_sdk_commit_to_git_commit(commit: github_bot_sdk::client::FullCommit) -> GitCommit {
     let message = commit.commit.message.clone();
     let subject = message.lines().next().unwrap_or("").to_string();
