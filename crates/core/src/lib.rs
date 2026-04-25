@@ -311,11 +311,14 @@ where
             changelog_header: "## Changelog".to_string(),
         };
 
-        match ReleaseAutomator::new(config, &self.github_operations.scoped_to(
-            self.resolve_installation_id(owner, repo).await?,
-        ))
-            .automate(owner, repo, event, correlation_id)
-            .await
+        match ReleaseAutomator::new(
+            config,
+            &self
+                .github_operations
+                .scoped_to(self.resolve_installation_id(owner, repo).await?),
+        )
+        .automate(owner, repo, event, correlation_id)
+        .await
         {
             Ok(result) => {
                 tracing::info!(result = ?result, "Release automation completed");
@@ -349,11 +352,14 @@ where
             allow_override: repo_config.versioning.allow_override,
         };
 
-        CommentCommandProcessor::new(config, &self.github_operations.scoped_to(
-            self.resolve_installation_id(owner, repo).await?,
-        ))
-            .process(event)
-            .await
+        CommentCommandProcessor::new(
+            config,
+            &self
+                .github_operations
+                .scoped_to(self.resolve_installation_id(owner, repo).await?),
+        )
+        .process(event)
+        .await
     }
 }
 
@@ -642,11 +648,7 @@ where
     ///
     /// Calls the GitHub App API to look up the installation ID for the given
     /// repository.
-    async fn resolve_installation_id(
-        &self,
-        owner: &str,
-        repo: &str,
-    ) -> CoreResult<u64> {
+    async fn resolve_installation_id(&self, owner: &str, repo: &str) -> CoreResult<u64> {
         self.github_operations
             .get_installation_id_for_repo(owner, repo)
             .await
@@ -724,9 +726,7 @@ where
             })?
             .to_string();
 
-        let installation_id = self
-            .resolve_installation_id(owner, repo)
-            .await?;
+        let installation_id = self.resolve_installation_id(owner, repo).await?;
 
         let MergeCalcResult {
             calc_result,
@@ -775,6 +775,7 @@ where
             self.process_release_pr_merged(
                 owner,
                 repo,
+                installation_id,
                 correlation_id,
                 &orchestrator,
                 &calc_result.next_version,
@@ -787,6 +788,7 @@ where
             self.process_feature_pr_merged(
                 owner,
                 repo,
+                installation_id,
                 merged_pr_number,
                 correlation_id,
                 &orchestrator,
@@ -819,8 +821,7 @@ where
 
         let scoped_github = self.github_operations.scoped_to(installation_id);
         let current_version =
-            versioning::resolve_current_version(&scoped_github, owner, repo, false)
-                .await?;
+            versioning::resolve_current_version(&scoped_github, owner, repo, false).await?;
 
         let ctx = VersionContext {
             base_ref: current_version.as_ref().map(|v| format!("v{v}")),
@@ -848,7 +849,9 @@ where
         // Scope the calculator to the resolved installation before calling it,
         // keeping authentication concerns out of VersionContext.
         let scoped_calc = self.version_calculator.scoped_to(installation_id);
-        let calc_result = scoped_calc.calculate_version(ctx, strategy, options).await?;
+        let calc_result = scoped_calc
+            .calculate_version(ctx, strategy, options)
+            .await?;
 
         let changelog = format_changelog_for_release(&calc_result.changelog_entries);
 
@@ -864,11 +867,12 @@ where
     ///
     /// Orchestrates the next release cycle and clears stale bump-override labels
     /// from open feature PRs that were scoped to the completed release.
-    #[allow(clippy::too_many_arguments)] // owner/repo/correlation/orchestrator/version/changelog/branch/sha is the minimal surface
+    #[allow(clippy::too_many_arguments)] // owner/repo/installation_id/correlation/orchestrator/version/changelog/branch/sha is the minimal surface
     async fn process_release_pr_merged(
         &self,
         owner: &str,
         repo: &str,
+        installation_id: u64,
         correlation_id: &str,
         orchestrator: &release_orchestrator::ReleaseOrchestrator<'_, G>,
         version: &versioning::SemanticVersion,
@@ -899,8 +903,13 @@ where
 
         // After a release is published, clear stale rr:override-* labels from
         // any open feature PRs. Overrides were scoped to this release cycle.
-        self.clear_stale_override_labels_after_release(owner, repo, correlation_id)
-            .await;
+        self.clear_stale_override_labels_after_release(
+            owner,
+            repo,
+            installation_id,
+            correlation_id,
+        )
+        .await;
 
         Ok(orch_result)
     }
@@ -910,21 +919,22 @@ where
         &self,
         owner: &str,
         repo: &str,
+        installation_id: u64,
         correlation_id: &str,
     ) {
         use comment_command_processor::ALL_OVERRIDE_LABELS;
 
+        let scoped_github = self.github_operations.scoped_to(installation_id);
+
         for &label_name in ALL_OVERRIDE_LABELS {
             let query = format!("is:open label:{label_name}");
-            match self
-                .github_operations
+            match scoped_github
                 .search_pull_requests(owner, repo, &query)
                 .await
             {
                 Ok(stale_prs) => {
                     for stale_pr in stale_prs {
-                        if let Err(e) = self
-                            .github_operations
+                        if let Err(e) = scoped_github
                             .remove_label(owner, repo, stale_pr.number, label_name)
                             .await
                         {
@@ -946,8 +956,7 @@ where
                              a minimum bump for the next release, please re-post your \
                              `!release` command."
                         );
-                        if let Err(e) = self
-                            .github_operations
+                        if let Err(e) = scoped_github
                             .create_issue_comment(owner, repo, stale_pr.number, &cleanup_body)
                             .await
                         {
@@ -977,11 +986,12 @@ where
     /// Applies any bump-floor override from the merged PR's labels, orchestrates
     /// the release PR, posts an audit comment if the floor was applied, and
     /// removes the consumed override labels.
-    #[allow(clippy::too_many_arguments)] // owner/repo/pr_num/correlation/orchestrator/current/calc/changelog/branch/sha is minimal
+    #[allow(clippy::too_many_arguments)] // owner/repo/installation_id/pr_num/correlation/orchestrator/current/calc/changelog/branch/sha is minimal
     async fn process_feature_pr_merged(
         &self,
         owner: &str,
         repo: &str,
+        installation_id: u64,
         merged_pr_number: u64,
         correlation_id: &str,
         orchestrator: &release_orchestrator::ReleaseOrchestrator<'_, G>,
@@ -996,10 +1006,12 @@ where
         };
         use versioning::BumpKind;
 
+        let scoped_github = self.github_operations.scoped_to(installation_id);
+
         // Read any rr:override-* label from the merged PR and apply it as a
         // minimum-bump floor before calling the orchestrator.
         let labels = if merged_pr_number > 0 {
-            self.github_operations
+            scoped_github
                 .list_pr_labels(owner, repo, merged_pr_number)
                 .await?
         } else {
@@ -1061,6 +1073,7 @@ where
                 self.post_bump_floor_audit_comment(
                     owner,
                     repo,
+                    installation_id,
                     merged_pr_number,
                     correlation_id,
                     &orch_result,
@@ -1077,8 +1090,7 @@ where
         // unconditionally to clean up any label applied by `!release` commands.
         if floor_kind.is_some() {
             for &label in ALL_OVERRIDE_LABELS {
-                if let Err(e) = self
-                    .github_operations
+                if let Err(e) = scoped_github
                     .remove_label(owner, repo, merged_pr_number, label)
                     .await
                 {
@@ -1097,11 +1109,12 @@ where
     }
 
     /// Post an audit comment on the release PR explaining a bump-floor override.
-    #[allow(clippy::too_many_arguments)] // audit context requires all 8 data points; no good grouping
+    #[allow(clippy::too_many_arguments)] // audit context requires all 9 data points; no good grouping
     async fn post_bump_floor_audit_comment(
         &self,
         owner: &str,
         repo: &str,
+        installation_id: u64,
         merged_pr_number: u64,
         correlation_id: &str,
         orch_result: &release_orchestrator::OrchestratorResult,
@@ -1131,8 +1144,8 @@ where
              `{calc_version}` but was raised to `{eff_version}` to satisfy the requested \
              minimum {kind_str} bump.",
         );
-        if let Err(e) = self
-            .github_operations
+        let scoped_github = self.github_operations.scoped_to(installation_id);
+        if let Err(e) = scoped_github
             .create_issue_comment(owner, repo, release_pr, &audit_body)
             .await
         {
