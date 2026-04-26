@@ -72,7 +72,16 @@ impl<G: GitHubOperations> GitHubVersionCalculator<G> {
     }
 
     /// Convert a parsed [`crate::versioning::ConventionalCommit`] to a [`CommitAnalysis`].
-    fn to_commit_analysis(commit: crate::versioning::ConventionalCommit) -> CommitAnalysis {
+    ///
+    /// The `date` and `author` parameters are threaded in from the originating
+    /// [`crate::traits::git_operations::GitCommit`] because [`ConventionalCommit`]
+    /// only carries the SHA and message text — the full commit metadata is
+    /// discarded by the parser.
+    fn to_commit_analysis(
+        commit: crate::versioning::ConventionalCommit,
+        date: chrono::DateTime<Utc>,
+        author: String,
+    ) -> CommitAnalysis {
         let version_bump = if commit.breaking_change {
             TraitVersionBump::Major
         } else if commit.commit_type == "feat" {
@@ -84,9 +93,9 @@ impl<G: GitHubOperations> GitHubVersionCalculator<G> {
         };
 
         CommitAnalysis {
-            author: String::new(),
+            author,
             commit_type: Some(commit.commit_type),
-            date: Utc::now(),
+            date,
             is_breaking: commit.breaking_change,
             message: commit.message,
             metadata: HashMap::new(),
@@ -180,6 +189,13 @@ impl<G: GitHubOperations> GitHubVersionCalculator<G> {
     }
 
     /// Map from core `versioning::VersionBump` to the trait-layer `VersionBump`.
+    ///
+    /// This conversion helper is not yet called by any production code path — the
+    /// trait's `VersionBump` is currently derived directly from
+    /// `ConventionalCommit.breaking_change` / `commit_type` in
+    /// [`to_commit_analysis`].  It is retained here because future refactors may
+    /// need to convert an already-computed `versioning::VersionBump` (e.g., when
+    /// integrating with `DefaultVersionCalculator` output) into the trait type.
     #[allow(dead_code)]
     fn local_to_trait_bump(bump: &crate::versioning::VersionBump) -> TraitVersionBump {
         match bump {
@@ -212,7 +228,10 @@ impl<G: GitHubOperations + 'static> VersionCalculatorTrait for GitHubVersionCalc
             "Calculating version via GitHub API",
         );
 
-        let raw_commits: Vec<(String, String)> = if let Some(ref base) = context.base_ref {
+        let raw_commits: Vec<(String, String)>;
+        let mut sha_to_meta: HashMap<String, (chrono::DateTime<Utc>, String)> = HashMap::new();
+
+        if let Some(ref base) = context.base_ref {
             let commits = self
                 .github_operations
                 .get_commits_between(
@@ -227,17 +246,28 @@ impl<G: GitHubOperations + 'static> VersionCalculatorTrait for GitHubVersionCalc
                 commit_count = commits.len(),
                 "Fetched commits between refs via GitHub API"
             );
-            commits.into_iter().map(|c| (c.sha, c.subject)).collect()
+            // Build a lookup table keyed by SHA so that to_commit_analysis can
+            // populate the date and author fields from the original GitCommit
+            // rather than falling back to Utc::now() / empty string.
+            for c in &commits {
+                sha_to_meta.insert(c.sha.clone(), (c.author_date, c.author.name.clone()));
+            }
+            raw_commits = commits.into_iter().map(|c| (c.sha, c.subject)).collect();
         } else {
             // No base ref — first release, no prior tag to compare against.
             debug!("No base_ref; skipping commit analysis for first release");
-            Vec::new()
+            raw_commits = Vec::new();
         };
 
         let conventional = ConventionalCalculator::parse_conventional_commits(&raw_commits);
         let analyses: Vec<CommitAnalysis> = conventional
             .into_iter()
-            .map(Self::to_commit_analysis)
+            .map(|c| {
+                let (date, author) = sha_to_meta
+                    .remove(&c.sha)
+                    .unwrap_or_else(|| (Utc::now(), String::new()));
+                Self::to_commit_analysis(c, date, author)
+            })
             .collect();
 
         let bump = Self::highest_bump(&analyses);
@@ -277,10 +307,12 @@ impl<G: GitHubOperations + 'static> VersionCalculatorTrait for GitHubVersionCalc
                 .await
                 .map_err(|e| CoreError::versioning(format!("Failed to fetch commit {sha}: {e}")))?;
 
+            let date = commit.author_date;
+            let author = commit.author.name.clone();
             let raw = vec![(commit.sha.clone(), commit.subject.clone())];
             let parsed = ConventionalCalculator::parse_conventional_commits(&raw);
             for c in parsed {
-                analyses.push(Self::to_commit_analysis(c));
+                analyses.push(Self::to_commit_analysis(c, date, author.clone()));
             }
         }
 
@@ -381,7 +413,10 @@ impl<G: GitHubOperations + 'static> VersionCalculatorTrait for GitHubVersionCalc
 
         let raw = vec![("unknown".to_string(), commit_message.to_string())];
         let parsed = ConventionalCalculator::parse_conventional_commits(&raw);
-        Ok(parsed.into_iter().next().map(Self::to_commit_analysis))
+        Ok(parsed
+            .into_iter()
+            .next()
+            .map(|c| Self::to_commit_analysis(c, Utc::now(), String::new())))
     }
 
     /// Apply a version bump to an existing version.

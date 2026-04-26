@@ -271,7 +271,16 @@ pub fn convert_envelope(
         .get("installation")
         .and_then(|i| i.get("id"))
         .and_then(serde_json::Value::as_u64)
-        .unwrap_or(0);
+        .unwrap_or_else(|| {
+            warn!(
+                event_id = %envelope.event_id,
+                event_type = %envelope.event_type,
+                "Webhook payload missing installation.id — \
+                 this may indicate an unsupported event type or a misconfigured webhook. \
+                 API calls will fail with auth errors if this event requires an installation token.",
+            );
+            0
+        });
 
     Ok(ProcessingEvent {
         event_id: envelope.event_id.to_string(),

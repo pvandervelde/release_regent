@@ -269,8 +269,8 @@ fn setup_logging() {
 /// # Errors
 ///
 /// Returns an error if:
-/// - Any of `GITHUB_WEBHOOK_SECRET`, `GITHUB_APP_ID`, `GITHUB_PRIVATE_KEY`, or
-///   `GITHUB_INSTALLATION_ID` is absent from the environment.
+/// - Any of `GITHUB_WEBHOOK_SECRET`, `GITHUB_APP_ID`, or `GITHUB_PRIVATE_KEY` is absent from the
+///   environment. (`GITHUB_INSTALLATION_ID` is resolved per-event from the webhook payload.)
 /// - The TCP listener cannot bind to the configured address.
 /// - The Axum server exits with an error.
 #[tokio::main]

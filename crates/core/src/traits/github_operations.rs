@@ -356,6 +356,12 @@ pub trait GitHubOperations: GitOperations + Send + Sync {
     /// - `per_page`: Number of PRs per page, max 100 (optional)
     /// - `page`: Page number, 1-based (optional)
     ///
+    /// # Note on pagination
+    ///
+    /// Implementations may ignore `per_page` and `page` and instead return a
+    /// complete, fully-paginated result set in a single call.  Callers should
+    /// not rely on these parameters to page through results themselves.
+    ///
     /// # Returns
     /// List of pull requests matching the filters
     ///
@@ -434,8 +440,14 @@ pub trait GitHubOperations: GitOperations + Send + Sync {
     /// Supports a subset of GitHub search qualifiers:
     /// - `is:open` / `is:closed` / `is:merged` — filter by state
     /// - `head:BRANCH` or `head:PREFIX*` — filter by head branch (glob prefix with `*`)
-    /// - `base:BRANCH` — filter by exact base branch name
-    /// - `label:NAME` — filter by label name (exact match)
+    ///
+    /// # Note on supported qualifiers
+    ///
+    /// The `label:NAME` qualifier documented here is **not yet implemented** in
+    /// the current `GitHubClient` implementation.  Passing `label:NAME` in the
+    /// query will silently return results without filtering by label.  Track the
+    /// implementation gap and add label-based client-side filtering before
+    /// relying on this qualifier in production callers.
     ///
     /// # Parameters
     /// - `owner`: Repository owner name
@@ -516,11 +528,7 @@ pub trait GitHubOperations: GitOperations + Send + Sync {
     ///
     /// Returns [`CoreError::GitHub`] if the API call fails or if the App is not
     /// installed on the repository.
-    async fn get_installation_id_for_repo(
-        &self,
-        owner: &str,
-        repo: &str,
-    ) -> CoreResult<u64>;
+    async fn get_installation_id_for_repo(&self, owner: &str, repo: &str) -> CoreResult<u64>;
 
     /// Create or update a file at the given path on a branch.
     ///

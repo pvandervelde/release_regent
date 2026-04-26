@@ -211,6 +211,26 @@ impl GitOperations for GitHubClient {
             .await
             .map_err(|e| CoreError::network(format!("GitHub HTTP client error: {e}")))?;
 
+        // The GitHub compare endpoint returns at most 250 commits. When the
+        // range spans more than 250 commits the response is silently truncated.
+        // Emit a warning so operators can identify that version-bump and
+        // changelog results may be incomplete.
+        if comparison.ahead_by > comparison.commits.len() {
+            warn!(
+                owner,
+                repo,
+                base,
+                head,
+                ahead_by = comparison.ahead_by,
+                returned = comparison.commits.len(),
+                "GitHub compare API returned only {} of {} commits (250-commit limit). \
+                 Version bump and changelog calculations may be incomplete. \
+                 Consider paginating via /commits if full history is required.",
+                comparison.commits.len(),
+                comparison.ahead_by,
+            );
+        }
+
         Ok(comparison
             .commits
             .into_iter()
@@ -962,7 +982,7 @@ impl GitHubOperations for GitHubClient {
             "/repos/{owner}/{repo}/contents/{}",
             urlencoding_encode(path)
         );
-        let get_url_with_ref = format!("{get_path}?ref={branch}");
+        let get_url_with_ref = format!("{get_path}?ref={}", urlencoding_encode_query_value(branch));
 
         let existing_sha: Option<String> = match installation.get(&get_url_with_ref).await {
             Ok(resp) => {
@@ -1054,6 +1074,13 @@ impl GitHubOperations for GitHubClient {
 #[derive(serde::Deserialize)]
 struct CompareApiResponse {
     commits: Vec<CompareCommitEnvelope>,
+    /// Number of commits that `head` is ahead of `base`.
+    ///
+    /// When this value is greater than `commits.len()` (which is capped at 250
+    /// by the GitHub API), the commit list is truncated and callers will operate
+    /// on an incomplete set.
+    #[serde(default)]
+    ahead_by: usize,
 }
 
 #[derive(serde::Deserialize)]
@@ -1161,6 +1188,26 @@ fn urlencoding_encode(path: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join("/")
+}
+
+/// Percent-encode a query-string value for use in a GitHub API URL.
+///
+/// Encodes all bytes that are not RFC 3986 unreserved characters, including
+/// `/` (unlike [`urlencoding_encode`] which preserves slashes as path
+/// separators).  This is required for values placed in query parameters such
+/// as `?ref=<branch>` where a branch name like `release/v1.2.3` would
+/// otherwise be misinterpreted as a URL path component.
+fn urlencoding_encode_query_value(value: &str) -> String {
+    value
+        .bytes()
+        .flat_map(|b| {
+            if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+                vec![b as char]
+            } else {
+                format!("%{b:02X}").chars().collect::<Vec<char>>()
+            }
+        })
+        .collect()
 }
 
 /// Parse the `Link` response header and return the page number from the
