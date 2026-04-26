@@ -123,6 +123,50 @@ fn test_version_bump_application() {
 }
 
 #[test]
+fn test_version_bump_major_on_pre_one_zero_bumps_minor() {
+    // When major == 0 a breaking-change bump should increment minor, not major,
+    // so the project stays in pre-1.0 development (semver §4 / §11).
+    let pre_release_base = SemanticVersion {
+        major: 0,
+        minor: 2,
+        patch: 0,
+        prerelease: None,
+        build: None,
+    };
+
+    let result = VersionCalculator::apply_version_bump(&pre_release_base, &VersionBump::Major);
+    assert_eq!(result.major, 0, "major must stay 0 in pre-1.0 mode");
+    assert_eq!(result.minor, 3, "minor must be incremented for breaking change on 0.x");
+    assert_eq!(result.patch, 0);
+
+    // From 0.1.0 (the default initial version when no tags exist)
+    let initial = SemanticVersion { major: 0, minor: 1, patch: 0, prerelease: None, build: None };
+    let from_initial = VersionCalculator::apply_version_bump(&initial, &VersionBump::Major);
+    assert_eq!(from_initial.major, 0);
+    assert_eq!(from_initial.minor, 2, "0.1.0 + breaking change -> 0.2.0, not 1.0.0");
+    assert_eq!(from_initial.patch, 0);
+}
+
+#[test]
+fn test_initial_version_with_breaking_change_stays_pre_one_zero() {
+    // No prior tag → starts from 0.1.0; a breaking-change commit must yield 0.2.0.
+    let calculator = VersionCalculator::new(None);
+    let commits = vec![ConventionalCommit {
+        commit_type: "feat".to_string(),
+        scope: None,
+        description: "rename endpoint".to_string(),
+        breaking_change: true,
+        message: "feat!: rename endpoint".to_string(),
+        sha: "deadbeef".to_string(),
+    }];
+
+    let version = calculator.calculate_next_version(&commits).unwrap();
+    assert_eq!(version.major, 0, "should stay on 0.x for initial breaking change");
+    assert_eq!(version.minor, 2, "0.1.0 + breaking change -> 0.2.0");
+    assert_eq!(version.patch, 0);
+}
+
+#[test]
 fn test_version_bump_determination() {
     // Test breaking change
     let breaking_commits = vec![ConventionalCommit {

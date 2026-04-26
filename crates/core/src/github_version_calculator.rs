@@ -16,9 +16,7 @@ use crate::{
             VersionCalculator as VersionCalculatorTrait, VersionContext, VersioningStrategy,
         },
     },
-    versioning::{
-        SemanticVersion, VersionCalculator as ConventionalCalculator,
-    },
+    versioning::{SemanticVersion, VersionCalculator as ConventionalCalculator},
     CoreError, CoreResult,
 };
 use async_trait::async_trait;
@@ -134,6 +132,11 @@ impl<G: GitHubOperations> GitHubVersionCalculator<G> {
     }
 
     /// Apply a version bump to a semantic version, returning the bumped version.
+    ///
+    /// When `major == 0` (pre-1.0 development), a `Major` bump is treated as a
+    /// `Minor` bump. Semver 2.0 allows breaking changes within major version 0 to
+    /// only advance the minor component so that projects stay on `0.x` until they
+    /// deliberately ship their first stable `1.0.0` release.
     fn bump_version(
         current: SemanticVersion,
         bump: &TraitVersionBump,
@@ -141,6 +144,13 @@ impl<G: GitHubOperations> GitHubVersionCalculator<G> {
         build: Option<String>,
     ) -> CoreResult<SemanticVersion> {
         let mut next = match bump {
+            TraitVersionBump::Major if current.major == 0 => SemanticVersion {
+                major: 0,
+                minor: current.minor + 1,
+                patch: 0,
+                prerelease: None,
+                build: None,
+            },
             TraitVersionBump::Major => SemanticVersion {
                 major: current.major + 1,
                 minor: 0,
