@@ -4,6 +4,7 @@
 //! using the github-bot-sdk library for GitHub API interactions.
 
 use async_trait::async_trait;
+use base64::Engine as _;
 use github_bot_sdk::{
     auth::{
         cache::InMemoryTokenCache, tokens::GitHubAppAuth, AuthenticationProvider, InstallationId,
@@ -62,6 +63,12 @@ pub struct GitHubClient {
 impl GitHubClient {
     /// Create a new GitHub client with authentication provider.
     ///
+    /// `installation_id` is the GitHub App installation identifier extracted
+    /// from the incoming webhook payload (`installation.id`).  Pass `0` when
+    /// constructing the client at startup before any webhook is received; call
+    /// [`scoped_to`](GitHubClient::scoped_to) to obtain a per-request client
+    /// with the correct installation ID before making any API calls.
+    ///
     /// # Errors
     ///
     /// Returns [`CoreError::GitHub`] if the underlying SDK client cannot be built.
@@ -91,6 +98,10 @@ impl GitHubClient {
 
     /// Create a new GitHub client directly from [`AuthConfig`].
     ///
+    /// The client is constructed without a bound installation ID (ID `0`).
+    /// Call [`scoped_to`](GitHubClient::scoped_to) with the installation ID
+    /// from each incoming webhook before making any API calls.
+    ///
     /// This convenience constructor wires together all required SDK components:
     /// - [`auth::EnvSecretProvider`] for secret retrieval
     /// - [`auth::DefaultJwtSigner`] for RS256 JWT signing
@@ -102,7 +113,7 @@ impl GitHubClient {
     /// Returns an error if the private key in `auth_config` is malformed or
     /// if the underlying SDK client cannot be initialised.
     #[allow(clippy::result_large_err)]
-    pub fn from_config(auth_config: AuthConfig, installation_id: u64) -> CoreResult<Self> {
+    pub fn from_config(auth_config: AuthConfig) -> CoreResult<Self> {
         let secret_provider =
             auth::EnvSecretProvider::new(auth_config).map_err(|e| CoreError::GitHub {
                 source: Box::new(e),
@@ -122,7 +133,9 @@ impl GitHubClient {
             auth_config_sdk,
         );
 
-        Self::new(auth_provider, installation_id)
+        // Installation ID 0 is a placeholder; the real ID is supplied per-request
+        // via `scoped_to()` after extracting it from the webhook payload.
+        Self::new(auth_provider, 0)
     }
 
     /// Get the SDK client for direct access if needed
@@ -184,16 +197,44 @@ impl GitOperations for GitHubClient {
     ) -> CoreResult<Vec<GitCommit>> {
         info!(owner, repo, base, head, "Getting commits between");
 
+        // Use the raw HTTP endpoint directly instead of the SDK helper.
+        // The SDK's `compare_commits` deserialises the response into `FullCommit`
+        // which has a required `comment_count: u32` field.  GitHub does not
+        // include that field at the commit envelope level (it returns
+        // `comments_url` there instead), so serde rejects the response with
+        // "error decoding response body".
         let installation = self.installation().await?;
-        let comparison = installation
-            .compare_commits(owner, repo, base, head)
+        let path = format!("/repos/{owner}/{repo}/compare/{base}...{head}");
+        let response = installation.get(&path).await.map_err(map_sdk_error)?;
+        let comparison: CompareApiResponse = response
+            .json()
             .await
-            .map_err(map_sdk_error)?;
+            .map_err(|e| CoreError::network(format!("GitHub HTTP client error: {e}")))?;
+
+        // The GitHub compare endpoint returns at most 250 commits. When the
+        // range spans more than 250 commits the response is silently truncated.
+        // Emit a warning so operators can identify that version-bump and
+        // changelog results may be incomplete.
+        if comparison.ahead_by > comparison.commits.len() {
+            warn!(
+                owner,
+                repo,
+                base,
+                head,
+                ahead_by = comparison.ahead_by,
+                returned = comparison.commits.len(),
+                "GitHub compare API returned only {} of {} commits (250-commit limit). \
+                 Version bump and changelog calculations may be incomplete. \
+                 Consider paginating via /commits if full history is required.",
+                comparison.commits.len(),
+                comparison.ahead_by,
+            );
+        }
 
         Ok(comparison
             .commits
             .into_iter()
-            .map(convert_sdk_commit_to_git_commit)
+            .map(compare_envelope_to_git_commit)
             .collect())
     }
 
@@ -539,39 +580,55 @@ impl GitHubOperations for GitHubClient {
             "Listing pull requests"
         );
 
+        // Use the raw HTTP endpoint instead of the SDK helper.
+        // The SDK's `PullRequest.head.repo` / `.base.repo` fields are required
+        // (non-Option), but GitHub returns `null` when a fork's repository has
+        // been deleted, causing "error decoding response body" at runtime.
         let state_str = state.unwrap_or("open");
         let installation = self.installation().await?;
         let mut all_prs: Vec<PullRequest> = Vec::new();
         let mut page: Option<u32> = None;
 
         loop {
-            let response = installation
-                .list_pull_requests(owner, repo, Some(state_str), page)
+            let path = match page {
+                Some(p) => {
+                    format!("/repos/{owner}/{repo}/pulls?state={state_str}&per_page=100&page={p}")
+                }
+                None => format!("/repos/{owner}/{repo}/pulls?state={state_str}&per_page=100"),
+            };
+
+            let response = installation.get(&path).await.map_err(map_sdk_error)?;
+
+            let next_page = response
+                .headers()
+                .get("Link")
+                .and_then(|h| h.to_str().ok())
+                .and_then(parse_next_page_from_link_header);
+
+            let items: Vec<ListPrItem> = response
+                .json()
                 .await
-                .map_err(map_sdk_error)?;
+                .map_err(|e| CoreError::network(format!("GitHub HTTP client error: {e}")))?;
 
-            let has_next = response.has_next();
-            let next_page_num = response.next_page_number();
-
-            for sdk_pr in response.items {
+            for pr_item in items {
                 // Client-side head-branch prefix filter.
                 if let Some(prefix) = head {
-                    if !sdk_pr.head.branch_ref.starts_with(prefix) {
+                    if !pr_item.head.branch_ref.starts_with(prefix) {
                         continue;
                     }
                 }
                 // Client-side base-branch exact-match filter.
                 if let Some(base_branch) = base {
-                    if sdk_pr.base.branch_ref != base_branch {
+                    if pr_item.base.branch_ref != base_branch {
                         continue;
                     }
                 }
-                all_prs.push(convert_sdk_pr_to_release_regent_pr(sdk_pr)?);
+                all_prs.push(list_pr_item_to_release_regent_pr(pr_item));
             }
 
-            match (has_next, next_page_num) {
-                (true, Some(next)) => page = Some(next),
-                _ => break,
+            match next_page {
+                Some(next) => page = Some(next),
+                None => break,
             }
         }
 
@@ -610,32 +667,46 @@ impl GitHubOperations for GitHubClient {
             .split_whitespace()
             .find_map(|token| token.strip_prefix("head:").map(|p| p.trim_end_matches('*')));
 
+        // Use the raw HTTP endpoint instead of the SDK helper.
+        // See the comment in list_pull_requests for why the SDK is bypassed.
         let installation = self.installation().await?;
         let mut all_prs: Vec<PullRequest> = Vec::new();
         let mut page: Option<u32> = None;
 
         loop {
-            let response = installation
-                .list_pull_requests(owner, repo, Some(state), page)
+            let path = match page {
+                Some(p) => {
+                    format!("/repos/{owner}/{repo}/pulls?state={state}&per_page=100&page={p}")
+                }
+                None => format!("/repos/{owner}/{repo}/pulls?state={state}&per_page=100"),
+            };
+
+            let response = installation.get(&path).await.map_err(map_sdk_error)?;
+
+            let next_page = response
+                .headers()
+                .get("Link")
+                .and_then(|h| h.to_str().ok())
+                .and_then(parse_next_page_from_link_header);
+
+            let items: Vec<ListPrItem> = response
+                .json()
                 .await
-                .map_err(map_sdk_error)?;
+                .map_err(|e| CoreError::network(format!("GitHub HTTP client error: {e}")))?;
 
-            let has_next = response.has_next();
-            let next_page_num = response.next_page_number();
-
-            for sdk_pr in response.items {
+            for pr_item in items {
                 // Filter by head branch prefix when specified.
                 if let Some(prefix) = head_prefix {
-                    if !sdk_pr.head.branch_ref.starts_with(prefix) {
+                    if !pr_item.head.branch_ref.starts_with(prefix) {
                         continue;
                     }
                 }
-                all_prs.push(convert_sdk_pr_to_release_regent_pr(sdk_pr)?);
+                all_prs.push(list_pr_item_to_release_regent_pr(pr_item));
             }
 
-            match (has_next, next_page_num) {
-                (true, Some(next)) => page = Some(next),
-                _ => break,
+            match next_page {
+                Some(next) => page = Some(next),
+                None => break,
             }
         }
 
@@ -694,8 +765,17 @@ impl GitHubOperations for GitHubClient {
             .create_branch(owner, repo, branch_name, sha)
             .await
             .map_err(|e| {
-                // HTTP 422 from GitHub means "Reference already exists"
-                if let github_bot_sdk::error::ApiError::HttpError { status: 422, .. } = &e {
+                // The SDK may surface the GitHub 422 "Reference already exists" response
+                // as either ApiError::HttpError { status: 422 } or as ApiError::InvalidRequest
+                // with the raw GitHub JSON body in the message field. Handle both.
+                let is_already_exists = match &e {
+                    github_bot_sdk::error::ApiError::HttpError { status: 422, .. } => true,
+                    github_bot_sdk::error::ApiError::InvalidRequest { message } => {
+                        message.contains("Reference already exists")
+                    }
+                    _ => false,
+                };
+                if is_already_exists {
                     CoreError::conflict(format!("branch '{branch_name}' already exists"))
                 } else {
                     map_sdk_error(e)
@@ -713,6 +793,26 @@ impl GitHubOperations for GitHubClient {
 
         installation
             .delete_git_ref(owner, repo, &format!("heads/{branch_name}"))
+            .await
+            .map_err(map_sdk_error)?;
+
+        Ok(())
+    }
+
+    #[instrument(skip(self))]
+    async fn force_update_branch(
+        &self,
+        owner: &str,
+        repo: &str,
+        branch_name: &str,
+        sha: &str,
+    ) -> CoreResult<()> {
+        info!(owner, repo, branch_name, sha, "Force-resetting branch tip");
+
+        let installation = self.installation().await?;
+
+        installation
+            .update_git_ref(owner, repo, &format!("heads/{branch_name}"), sha, true)
             .await
             .map_err(map_sdk_error)?;
 
@@ -861,15 +961,371 @@ impl GitHubOperations for GitHubClient {
 
         Ok(labels)
     }
+
+    #[instrument(skip(self, content, commit_message))]
+    async fn upsert_file(
+        &self,
+        owner: &str,
+        repo: &str,
+        path: &str,
+        commit_message: &str,
+        content: &str,
+        branch: &str,
+    ) -> CoreResult<()> {
+        info!(owner, repo, path, branch, "Upserting file on branch");
+
+        let installation = self.installation().await?;
+
+        // GET the existing file to retrieve its blob SHA (required for updates).
+        // A 404 means the file doesn't exist yet, which is fine for creation.
+        let get_path = format!(
+            "/repos/{owner}/{repo}/contents/{}",
+            urlencoding_encode(path)
+        );
+        let get_url_with_ref = format!("{get_path}?ref={}", urlencoding_encode_query_value(branch));
+
+        let existing_sha: Option<String> = match installation.get(&get_url_with_ref).await {
+            Ok(resp) => {
+                let status = resp.status().as_u16();
+                if status == 200 {
+                    let json: serde_json::Value = resp.json().await.map_err(CoreError::github)?;
+                    json["sha"].as_str().map(str::to_owned)
+                } else if status == 404 {
+                    None
+                } else {
+                    let body = resp.text().await.unwrap_or_default();
+                    return Err(CoreError::github(std::io::Error::other(format!(
+                        "GET /contents failed with status {status}: {body}"
+                    ))));
+                }
+            }
+            Err(ApiError::NotFound) => None,
+            Err(e) => return Err(map_sdk_error(e)),
+        };
+
+        // Build the PUT request body.
+        let encoded = base64::engine::general_purpose::STANDARD.encode(content.as_bytes());
+        let mut body = serde_json::json!({
+            "message": commit_message,
+            "content": encoded,
+            "branch": branch,
+        });
+        if let Some(sha) = existing_sha {
+            body["sha"] = serde_json::Value::String(sha);
+        }
+
+        let response = installation
+            .put(&get_path, &body)
+            .await
+            .map_err(map_sdk_error)?;
+
+        let status = response.status().as_u16();
+        if !(200..=201).contains(&status) {
+            let resp_body = response.text().await.unwrap_or_default();
+            return Err(CoreError::github(std::io::Error::other(format!(
+                "PUT /contents failed with status {status}: {resp_body}"
+            ))));
+        }
+
+        info!(owner, repo, path, branch, "File upserted successfully");
+        Ok(())
+    }
+
+    #[instrument(skip(self))]
+    async fn get_installation_id_for_repo(&self, owner: &str, repo: &str) -> CoreResult<u64> {
+        info!(owner, repo, "Looking up installation ID for repository");
+        let path = format!("/repos/{owner}/{repo}/installation");
+        let response = self
+            .sdk_client
+            .get_as_app(&path)
+            .await
+            .map_err(map_sdk_error)?;
+        let body: serde_json::Value = response.json().await.map_err(CoreError::github)?;
+        body["id"].as_u64().ok_or_else(|| CoreError::GitHub {
+            source: Box::new(std::io::Error::other(
+                "installation lookup response missing 'id' field",
+            )),
+            context: None,
+        })
+    }
+
+    fn scoped_to(&self, installation_id: u64) -> Self {
+        Self {
+            sdk_client: self.sdk_client.clone(),
+            installation_id: InstallationId::new(installation_id),
+        }
+    }
 }
 
 // ============================================================================
 // Type conversion utilities
 // ============================================================================
 
-// Note: Placeholder for when SDK has commit support
-// Currently SDK's Tag type only has { sha, url } not full commit details
-#[allow(dead_code)]
+// Local types for GitHub compare API response deserialization.
+//
+// The SDK's `Comparison` / `FullCommit` structs require `comment_count` at the
+// commit-envelope level, but GitHub's REST API does not include that field
+// there (it places it inside the nested `commit` object and returns
+// `comments_url` at the envelope level instead).  Deserialising the real
+// GitHub response with the SDK types therefore fails at runtime.
+//
+// These private types map exactly to what GitHub actually returns.
+
+#[derive(serde::Deserialize)]
+struct CompareApiResponse {
+    commits: Vec<CompareCommitEnvelope>,
+    /// Number of commits that `head` is ahead of `base`.
+    ///
+    /// When this value is greater than `commits.len()` (which is capped at 250
+    /// by the GitHub API), the commit list is truncated and callers will operate
+    /// on an incomplete set.
+    #[serde(default)]
+    ahead_by: usize,
+}
+
+#[derive(serde::Deserialize)]
+struct CompareCommitEnvelope {
+    sha: String,
+    commit: CompareCommitDetails,
+    /// GitHub user record for the author (nullable — absent when the commit
+    /// email doesn't match any GitHub account).
+    author: Option<CompareGitHubUser>,
+    /// GitHub user record for the committer (same nullability rules).
+    committer: Option<CompareGitHubUser>,
+    #[serde(default)]
+    parents: Vec<CompareCommitParent>,
+}
+
+#[derive(serde::Deserialize)]
+struct CompareCommitDetails {
+    message: String,
+    author: CompareGitSignature,
+    committer: CompareGitSignature,
+}
+
+#[derive(serde::Deserialize)]
+struct CompareGitSignature {
+    name: String,
+    email: String,
+    date: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(serde::Deserialize)]
+struct CompareGitHubUser {
+    login: String,
+}
+
+#[derive(serde::Deserialize)]
+struct CompareCommitParent {
+    sha: String,
+}
+
+// ── List-PRs API local types ────────────────────────────────────────────────
+//
+// The SDK's `PullRequest` type has `head.repo: PullRequestRepo` (required).
+// GitHub's REST API returns `null` for `head.repo` / `base.repo` when the
+// head repository has been deleted (common with merged or closed forks).
+// Using the SDK type therefore causes "error decoding response body" for any
+// response that contains such a PR.
+//
+// These private types mirror what GitHub actually returns.
+
+#[derive(serde::Deserialize)]
+struct ListPrItem {
+    number: u64,
+    title: String,
+    body: Option<String>,
+    state: String,
+    draft: bool,
+    user: ListPrUser,
+    head: ListPrBranch,
+    base: ListPrBranch,
+    created_at: chrono::DateTime<chrono::Utc>,
+    updated_at: chrono::DateTime<chrono::Utc>,
+    #[serde(default)]
+    merged_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+#[derive(serde::Deserialize)]
+struct ListPrBranch {
+    #[serde(rename = "ref")]
+    branch_ref: String,
+    sha: String,
+    /// `null` when the fork repository has been deleted.
+    repo: Option<ListPrBranchRepo>,
+}
+
+#[derive(serde::Deserialize)]
+struct ListPrBranchRepo {
+    id: u64,
+    name: String,
+    full_name: String,
+}
+
+#[derive(serde::Deserialize)]
+struct ListPrUser {
+    login: String,
+}
+
+/// Percent-encode a file path for use in a GitHub Contents API URL.
+///
+/// Only forward slashes are kept unencoded (they are valid path separators
+/// in the GitHub API).  All other characters that are not unreserved in RFC
+/// 3986 are percent-encoded.
+fn urlencoding_encode(path: &str) -> String {
+    path.split('/')
+        .map(|segment| {
+            segment
+                .bytes()
+                .flat_map(|b| {
+                    if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+                        vec![b as char]
+                    } else {
+                        format!("%{b:02X}").chars().collect::<Vec<char>>()
+                    }
+                })
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Percent-encode a query-string value for use in a GitHub API URL.
+///
+/// Encodes all bytes that are not RFC 3986 unreserved characters, including
+/// `/` (unlike [`urlencoding_encode`] which preserves slashes as path
+/// separators).  This is required for values placed in query parameters such
+/// as `?ref=<branch>` where a branch name like `release/v1.2.3` would
+/// otherwise be misinterpreted as a URL path component.
+fn urlencoding_encode_query_value(value: &str) -> String {
+    value
+        .bytes()
+        .flat_map(|b| {
+            if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+                vec![b as char]
+            } else {
+                format!("%{b:02X}").chars().collect::<Vec<char>>()
+            }
+        })
+        .collect()
+}
+
+/// Parse the `Link` response header and return the page number from the
+/// `rel="next"` URL, if present.
+fn parse_next_page_from_link_header(header_value: &str) -> Option<u32> {
+    for part in header_value.split(',') {
+        let part = part.trim();
+        if part.contains(r#"rel="next""#) {
+            if let (Some(start), Some(end)) = (part.find('<'), part.find('>')) {
+                let url = &part[start + 1..end];
+                for param in url.split('?').nth(1).unwrap_or("").split('&') {
+                    if let Some(val) = param.strip_prefix("page=") {
+                        return val.parse().ok();
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Convert a raw GitHub list-PRs-API item into the core `PullRequest` type.
+fn list_pr_item_to_release_regent_pr(pr: ListPrItem) -> PullRequest {
+    let head_repo = pr.head.repo.as_ref();
+    let base_repo = pr.base.repo.as_ref();
+
+    let head_owner = head_repo
+        .and_then(|r| r.full_name.split('/').next().map(str::to_string))
+        .unwrap_or_default();
+    let base_owner = base_repo
+        .and_then(|r| r.full_name.split('/').next().map(str::to_string))
+        .unwrap_or_default();
+
+    PullRequest {
+        number: pr.number,
+        title: pr.title,
+        body: pr.body,
+        state: pr.state,
+        draft: pr.draft,
+        created_at: pr.created_at,
+        updated_at: pr.updated_at,
+        merged_at: pr.merged_at,
+        user: GitHubUser {
+            name: pr.user.login.clone(),
+            email: format!("{}@users.noreply.github.com", pr.user.login),
+            login: Some(pr.user.login),
+        },
+        head: PullRequestBranch {
+            ref_name: pr.head.branch_ref,
+            sha: pr.head.sha,
+            repo: Repository {
+                id: head_repo.map(|r| r.id).unwrap_or(0),
+                name: head_repo.map(|r| r.name.clone()).unwrap_or_default(),
+                full_name: head_repo.map(|r| r.full_name.clone()).unwrap_or_default(),
+                owner: head_owner,
+                description: None,
+                private: false,
+                default_branch: String::new(),
+                clone_url: String::new(),
+                ssh_url: String::new(),
+                homepage: None,
+            },
+        },
+        base: PullRequestBranch {
+            ref_name: pr.base.branch_ref,
+            sha: pr.base.sha,
+            repo: Repository {
+                id: base_repo.map(|r| r.id).unwrap_or(0),
+                name: base_repo.map(|r| r.name.clone()).unwrap_or_default(),
+                full_name: base_repo.map(|r| r.full_name.clone()).unwrap_or_default(),
+                owner: base_owner,
+                description: None,
+                private: false,
+                default_branch: String::new(),
+                clone_url: String::new(),
+                ssh_url: String::new(),
+                homepage: None,
+            },
+        },
+    }
+}
+
+/// Convert a raw GitHub compare-API commit envelope into the core `GitCommit` type.
+fn compare_envelope_to_git_commit(commit: CompareCommitEnvelope) -> GitCommit {
+    let message = commit.commit.message.clone();
+    let subject = message.lines().next().unwrap_or("").to_string();
+    let body_start: String = message.lines().skip(1).collect::<Vec<&str>>().join("\n");
+    let body = {
+        let trimmed = body_start.trim_start_matches('\n');
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    };
+
+    GitCommit {
+        sha: commit.sha,
+        author: GitOpsUser {
+            name: commit.commit.author.name,
+            email: commit.commit.author.email,
+            username: commit.author.map(|u| u.login),
+        },
+        committer: GitOpsUser {
+            name: commit.commit.committer.name,
+            email: commit.commit.committer.email,
+            username: commit.committer.map(|u| u.login),
+        },
+        author_date: commit.commit.author.date,
+        commit_date: commit.commit.committer.date,
+        message,
+        subject,
+        body,
+        parents: commit.parents.into_iter().map(|p| p.sha).collect(),
+        files: vec![],
+    }
+}
+
 fn convert_sdk_commit_to_git_commit(commit: github_bot_sdk::client::FullCommit) -> GitCommit {
     let message = commit.commit.message.clone();
     let subject = message.lines().next().unwrap_or("").to_string();

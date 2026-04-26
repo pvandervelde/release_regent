@@ -300,6 +300,25 @@ fn apply_version_bump_increments_major_and_resets_minor_patch() {
 }
 
 #[test]
+fn apply_version_bump_major_on_pre_one_zero_bumps_minor_not_major() {
+    // When major == 0, a breaking change must bump minor, not major.
+    let calc = DefaultVersionCalculator::new();
+    let base = SemanticVersion {
+        major: 0,
+        minor: 1,
+        patch: 0,
+        prerelease: None,
+        build: None,
+    };
+    let result = calc.apply_version_bump(base, TraitVersionBump::Major, None, None);
+    assert!(result.is_ok());
+    let next = result.unwrap();
+    assert_eq!(next.major, 0, "major must stay 0 in pre-1.0 mode");
+    assert_eq!(next.minor, 2, "0.1.0 + breaking change -> 0.2.0, not 1.0.0");
+    assert_eq!(next.patch, 0);
+}
+
+#[test]
 fn apply_version_bump_with_none_leaves_version_unchanged() {
     let calc = DefaultVersionCalculator::new();
     let base = SemanticVersion {

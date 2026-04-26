@@ -180,6 +180,34 @@ impl<'a, G: GitHubOperations + Send + Sync> CommentCommandProcessor<'a, G> {
             return Ok(());
         };
 
+        // Parse the command first: if there is no recognised command in the
+        // body there is nothing to do regardless of who posted it.  This
+        // prevents spurious rejection replies to ordinary PR comments and
+        // breaks the feedback loop caused by Release Regent responding to
+        // its own posted comments.
+        let command = parse_comment_command(&comment_body);
+        debug!(
+            event_id = %event.event_id,
+            ?command,
+            commenter_login,
+            "Parsed comment command"
+        );
+        if command == CommentCommand::Unknown {
+            return Ok(());
+        }
+
+        // Ignore comments from bot accounts — including our own — to prevent
+        // feedback loops where a posted reply triggers another webhook that
+        // we then process again.
+        if commenter_login.ends_with("[bot]") {
+            debug!(
+                event_id = %event.event_id,
+                commenter_login,
+                "Ignoring command from bot account"
+            );
+            return Ok(());
+        }
+
         // Only collaborators with write access or above may issue commands.
         let permission = self
             .github
@@ -201,14 +229,10 @@ impl<'a, G: GitHubOperations + Send + Sync> CommentCommandProcessor<'a, G> {
                 .await;
         }
 
-        let command = parse_comment_command(&comment_body);
-        debug!(
-            event_id = %event.event_id,
-            ?command,
-            "Parsed comment command"
-        );
 
         match command {
+            // Unknown is handled above with an early return; this arm is
+            // unreachable but kept to satisfy exhaustiveness.
             CommentCommand::Unknown => Ok(()),
             CommentCommand::ReleaseBump(kind) => {
                 self.handle_release_bump(owner, repo, issue_number, &kind, &event.correlation_id)

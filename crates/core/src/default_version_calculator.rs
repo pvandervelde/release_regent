@@ -410,6 +410,9 @@ impl VersionCalculatorTrait for DefaultVersionCalculator {
     }
 
     /// Apply a version bump to an existing version.
+    ///
+    /// When `major == 0` (pre-1.0 development), a `Major` bump is treated as a
+    /// `Minor` bump so the project stays on `0.x` until it deliberately ships 1.0.0.
     fn apply_version_bump(
         &self,
         current_version: SemanticVersion,
@@ -418,6 +421,13 @@ impl VersionCalculatorTrait for DefaultVersionCalculator {
         build: Option<String>,
     ) -> CoreResult<SemanticVersion> {
         let mut next = match bump_type {
+            TraitVersionBump::Major if current_version.major == 0 => SemanticVersion {
+                major: 0,
+                minor: current_version.minor + 1,
+                patch: 0,
+                prerelease: None,
+                build: None,
+            },
             TraitVersionBump::Major => SemanticVersion {
                 major: current_version.major + 1,
                 minor: 0,
@@ -444,5 +454,10 @@ impl VersionCalculatorTrait for DefaultVersionCalculator {
         next.prerelease = prerelease;
         next.build = build;
         Ok(next)
+    }
+
+    fn scoped_to(&self, _installation_id: u64) -> std::sync::Arc<dyn VersionCalculatorTrait + Send + Sync> {
+        // Local-git calculator is not GitHub-scoped; return a fresh instance.
+        std::sync::Arc::new(DefaultVersionCalculator::new())
     }
 }

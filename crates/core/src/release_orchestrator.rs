@@ -19,8 +19,9 @@
 //! | Yes            | Higher than new         | No-op (never downgrade)   |
 //!
 //! 3. **Idempotency**: Every sub-operation is safe to retry without side effects.
-//!    If a branch already exists the timestamped fallback is used instead of
-//!    failing.
+//!    If the canonical release branch already exists (e.g. from a previous run that
+//!    created the branch but failed before opening the PR), the orchestrator reuses
+//!    it rather than failing.
 //!
 //! ## `ETag` / concurrency note
 //!
@@ -50,7 +51,6 @@ use crate::{
     versioning::SemanticVersion,
     CoreError, CoreResult,
 };
-use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, info, warn};
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -215,7 +215,7 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
                             "Existing PR has same version; merging changelogs"
                         );
                         let pr = self
-                            .update_release_pr(owner, repo, &existing_pr, version, changelog)
+                            .update_release_pr(owner, repo, &existing_pr, version, changelog, base_sha)
                             .await?;
                         Ok(OrchestratorResult::Updated { pr })
                     }
@@ -314,22 +314,40 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
         {
             Ok(()) => branch_name,
             Err(CoreError::Conflict { .. }) => {
-                let fallback = self.make_fallback_branch_name(version);
-                warn!(
-                    original = %branch_name,
-                    fallback = %fallback,
-                    "Branch conflict; retrying with timestamped fallback"
+                // The branch already exists — most likely from a previous run that
+                // created the branch but failed before opening the PR. Reuse it,
+                // but force-reset it to the current base SHA so the PR diff stays
+                // clean (exactly one commit ahead of the base branch).
+                info!(
+                    branch = %branch_name,
+                    "Release branch already exists; reusing it"
                 );
                 self.github
-                    .create_branch(owner, repo, &fallback, base_sha)
+                    .force_update_branch(owner, repo, &branch_name, base_sha)
                     .await?;
-                fallback
+                branch_name
             }
             Err(other) => return Err(other),
         };
 
         let title = self.render_title(version);
         let body = self.render_body(changelog);
+
+        // Commit CHANGELOG.md to the release branch so the PR has a real diff.
+        let changelog_commit_message = format!(
+            "chore(release): update CHANGELOG for {}",
+            version.to_string_with_prefix(true)
+        );
+        self.github
+            .upsert_file(
+                owner,
+                repo,
+                "CHANGELOG.md",
+                &changelog_commit_message,
+                changelog,
+                &actual_branch,
+            )
+            .await?;
 
         let pr = self
             .github
@@ -363,6 +381,7 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
         existing_pr: &PullRequest,
         version: &SemanticVersion,
         new_changelog: &str,
+        base_sha: &str,
     ) -> CoreResult<PullRequest> {
         // Always re-fetch to get the latest body (ETag prep).
         let fresh_pr = self
@@ -392,6 +411,28 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
                 title_update,
                 Some(new_body),
                 None,
+            )
+            .await?;
+
+        // Force-reset the release branch to the latest base SHA so the PR always
+        // shows exactly one commit (the CHANGELOG.md update) on top of main.
+        self.github
+            .force_update_branch(owner, repo, &fresh_pr.head.ref_name, base_sha)
+            .await?;
+
+        // Keep CHANGELOG.md on the release branch in sync with the PR body.
+        let changelog_commit_message = format!(
+            "chore(release): update CHANGELOG for {}",
+            version.to_string_with_prefix(true)
+        );
+        self.github
+            .upsert_file(
+                owner,
+                repo,
+                "CHANGELOG.md",
+                &changelog_commit_message,
+                &merged_changelog,
+                &fresh_pr.head.ref_name,
             )
             .await?;
 
@@ -478,28 +519,21 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
         )
     }
 
-    /// Construct a timestamped fallback branch name used when the canonical
-    /// branch already exists, e.g. `"release/v1.2.3-1711234567"`.
-    pub(crate) fn make_fallback_branch_name(&self, version: &SemanticVersion) -> String {
-        let ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        format!(
-            "{}/{}-{ts}",
-            self.config.branch_prefix,
-            version.to_string_with_prefix(true)
-        )
-    }
-
     // ── Template / body helpers ────────────────────────────────────────────
 
     /// Render the PR title from the configured template.
+    ///
+    /// Supports both `${variable}` (config-file style) and `{variable}` (internal style)
+    /// for `version` (e.g. `"0.2.0"`) and `version_tag` (e.g. `"v0.2.0"`).
     fn render_title(&self, version: &SemanticVersion) -> String {
+        let version_str = version.to_string();
+        let version_tag_str = version.to_string_with_prefix(true);
         self.config
             .title_template
-            .replace("{version}", &version.to_string())
-            .replace("{version_tag}", &version.to_string_with_prefix(true))
+            .replace("${version_tag}", &version_tag_str)
+            .replace("${version}", &version_str)
+            .replace("{version_tag}", &version_tag_str)
+            .replace("{version}", &version_str)
     }
 
     /// Wrap the changelog body in the standard PR body format.

@@ -78,6 +78,12 @@ pub struct MockGitHubOperations {
     /// Per-method error overrides.  Key is the method name string; value is the
     /// error message to return.  Takes precedence over global failure simulation.
     method_errors: HashMap<String, String>,
+    /// Recorded `upsert_file` calls: (owner, repo, path, commit_message, content, branch).
+    ///
+    /// Wrapped in `Arc<RwLock<...>>` so that the `&self` async-trait methods
+    /// can mutate the vec without requiring `&mut self`.
+    upsert_file_calls:
+        Arc<RwLock<Vec<(String, String, String, String, String, String)>>>,
 }
 
 impl MockGitHubOperations {
@@ -127,7 +133,15 @@ impl MockGitHubOperations {
             pr_labels: Arc::new(RwLock::new(HashMap::new())),
             collaborator_permission: None,
             method_errors: HashMap::new(),
+            upsert_file_calls: Arc::new(RwLock::new(Vec::new())),
         }
+    }
+
+    /// Return all recorded `upsert_file` calls.
+    ///
+    /// Each element is `(owner, repo, path, commit_message, content, branch)`.
+    pub async fn upsert_file_calls(&self) -> Vec<(String, String, String, String, String, String)> {
+        self.upsert_file_calls.read().await.clone()
     }
 
     /// Record a method call for tracking
@@ -186,6 +200,7 @@ impl MockGitHubOperations {
             pr_labels: Arc::new(RwLock::new(HashMap::new())),
             collaborator_permission: None,
             method_errors: HashMap::new(),
+            upsert_file_calls: Arc::new(RwLock::new(Vec::new())),
         }
     }
 
@@ -1005,6 +1020,31 @@ impl GitHubOperations for MockGitHubOperations {
         Ok(())
     }
 
+    async fn force_update_branch(
+        &self,
+        owner: &str,
+        repo: &str,
+        branch_name: &str,
+        sha: &str,
+    ) -> CoreResult<()> {
+        let method = "force_update_branch";
+        let params_str = format!("owner={owner}, repo={repo}, branch={branch_name}, sha={sha}");
+
+        self.check_quota().await?;
+        self.simulate_latency().await;
+
+        if self.should_simulate_failure().await {
+            let error = CoreError::network("Simulated GitHub API error");
+            self.record_call(method, &params_str, CallResult::Error(error.to_string()))
+                .await;
+            return Err(error);
+        }
+
+        self.record_call(method, &params_str, CallResult::Success)
+            .await;
+        Ok(())
+    }
+
     async fn create_issue_comment(
         &self,
         owner: &str,
@@ -1196,6 +1236,77 @@ impl GitHubOperations for MockGitHubOperations {
         self.record_call(method, &params_str, CallResult::Success)
             .await;
         Ok(labels)
+    }
+
+    async fn get_installation_id_for_repo(
+        &self,
+        _owner: &str,
+        _repo: &str,
+    ) -> CoreResult<u64> {
+        Ok(0)
+    }
+
+    fn scoped_to(&self, _installation_id: u64) -> Self {
+        // Shares Arc-based state (call history, labels, etc.) so tests can
+        // observe calls made through the scoped client.
+        Self {
+            state: Arc::clone(&self.state),
+            next_id: Arc::clone(&self.next_id),
+            next_sha: Arc::clone(&self.next_sha),
+            repositories: self.repositories.clone(),
+            commits: self.commits.clone(),
+            pull_requests: self.pull_requests.clone(),
+            tags: self.tags.clone(),
+            releases: self.releases.clone(),
+            branches: self.branches.clone(),
+            pr_labels: Arc::clone(&self.pr_labels),
+            collaborator_permission: self.collaborator_permission.clone(),
+            method_errors: self.method_errors.clone(),
+            upsert_file_calls: Arc::clone(&self.upsert_file_calls),
+        }
+    }
+
+    async fn upsert_file(
+        &self,
+        owner: &str,
+        repo: &str,
+        path: &str,
+        commit_message: &str,
+        content: &str,
+        branch: &str,
+    ) -> CoreResult<()> {
+        let method = "upsert_file";
+        let params_str = format!("owner={owner}, repo={repo}, path={path}, branch={branch}");
+
+        self.check_quota().await?;
+        self.simulate_latency().await;
+
+        if self.should_simulate_failure().await {
+            let error = CoreError::network("Simulated GitHub API error");
+            self.record_call(method, &params_str, CallResult::Error(error.to_string()))
+                .await;
+            return Err(error);
+        }
+
+        if let Some(msg) = self.method_errors.get(method) {
+            let error = CoreError::network(msg.clone());
+            self.record_call(method, &params_str, CallResult::Error(error.to_string()))
+                .await;
+            return Err(error);
+        }
+
+        self.upsert_file_calls.write().await.push((
+            owner.to_string(),
+            repo.to_string(),
+            path.to_string(),
+            commit_message.to_string(),
+            content.to_string(),
+            branch.to_string(),
+        ));
+
+        self.record_call(method, &params_str, CallResult::Success)
+            .await;
+        Ok(())
     }
 }
 

@@ -11,7 +11,6 @@
 //! | `GITHUB_WEBHOOK_SECRET`  | HMAC-SHA256 secret shared with GitHub (**required**) | —                  |
 //! | `GITHUB_APP_ID`          | Numeric GitHub App ID (**required**)                 | —                  |
 //! | `GITHUB_PRIVATE_KEY`     | PEM-encoded GitHub App private key (**required**)    | —                  |
-//! | `GITHUB_INSTALLATION_ID` | GitHub App installation ID (**required**)            | —                  |
 //! | `CONFIG_DIR`             | Directory to search for `.release-regent.toml`       | current directory  |
 //! | `ALLOWED_REPOS`          | Comma-separated `owner/repo` values, or `*`          | `*`                |
 //! | `EVENT_CHANNEL_CAPACITY` | Bounded channel depth for in-flight events           | `1024`             |
@@ -50,7 +49,7 @@ use github_bot_sdk::{
     events::{EventProcessor, ProcessorConfig},
     webhook::{WebhookReceiver, WebhookRequest, WebhookResponse},
 };
-use release_regent_core::{run_event_loop, DefaultVersionCalculator};
+use release_regent_core::{run_event_loop, GitHubVersionCalculator, VersionCalculator};
 use std::{collections::HashMap, sync::Arc};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
@@ -71,10 +70,13 @@ use handler::WebhookSecretProvider;
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Concrete production processor type used by the server.
+///
+/// The version calculator is held as a trait object so that the server's type
+/// alias does not leak the concrete `GitHubVersionCalculator` type.
 type ServerProcessor = release_regent_core::ReleaseRegentProcessor<
     release_regent_github_client::GitHubClient,
     release_regent_config_provider::FileConfigurationProvider,
-    DefaultVersionCalculator,
+    Arc<dyn VersionCalculator + Send + Sync>,
 >;
 
 /// Maximum allowed webhook payload size (10 MiB).
@@ -89,14 +91,19 @@ const MAX_BODY_BYTES: usize = 10 * 1024 * 1024;
 
 /// Parse GitHub App credentials from environment variables.
 ///
-/// Returns `(app_id, private_key, installation_id)` on success.
+/// Returns `(app_id, private_key)` on success.
+///
+/// The GitHub App installation ID is **not** read here.  It is present in every
+/// GitHub App webhook payload as `installation.id` and is extracted from the
+/// incoming event by [`handler::convert_envelope`] so that the server can serve
+/// webhooks from any installation of the same GitHub App without reconfiguration.
 ///
 /// # Errors
 ///
 /// Returns [`errors::Error::Environment`] if any required variable is absent
-/// or if `GITHUB_APP_ID` / `GITHUB_INSTALLATION_ID` cannot be parsed as `u64`.
+/// or if `GITHUB_APP_ID` cannot be parsed as `u64`.
 #[allow(clippy::result_large_err)] // errors::Error is intentionally large
-fn read_github_credentials_from_env() -> Result<(u64, String, u64), errors::Error> {
+fn read_github_credentials_from_env() -> Result<(u64, String), errors::Error> {
     let app_id: u64 = std::env::var("GITHUB_APP_ID")
         .map_err(|e| errors::Error::environment("GITHUB_APP_ID", e.to_string()))?
         .parse::<u64>()
@@ -107,31 +114,28 @@ fn read_github_credentials_from_env() -> Result<(u64, String, u64), errors::Erro
     let private_key = std::env::var("GITHUB_PRIVATE_KEY")
         .map_err(|e| errors::Error::environment("GITHUB_PRIVATE_KEY", e.to_string()))?;
 
-    let installation_id: u64 = std::env::var("GITHUB_INSTALLATION_ID")
-        .map_err(|e| errors::Error::environment("GITHUB_INSTALLATION_ID", e.to_string()))?
-        .parse::<u64>()
-        .map_err(|e| {
-            errors::Error::environment("GITHUB_INSTALLATION_ID", format!("must be a number: {e}"))
-        })?;
-
-    Ok((app_id, private_key, installation_id))
+    Ok((app_id, private_key))
 }
 
 /// Construct the production [`ServerProcessor`] from environment variables.
 ///
-/// Reads `GITHUB_APP_ID`, `GITHUB_PRIVATE_KEY`, and `GITHUB_INSTALLATION_ID`
-/// from the environment, builds a [`release_regent_github_client::GitHubClient`],
-/// initialises a [`release_regent_config_provider::FileConfigurationProvider`]
+/// Reads `GITHUB_APP_ID` and `GITHUB_PRIVATE_KEY` from the environment, builds
+/// a [`release_regent_github_client::GitHubClient`] without a bound installation
+/// ID, initialises a [`release_regent_config_provider::FileConfigurationProvider`]
 /// from the directory specified by `CONFIG_DIR` (falling back to the current
 /// working directory when `CONFIG_DIR` is absent), and wires them together with
-/// [`DefaultVersionCalculator`] into a [`ServerProcessor`].
+/// [`GitHubVersionCalculator`] into a [`ServerProcessor`].
+///
+/// The installation ID is intentionally omitted here.  It is extracted from each
+/// webhook payload at event-processing time so that one server instance can handle
+/// webhooks from any installation of the same GitHub App.
 ///
 /// # Errors
 ///
 /// Returns an error if any required variable is absent, if the GitHub App
 /// private key is malformed, or if the configuration directory is inaccessible.
 async fn build_server_processor(webhook_secret: String) -> Result<ServerProcessor, errors::Error> {
-    let (app_id, private_key, installation_id) = read_github_credentials_from_env()?;
+    let (app_id, private_key) = read_github_credentials_from_env()?;
 
     let auth_config = release_regent_github_client::AuthConfig {
         app_id,
@@ -139,8 +143,7 @@ async fn build_server_processor(webhook_secret: String) -> Result<ServerProcesso
         webhook_secret,
     };
 
-    let github_client =
-        release_regent_github_client::GitHubClient::from_config(auth_config, installation_id)?;
+    let github_client = release_regent_github_client::GitHubClient::from_config(auth_config)?;
 
     let config_dir = match std::env::var("CONFIG_DIR") {
         Ok(dir) => std::path::PathBuf::from(dir),
@@ -155,7 +158,12 @@ async fn build_server_processor(webhook_secret: String) -> Result<ServerProcesso
             .await
             .map_err(|e| errors::Error::config_provider(e.to_string()))?;
 
-    let version_calculator = DefaultVersionCalculator::new();
+    // The GitHubVersionCalculator is constructed with a clone of the (unscoped)
+    // GitHub client and held as a trait object.  The processor calls
+    // `VersionCalculator::scoped_to(installation_id)` on it before each version
+    // calculation so the concrete type never leaks into the processor type alias.
+    let version_calculator: Arc<dyn VersionCalculator + Send + Sync> =
+        Arc::new(GitHubVersionCalculator::new(github_client.clone()));
 
     Ok(release_regent_core::ReleaseRegentProcessor::new(
         github_client,
@@ -261,8 +269,8 @@ fn setup_logging() {
 /// # Errors
 ///
 /// Returns an error if:
-/// - Any of `GITHUB_WEBHOOK_SECRET`, `GITHUB_APP_ID`, `GITHUB_PRIVATE_KEY`, or
-///   `GITHUB_INSTALLATION_ID` is absent from the environment.
+/// - Any of `GITHUB_WEBHOOK_SECRET`, `GITHUB_APP_ID`, or `GITHUB_PRIVATE_KEY` is absent from the
+///   environment. (`GITHUB_INSTALLATION_ID` is resolved per-event from the webhook payload.)
 /// - The TCP listener cannot bind to the configured address.
 /// - The Axum server exits with an error.
 #[tokio::main]

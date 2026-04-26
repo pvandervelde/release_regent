@@ -703,4 +703,10 @@ impl VersionCalculator for MockVersionCalculator {
 
         Ok(new_version)
     }
+
+    fn scoped_to(&self, _installation_id: u64) -> Arc<dyn VersionCalculator + Send + Sync> {
+        // Tests that need to verify calls through scoped_to should construct
+        // a new MockVersionCalculator with the desired configuration.
+        Arc::new(MockVersionCalculator::new())
+    }
 }
