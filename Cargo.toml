@@ -71,6 +71,7 @@ sha2 = "0.10"
 hex = "0.4"
 
 # Additional utilities
+base64 = "0.22"
 dirs = "5.0"
 walkdir = "2.4"
 jsonschema = "0.18"

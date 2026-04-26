@@ -496,6 +496,52 @@ pub trait GitHubOperations: GitOperations + Send + Sync {
         repo: &str,
     ) -> CoreResult<u64>;
 
+    /// Create or update a file at the given path on a branch.
+    ///
+    /// Uses the GitHub Contents API (`PUT /repos/{owner}/{repo}/contents/{path}`)
+    /// to commit the file content directly onto the specified branch. If the
+    /// file already exists, the current blob SHA is fetched automatically so
+    /// the update can succeed without the caller needing to track the previous
+    /// content.
+    ///
+    /// The `content` string is plain UTF-8 text; base64 encoding is handled
+    /// internally.
+    ///
+    /// # Parameters
+    /// - `owner`: Repository owner name
+    /// - `repo`: Repository name
+    /// - `path`: File path relative to the repository root (e.g. `"CHANGELOG.md"`)
+    /// - `commit_message`: Commit message for the change
+    /// - `content`: File content as plain UTF-8 text
+    /// - `branch`: Branch to commit to
+    ///
+    /// # Returns
+    /// `Ok(())` on success.
+    ///
+    /// # Errors
+    /// - `CoreError::GitHub` — the API call failed
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// github.upsert_file(
+    ///     "owner", "repo",
+    ///     "CHANGELOG.md",
+    ///     "chore(release): update CHANGELOG for v1.2.3",
+    ///     "## Changelog\n\n- feat: add thing",
+    ///     "release/v1.2.3",
+    /// ).await?;
+    /// ```
+    async fn upsert_file(
+        &self,
+        owner: &str,
+        repo: &str,
+        path: &str,
+        commit_message: &str,
+        content: &str,
+        branch: &str,
+    ) -> CoreResult<()>;
+
     /// Return a clone of this client scoped to the given GitHub App installation.
     ///
     /// All subsequent API calls on the returned client will use an installation

@@ -4,6 +4,7 @@
 //! using the github-bot-sdk library for GitHub API interactions.
 
 use async_trait::async_trait;
+use base64::Engine as _;
 use github_bot_sdk::{
     auth::{
         cache::InMemoryTokenCache, tokens::GitHubAppAuth, AuthenticationProvider, InstallationId,
@@ -912,6 +913,72 @@ impl GitHubOperations for GitHubClient {
         Ok(labels)
     }
 
+    #[instrument(skip(self, content, commit_message))]
+    async fn upsert_file(
+        &self,
+        owner: &str,
+        repo: &str,
+        path: &str,
+        commit_message: &str,
+        content: &str,
+        branch: &str,
+    ) -> CoreResult<()> {
+        info!(owner, repo, path, branch, "Upserting file on branch");
+
+        let installation = self.installation().await?;
+
+        // GET the existing file to retrieve its blob SHA (required for updates).
+        // A 404 means the file doesn't exist yet, which is fine for creation.
+        let get_path = format!("/repos/{owner}/{repo}/contents/{}", urlencoding_encode(path));
+        let get_url_with_ref = format!("{get_path}?ref={branch}");
+
+        let existing_sha: Option<String> = match installation.get(&get_url_with_ref).await {
+            Ok(resp) => {
+                let status = resp.status().as_u16();
+                if status == 200 {
+                    let json: serde_json::Value = resp.json().await.map_err(CoreError::github)?;
+                    json["sha"].as_str().map(str::to_owned)
+                } else if status == 404 {
+                    None
+                } else {
+                    let body = resp.text().await.unwrap_or_default();
+                    return Err(CoreError::github(std::io::Error::other(format!(
+                        "GET /contents failed with status {status}: {body}"
+                    ))));
+                }
+            }
+            Err(ApiError::NotFound) => None,
+            Err(e) => return Err(map_sdk_error(e)),
+        };
+
+        // Build the PUT request body.
+        let encoded = base64::engine::general_purpose::STANDARD.encode(content.as_bytes());
+        let mut body = serde_json::json!({
+            "message": commit_message,
+            "content": encoded,
+            "branch": branch,
+        });
+        if let Some(sha) = existing_sha {
+            body["sha"] = serde_json::Value::String(sha);
+        }
+
+        let response = installation
+            .put(&get_path, &body)
+            .await
+            .map_err(map_sdk_error)?;
+
+        let status = response.status().as_u16();
+        if !(200..=201).contains(&status) {
+            let resp_body = response.text().await.unwrap_or_default();
+            return Err(CoreError::github(std::io::Error::other(format!(
+                "PUT /contents failed with status {status}: {resp_body}"
+            ))));
+        }
+
+        info!(owner, repo, path, branch, "File upserted successfully");
+        Ok(())
+    }
+
     #[instrument(skip(self))]
     async fn get_installation_id_for_repo(&self, owner: &str, repo: &str) -> CoreResult<u64> {
         info!(owner, repo, "Looking up installation ID for repository");
@@ -1039,6 +1106,29 @@ struct ListPrBranchRepo {
 #[derive(serde::Deserialize)]
 struct ListPrUser {
     login: String,
+}
+
+/// Percent-encode a file path for use in a GitHub Contents API URL.
+///
+/// Only forward slashes are kept unencoded (they are valid path separators
+/// in the GitHub API).  All other characters that are not unreserved in RFC
+/// 3986 are percent-encoded.
+fn urlencoding_encode(path: &str) -> String {
+    path.split('/')
+        .map(|segment| {
+            segment
+                .bytes()
+                .flat_map(|b| {
+                    if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+                        vec![b as char]
+                    } else {
+                        format!("%{b:02X}").chars().collect::<Vec<char>>()
+                    }
+                })
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 /// Parse the `Link` response header and return the page number from the

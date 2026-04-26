@@ -331,6 +331,20 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
         let title = self.render_title(version);
         let body = self.render_body(changelog);
 
+        // Commit CHANGELOG.md to the release branch so the PR has a real diff.
+        let changelog_commit_message =
+            format!("chore(release): update CHANGELOG for {}", version.to_string_with_prefix(true));
+        self.github
+            .upsert_file(
+                owner,
+                repo,
+                "CHANGELOG.md",
+                &changelog_commit_message,
+                changelog,
+                &actual_branch,
+            )
+            .await?;
+
         let pr = self
             .github
             .create_pull_request(
@@ -392,6 +406,22 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
                 title_update,
                 Some(new_body),
                 None,
+            )
+            .await?;
+
+        // Keep CHANGELOG.md on the release branch in sync with the PR body.
+        let changelog_commit_message = format!(
+            "chore(release): update CHANGELOG for {}",
+            version.to_string_with_prefix(true)
+        );
+        self.github
+            .upsert_file(
+                owner,
+                repo,
+                "CHANGELOG.md",
+                &changelog_commit_message,
+                &merged_changelog,
+                &fresh_pr.head.ref_name,
             )
             .await?;
 

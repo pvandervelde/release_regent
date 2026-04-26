@@ -41,6 +41,8 @@ struct TestState {
     updated_prs: Vec<(u64, Option<String>, Option<String>, Option<String>)>,
     /// Recorded `delete_branch` calls: branch name.
     deleted_branches: Vec<String>,
+    /// Recorded `upsert_file` calls: (path, branch).
+    upserted_files: Vec<(String, String)>,
     /// Sequential PR number to return from `create_pull_request`.
     next_pr_number: u64,
     /// Whether `search_pull_requests` should return an error.
@@ -98,6 +100,10 @@ impl TestGitHub {
 
     async fn deleted_branches(&self) -> Vec<String> {
         self.state.lock().await.deleted_branches.clone()
+    }
+
+    async fn upserted_files(&self) -> Vec<(String, String)> {
+        self.state.lock().await.upserted_files.clone()
     }
 }
 
@@ -408,6 +414,23 @@ impl GitHubOperations for TestGitHub {
         Ok(0)
     }
 
+    async fn upsert_file(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        path: &str,
+        _commit_message: &str,
+        _content: &str,
+        branch: &str,
+    ) -> CoreResult<()> {
+        self.state
+            .lock()
+            .await
+            .upserted_files
+            .push((path.to_string(), branch.to_string()));
+        Ok(())
+    }
+
     fn scoped_to(&self, _installation_id: u64) -> Self {
         Self {
             state: Arc::clone(&self.state),
@@ -531,6 +554,11 @@ async fn test_orchestrate_no_existing_pr_creates_branch_and_pr() {
         .as_deref()
         .unwrap_or("")
         .contains("## Changelog"));
+
+    let upserted = github.upserted_files().await;
+    assert_eq!(upserted.len(), 1, "CHANGELOG.md should be committed to the release branch");
+    assert_eq!(upserted[0].0, "CHANGELOG.md");
+    assert_eq!(upserted[0].1, "release/v1.2.3");
 }
 
 /// Existing PR has the same version → changelog is merged (Updated).
@@ -575,6 +603,12 @@ async fn test_orchestrate_existing_equal_version_pr_updates_changelog() {
     let body = updates[0].2.as_deref().unwrap_or("");
     assert!(body.contains("old fix"), "should keep existing entry");
     assert!(body.contains("new feature"), "should add new entry");
+
+    // CHANGELOG.md should be committed to the existing branch.
+    let upserted = github.upserted_files().await;
+    assert_eq!(upserted.len(), 1, "CHANGELOG.md should be updated on the existing branch");
+    assert_eq!(upserted[0].0, "CHANGELOG.md");
+    assert_eq!(upserted[0].1, "release/v1.0.0");
 }
 
 /// Existing PR has a lower version → rename (Renamed).
@@ -628,6 +662,12 @@ async fn test_orchestrate_existing_lower_version_pr_renames() {
         deleted.contains(&"release/v1.0.0".to_string()),
         "old branch not deleted; {deleted:?}"
     );
+
+    // CHANGELOG.md should be committed to the new release branch.
+    let upserted = github.upserted_files().await;
+    assert_eq!(upserted.len(), 1, "CHANGELOG.md should be committed to the new release branch");
+    assert_eq!(upserted[0].0, "CHANGELOG.md");
+    assert_eq!(upserted[0].1, "release/v1.1.0");
 }
 
 /// Existing PR has a *higher* version → NoOp (never downgrade).
@@ -664,6 +704,7 @@ async fn test_orchestrate_existing_higher_version_pr_is_no_op() {
     assert!(github.created_prs().await.is_empty());
     assert!(github.updated_prs().await.is_empty());
     assert!(github.deleted_branches().await.is_empty());
+    assert!(github.upserted_files().await.is_empty(), "NoOp should not commit any files");
 }
 
 /// Branch name conflict on first attempt → retries with timestamped fallback.
@@ -705,6 +746,12 @@ async fn test_orchestrate_branch_conflict_uses_timestamped_fallback() {
         "expected timestamped branch, got {:?}",
         branches[0].0
     );
+
+    // CHANGELOG.md should be committed to the fallback branch.
+    let upserted = github.upserted_files().await;
+    assert_eq!(upserted.len(), 1, "CHANGELOG.md should be committed to the fallback branch");
+    assert_eq!(upserted[0].0, "CHANGELOG.md");
+    assert!(upserted[0].1.starts_with("release/v1.0.0-"), "expected fallback branch, got {:?}", upserted[0].1);
 }
 
 /// `search_pull_requests` returns an error → propagated to caller.
@@ -768,6 +815,12 @@ async fn test_orchestrate_changelog_merge_deduplicates_commits() {
         count, 1,
         "duplicate SHA should be deduplicated; body:\n{body}"
     );
+
+    // CHANGELOG.md should be committed to the existing branch.
+    let upserted = github.upserted_files().await;
+    assert_eq!(upserted.len(), 1, "CHANGELOG.md should be updated on the existing branch");
+    assert_eq!(upserted[0].0, "CHANGELOG.md");
+    assert_eq!(upserted[0].1, "release/v1.0.0");
 }
 
 /// Branch name helper: `make_branch_name` formats as `"release/v{major}.{minor}.{patch}"`.

@@ -941,6 +941,18 @@ impl GitHubOperations for TestGitHubForLib {
         Ok(0)
     }
 
+    async fn upsert_file(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _path: &str,
+        _commit_message: &str,
+        _content: &str,
+        _branch: &str,
+    ) -> CoreResult<()> {
+        Ok(())
+    }
+
     fn scoped_to(&self, _installation_id: u64) -> Self {
         Self {
             tags: self.tags.clone(),
