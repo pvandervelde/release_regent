@@ -745,8 +745,17 @@ impl GitHubOperations for GitHubClient {
             .create_branch(owner, repo, branch_name, sha)
             .await
             .map_err(|e| {
-                // HTTP 422 from GitHub means "Reference already exists"
-                if let github_bot_sdk::error::ApiError::HttpError { status: 422, .. } = &e {
+                // The SDK may surface the GitHub 422 "Reference already exists" response
+                // as either ApiError::HttpError { status: 422 } or as ApiError::InvalidRequest
+                // with the raw GitHub JSON body in the message field. Handle both.
+                let is_already_exists = match &e {
+                    github_bot_sdk::error::ApiError::HttpError { status: 422, .. } => true,
+                    github_bot_sdk::error::ApiError::InvalidRequest { message } => {
+                        message.contains("Reference already exists")
+                    }
+                    _ => false,
+                };
+                if is_already_exists {
                     CoreError::conflict(format!("branch '{branch_name}' already exists"))
                 } else {
                     map_sdk_error(e)
@@ -929,7 +938,10 @@ impl GitHubOperations for GitHubClient {
 
         // GET the existing file to retrieve its blob SHA (required for updates).
         // A 404 means the file doesn't exist yet, which is fine for creation.
-        let get_path = format!("/repos/{owner}/{repo}/contents/{}", urlencoding_encode(path));
+        let get_path = format!(
+            "/repos/{owner}/{repo}/contents/{}",
+            urlencoding_encode(path)
+        );
         let get_url_with_ref = format!("{get_path}?ref={branch}");
 
         let existing_sha: Option<String> = match installation.get(&get_url_with_ref).await {

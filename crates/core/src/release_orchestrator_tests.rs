@@ -406,11 +406,7 @@ impl GitHubOperations for TestGitHub {
         Ok(vec![])
     }
 
-    async fn get_installation_id_for_repo(
-        &self,
-        _owner: &str,
-        _repo: &str,
-    ) -> CoreResult<u64> {
+    async fn get_installation_id_for_repo(&self, _owner: &str, _repo: &str) -> CoreResult<u64> {
         Ok(0)
     }
 
@@ -556,7 +552,11 @@ async fn test_orchestrate_no_existing_pr_creates_branch_and_pr() {
         .contains("## Changelog"));
 
     let upserted = github.upserted_files().await;
-    assert_eq!(upserted.len(), 1, "CHANGELOG.md should be committed to the release branch");
+    assert_eq!(
+        upserted.len(),
+        1,
+        "CHANGELOG.md should be committed to the release branch"
+    );
     assert_eq!(upserted[0].0, "CHANGELOG.md");
     assert_eq!(upserted[0].1, "release/v1.2.3");
 }
@@ -606,7 +606,11 @@ async fn test_orchestrate_existing_equal_version_pr_updates_changelog() {
 
     // CHANGELOG.md should be committed to the existing branch.
     let upserted = github.upserted_files().await;
-    assert_eq!(upserted.len(), 1, "CHANGELOG.md should be updated on the existing branch");
+    assert_eq!(
+        upserted.len(),
+        1,
+        "CHANGELOG.md should be updated on the existing branch"
+    );
     assert_eq!(upserted[0].0, "CHANGELOG.md");
     assert_eq!(upserted[0].1, "release/v1.0.0");
 }
@@ -665,7 +669,11 @@ async fn test_orchestrate_existing_lower_version_pr_renames() {
 
     // CHANGELOG.md should be committed to the new release branch.
     let upserted = github.upserted_files().await;
-    assert_eq!(upserted.len(), 1, "CHANGELOG.md should be committed to the new release branch");
+    assert_eq!(
+        upserted.len(),
+        1,
+        "CHANGELOG.md should be committed to the new release branch"
+    );
     assert_eq!(upserted[0].0, "CHANGELOG.md");
     assert_eq!(upserted[0].1, "release/v1.1.0");
 }
@@ -704,12 +712,15 @@ async fn test_orchestrate_existing_higher_version_pr_is_no_op() {
     assert!(github.created_prs().await.is_empty());
     assert!(github.updated_prs().await.is_empty());
     assert!(github.deleted_branches().await.is_empty());
-    assert!(github.upserted_files().await.is_empty(), "NoOp should not commit any files");
+    assert!(
+        github.upserted_files().await.is_empty(),
+        "NoOp should not commit any files"
+    );
 }
 
-/// Branch name conflict on first attempt → retries with timestamped fallback.
+/// Branch already exists (conflict from create_branch) → orchestrator reuses it.
 #[tokio::test]
-async fn test_orchestrate_branch_conflict_uses_timestamped_fallback() {
+async fn test_orchestrate_branch_already_exists_reuses_it() {
     let github = TestGitHub::new().with_next_create_branch_conflict().await;
 
     let orchestrator = ReleaseOrchestrator::new(default_config(), &github);
@@ -725,33 +736,38 @@ async fn test_orchestrate_branch_conflict_uses_timestamped_fallback() {
             "corr-005",
         )
         .await
-        .expect("orchestrate should succeed despite first branch conflict");
+        .expect("orchestrate should succeed when branch already exists");
 
-    // The result should still be Created.
+    // The result should still be Created, using the canonical branch name.
     if let OrchestratorResult::Created { branch_name, .. } = &result {
-        // The fallback branch should start with "release/v1.0.0-" (plus timestamp).
-        assert!(
-            branch_name.starts_with("release/v1.0.0-"),
-            "fallback branch name unexpected: {branch_name}"
+        assert_eq!(
+            branch_name, "release/v1.0.0",
+            "should reuse canonical branch, got {branch_name}"
         );
     } else {
         panic!("expected Created, got {result:?}");
     }
 
-    // Two branch creation attempts should have been recorded.
-    let branches = github.created_branches().await;
-    assert_eq!(branches.len(), 1, "only the successful attempt is tracked");
+    // No new branch was successfully created (the conflict was on the only attempt).
     assert!(
-        branches[0].0.starts_with("release/v1.0.0-"),
-        "expected timestamped branch, got {:?}",
-        branches[0].0
+        github.created_branches().await.is_empty(),
+        "no successful branch creation expected when reusing existing"
     );
 
-    // CHANGELOG.md should be committed to the fallback branch.
+    // A PR should have been opened on the canonical branch.
+    let prs = github.created_prs().await;
+    assert_eq!(prs.len(), 1);
+    assert_eq!(prs[0].head, "release/v1.0.0");
+
+    // CHANGELOG.md should be committed to the canonical branch.
     let upserted = github.upserted_files().await;
-    assert_eq!(upserted.len(), 1, "CHANGELOG.md should be committed to the fallback branch");
+    assert_eq!(
+        upserted.len(),
+        1,
+        "CHANGELOG.md should be committed to the existing branch"
+    );
     assert_eq!(upserted[0].0, "CHANGELOG.md");
-    assert!(upserted[0].1.starts_with("release/v1.0.0-"), "expected fallback branch, got {:?}", upserted[0].1);
+    assert_eq!(upserted[0].1, "release/v1.0.0");
 }
 
 /// `search_pull_requests` returns an error → propagated to caller.
@@ -818,7 +834,11 @@ async fn test_orchestrate_changelog_merge_deduplicates_commits() {
 
     // CHANGELOG.md should be committed to the existing branch.
     let upserted = github.upserted_files().await;
-    assert_eq!(upserted.len(), 1, "CHANGELOG.md should be updated on the existing branch");
+    assert_eq!(
+        upserted.len(),
+        1,
+        "CHANGELOG.md should be updated on the existing branch"
+    );
     assert_eq!(upserted[0].0, "CHANGELOG.md");
     assert_eq!(upserted[0].1, "release/v1.0.0");
 }
@@ -835,23 +855,6 @@ fn test_make_branch_name_format() {
     assert_eq!(
         orchestrator.make_branch_name(&ver(0, 1, 0)),
         "release/v0.1.0"
-    );
-}
-
-/// Fallback branch name starts with the canonical name and has a numeric suffix.
-#[test]
-fn test_make_fallback_branch_name_contains_timestamp() {
-    let github = TestGitHub::new();
-    let orchestrator = ReleaseOrchestrator::new(default_config(), &github);
-    let fallback = orchestrator.make_fallback_branch_name(&ver(1, 0, 0));
-    assert!(
-        fallback.starts_with("release/v1.0.0-"),
-        "fallback should start with canonical prefix: {fallback}"
-    );
-    let suffix = fallback.trim_start_matches("release/v1.0.0-");
-    assert!(
-        suffix.chars().all(|c| c.is_ascii_digit()),
-        "suffix should be numeric timestamp: {suffix}"
     );
 }
 

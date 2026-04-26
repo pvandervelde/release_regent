@@ -19,8 +19,9 @@
 //! | Yes            | Higher than new         | No-op (never downgrade)   |
 //!
 //! 3. **Idempotency**: Every sub-operation is safe to retry without side effects.
-//!    If a branch already exists the timestamped fallback is used instead of
-//!    failing.
+//!    If the canonical release branch already exists (e.g. from a previous run that
+//!    created the branch but failed before opening the PR), the orchestrator reuses
+//!    it rather than failing.
 //!
 //! ## `ETag` / concurrency note
 //!
@@ -50,7 +51,6 @@ use crate::{
     versioning::SemanticVersion,
     CoreError, CoreResult,
 };
-use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, info, warn};
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -314,16 +314,13 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
         {
             Ok(()) => branch_name,
             Err(CoreError::Conflict { .. }) => {
-                let fallback = self.make_fallback_branch_name(version);
-                warn!(
-                    original = %branch_name,
-                    fallback = %fallback,
-                    "Branch conflict; retrying with timestamped fallback"
+                // The branch already exists — most likely from a previous run that
+                // created the branch but failed before opening the PR. Reuse it.
+                info!(
+                    branch = %branch_name,
+                    "Release branch already exists; reusing it"
                 );
-                self.github
-                    .create_branch(owner, repo, &fallback, base_sha)
-                    .await?;
-                fallback
+                branch_name
             }
             Err(other) => return Err(other),
         };
@@ -503,20 +500,6 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
     pub(crate) fn make_branch_name(&self, version: &SemanticVersion) -> String {
         format!(
             "{}/{}",
-            self.config.branch_prefix,
-            version.to_string_with_prefix(true)
-        )
-    }
-
-    /// Construct a timestamped fallback branch name used when the canonical
-    /// branch already exists, e.g. `"release/v1.2.3-1711234567"`.
-    pub(crate) fn make_fallback_branch_name(&self, version: &SemanticVersion) -> String {
-        let ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        format!(
-            "{}/{}-{ts}",
             self.config.branch_prefix,
             version.to_string_with_prefix(true)
         )
