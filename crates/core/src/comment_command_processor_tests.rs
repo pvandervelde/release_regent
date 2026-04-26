@@ -377,6 +377,16 @@ impl GitHubOperations for TestGitHub {
         Ok(())
     }
 
+    async fn force_update_branch(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _branch_name: &str,
+        _sha: &str,
+    ) -> CoreResult<()> {
+        Ok(())
+    }
+
     async fn create_issue_comment(
         &self,
         _owner: &str,

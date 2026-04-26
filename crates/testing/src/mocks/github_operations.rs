@@ -1020,6 +1020,31 @@ impl GitHubOperations for MockGitHubOperations {
         Ok(())
     }
 
+    async fn force_update_branch(
+        &self,
+        owner: &str,
+        repo: &str,
+        branch_name: &str,
+        sha: &str,
+    ) -> CoreResult<()> {
+        let method = "force_update_branch";
+        let params_str = format!("owner={owner}, repo={repo}, branch={branch_name}, sha={sha}");
+
+        self.check_quota().await?;
+        self.simulate_latency().await;
+
+        if self.should_simulate_failure().await {
+            let error = CoreError::network("Simulated GitHub API error");
+            self.record_call(method, &params_str, CallResult::Error(error.to_string()))
+                .await;
+            return Err(error);
+        }
+
+        self.record_call(method, &params_str, CallResult::Success)
+            .await;
+        Ok(())
+    }
+
     async fn create_issue_comment(
         &self,
         owner: &str,

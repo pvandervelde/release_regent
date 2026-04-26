@@ -779,6 +779,26 @@ impl GitHubOperations for GitHubClient {
         Ok(())
     }
 
+    #[instrument(skip(self))]
+    async fn force_update_branch(
+        &self,
+        owner: &str,
+        repo: &str,
+        branch_name: &str,
+        sha: &str,
+    ) -> CoreResult<()> {
+        info!(owner, repo, branch_name, sha, "Force-resetting branch tip");
+
+        let installation = self.installation().await?;
+
+        installation
+            .update_git_ref(owner, repo, &format!("heads/{branch_name}"), sha, true)
+            .await
+            .map_err(map_sdk_error)?;
+
+        Ok(())
+    }
+
     #[instrument(skip(self, body))]
     async fn create_issue_comment(
         &self,

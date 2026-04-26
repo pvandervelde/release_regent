@@ -41,6 +41,8 @@ struct TestState {
     updated_prs: Vec<(u64, Option<String>, Option<String>, Option<String>)>,
     /// Recorded `delete_branch` calls: branch name.
     deleted_branches: Vec<String>,
+    /// Recorded `force_update_branch` calls: (branch_name, sha).
+    force_updated_branches: Vec<(String, String)>,
     /// Recorded `upsert_file` calls: (path, branch).
     upserted_files: Vec<(String, String)>,
     /// Sequential PR number to return from `create_pull_request`.
@@ -100,6 +102,10 @@ impl TestGitHub {
 
     async fn deleted_branches(&self) -> Vec<String> {
         self.state.lock().await.deleted_branches.clone()
+    }
+
+    async fn force_updated_branches(&self) -> Vec<(String, String)> {
+        self.state.lock().await.force_updated_branches.clone()
     }
 
     async fn upserted_files(&self) -> Vec<(String, String)> {
@@ -358,6 +364,21 @@ impl GitHubOperations for TestGitHub {
         Ok(())
     }
 
+    async fn force_update_branch(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        branch_name: &str,
+        sha: &str,
+    ) -> CoreResult<()> {
+        self.state
+            .lock()
+            .await
+            .force_updated_branches
+            .push((branch_name.to_string(), sha.to_string()));
+        Ok(())
+    }
+
     async fn create_issue_comment(
         &self,
         _owner: &str,
@@ -613,6 +634,12 @@ async fn test_orchestrate_existing_equal_version_pr_updates_changelog() {
     );
     assert_eq!(upserted[0].0, "CHANGELOG.md");
     assert_eq!(upserted[0].1, "release/v1.0.0");
+
+    // The release branch should be force-reset to the latest base SHA before the commit.
+    let force_updated = github.force_updated_branches().await;
+    assert_eq!(force_updated.len(), 1, "branch should be force-reset once");
+    assert_eq!(force_updated[0].0, "release/v1.0.0");
+    assert_eq!(force_updated[0].1, "sha002");
 }
 
 /// Existing PR has a lower version → rename (Renamed).
@@ -768,6 +795,16 @@ async fn test_orchestrate_branch_already_exists_reuses_it() {
     );
     assert_eq!(upserted[0].0, "CHANGELOG.md");
     assert_eq!(upserted[0].1, "release/v1.0.0");
+
+    // The existing branch should be force-reset to the current base SHA before the commit.
+    let force_updated = github.force_updated_branches().await;
+    assert_eq!(
+        force_updated.len(),
+        1,
+        "existing branch should be force-reset to base SHA"
+    );
+    assert_eq!(force_updated[0].0, "release/v1.0.0");
+    assert_eq!(force_updated[0].1, "sha005");
 }
 
 /// `search_pull_requests` returns an error → propagated to caller.

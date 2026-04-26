@@ -215,7 +215,7 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
                             "Existing PR has same version; merging changelogs"
                         );
                         let pr = self
-                            .update_release_pr(owner, repo, &existing_pr, version, changelog)
+                            .update_release_pr(owner, repo, &existing_pr, version, changelog, base_sha)
                             .await?;
                         Ok(OrchestratorResult::Updated { pr })
                     }
@@ -315,11 +315,16 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
             Ok(()) => branch_name,
             Err(CoreError::Conflict { .. }) => {
                 // The branch already exists — most likely from a previous run that
-                // created the branch but failed before opening the PR. Reuse it.
+                // created the branch but failed before opening the PR. Reuse it,
+                // but force-reset it to the current base SHA so the PR diff stays
+                // clean (exactly one commit ahead of the base branch).
                 info!(
                     branch = %branch_name,
                     "Release branch already exists; reusing it"
                 );
+                self.github
+                    .force_update_branch(owner, repo, &branch_name, base_sha)
+                    .await?;
                 branch_name
             }
             Err(other) => return Err(other),
@@ -376,6 +381,7 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
         existing_pr: &PullRequest,
         version: &SemanticVersion,
         new_changelog: &str,
+        base_sha: &str,
     ) -> CoreResult<PullRequest> {
         // Always re-fetch to get the latest body (ETag prep).
         let fresh_pr = self
@@ -406,6 +412,12 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
                 Some(new_body),
                 None,
             )
+            .await?;
+
+        // Force-reset the release branch to the latest base SHA so the PR always
+        // shows exactly one commit (the CHANGELOG.md update) on top of main.
+        self.github
+            .force_update_branch(owner, repo, &fresh_pr.head.ref_name, base_sha)
             .await?;
 
         // Keep CHANGELOG.md on the release branch in sync with the PR body.

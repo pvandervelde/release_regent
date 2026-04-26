@@ -214,6 +214,32 @@ pub trait GitHubOperations: GitOperations + Send + Sync {
     /// - `CoreError::GitHub` - API communication failed
     async fn delete_branch(&self, owner: &str, repo: &str, branch_name: &str) -> CoreResult<()>;
 
+    /// Force-reset an existing branch tip to a specific commit SHA.
+    ///
+    /// Equivalent to `git push --force origin <sha>:refs/heads/<branch_name>`.
+    /// Used to keep the release branch exactly one commit ahead of the base branch
+    /// on every changelog update, so the PR always shows a single diff.
+    ///
+    /// # Parameters
+    /// - `owner`: Repository owner name
+    /// - `repo`: Repository name
+    /// - `branch_name`: Name of the branch to reset (without `refs/heads/` prefix)
+    /// - `sha`: The commit SHA to reset the branch tip to
+    ///
+    /// # Returns
+    /// `Ok(())` on success
+    ///
+    /// # Errors
+    /// - `CoreError::NotFound` - Branch does not exist
+    /// - `CoreError::GitHub` - API communication failed
+    async fn force_update_branch(
+        &self,
+        owner: &str,
+        repo: &str,
+        branch_name: &str,
+        sha: &str,
+    ) -> CoreResult<()>;
+
     /// Get the permission level a specific user has on a repository
     ///
     /// Used to authorise PR comment commands: only collaborators with `Write`,
