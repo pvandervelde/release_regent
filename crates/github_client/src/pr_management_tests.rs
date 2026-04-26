@@ -431,3 +431,125 @@ async fn test_search_pull_requests_closed_state() {
     assert_eq!(prs.len(), 1);
     assert_eq!(prs[0].number, 5);
 }
+
+/// `list_pull_requests` succeeds when GitHub returns `null` for `head.repo` or
+/// `base.repo`.  This happens for PRs whose fork repository has been deleted.
+/// The SDK's `PullRequest` type requires these fields (non-Option), so the bypass
+/// path must handle them gracefully rather than panicking or returning an error.
+#[tokio::test]
+async fn test_list_pull_requests_null_repo_handled_gracefully() {
+    let mock_server = MockServer::start().await;
+
+    // A PR with a deleted fork (head.repo = null) mixed with a normal PR.
+    let pr_deleted_fork = serde_json::json!({
+        "id": 10,
+        "node_id": "PR_10",
+        "number": 10,
+        "title": "PR from deleted fork",
+        "body": null,
+        "state": "open",
+        "user": { "login": "forker", "id": 2, "node_id": "U_2", "type": "User" },
+        "head": {
+            "ref": "feature/fork-branch",
+            "sha": "abc123",
+            "repo": null
+        },
+        "base": {
+            "ref": "main",
+            "sha": "def456",
+            "repo": { "id": 100, "name": "repo", "full_name": "owner/repo" }
+        },
+        "draft": false,
+        "merged": false,
+        "mergeable": null,
+        "merge_commit_sha": null,
+        "assignees": [],
+        "requested_reviewers": [],
+        "labels": [],
+        "milestone": null,
+        "created_at": "2024-01-01T00:00:00Z",
+        "updated_at": "2024-01-01T00:00:00Z",
+        "closed_at": null,
+        "merged_at": null,
+        "html_url": "https://github.com/owner/repo/pull/10"
+    });
+
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/repo/pulls"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+            pr_deleted_fork,
+            pr_json(2, "feature/normal", "main", "open"),
+        ])))
+        .mount(&mock_server)
+        .await;
+
+    let client = make_client(&mock_server, "test-token");
+    let prs = client
+        .list_pull_requests("owner", "repo", None, None, None, None, None)
+        .await
+        .expect("null repo should not cause an error");
+
+    assert_eq!(prs.len(), 2, "both PRs should be returned");
+    let deleted_fork_pr = prs.iter().find(|p| p.number == 10).unwrap();
+    assert_eq!(deleted_fork_pr.head.repo.full_name, "");
+    assert_eq!(deleted_fork_pr.head.repo.id, 0);
+}
+
+/// `search_pull_requests` succeeds when GitHub returns `null` for `head.repo`.
+/// Same root cause as `test_list_pull_requests_null_repo_handled_gracefully`.
+#[tokio::test]
+async fn test_search_pull_requests_null_repo_handled_gracefully() {
+    let mock_server = MockServer::start().await;
+
+    let pr_deleted_fork = serde_json::json!({
+        "id": 20,
+        "node_id": "PR_20",
+        "number": 20,
+        "title": "Release PR",
+        "body": null,
+        "state": "open",
+        "user": { "login": "release-bot", "id": 3, "node_id": "U_3", "type": "Bot" },
+        "head": {
+            "ref": "release/v1.0.0",
+            "sha": "aaa111",
+            "repo": null
+        },
+        "base": {
+            "ref": "main",
+            "sha": "bbb222",
+            "repo": { "id": 100, "name": "repo", "full_name": "owner/repo" }
+        },
+        "draft": false,
+        "merged": false,
+        "mergeable": null,
+        "merge_commit_sha": null,
+        "assignees": [],
+        "requested_reviewers": [],
+        "labels": [],
+        "milestone": null,
+        "created_at": "2024-01-01T00:00:00Z",
+        "updated_at": "2024-01-01T00:00:00Z",
+        "closed_at": null,
+        "merged_at": null,
+        "html_url": "https://github.com/owner/repo/pull/20"
+    });
+
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/repo/pulls"))
+        .and(query_param("state", "open"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!([pr_deleted_fork])),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let client = make_client(&mock_server, "test-token");
+    let prs = client
+        .search_pull_requests("owner", "repo", "is:open head:release/v*")
+        .await
+        .expect("null repo in response should not cause an error");
+
+    assert_eq!(prs.len(), 1);
+    assert_eq!(prs[0].number, 20);
+    assert_eq!(prs[0].head.ref_name, "release/v1.0.0");
+}
