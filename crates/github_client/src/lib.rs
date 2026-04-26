@@ -559,39 +559,55 @@ impl GitHubOperations for GitHubClient {
             "Listing pull requests"
         );
 
+        // Use the raw HTTP endpoint instead of the SDK helper.
+        // The SDK's `PullRequest.head.repo` / `.base.repo` fields are required
+        // (non-Option), but GitHub returns `null` when a fork's repository has
+        // been deleted, causing "error decoding response body" at runtime.
         let state_str = state.unwrap_or("open");
         let installation = self.installation().await?;
         let mut all_prs: Vec<PullRequest> = Vec::new();
         let mut page: Option<u32> = None;
 
         loop {
-            let response = installation
-                .list_pull_requests(owner, repo, Some(state_str), page)
+            let path = match page {
+                Some(p) => {
+                    format!("/repos/{owner}/{repo}/pulls?state={state_str}&per_page=100&page={p}")
+                }
+                None => format!("/repos/{owner}/{repo}/pulls?state={state_str}&per_page=100"),
+            };
+
+            let response = installation.get(&path).await.map_err(map_sdk_error)?;
+
+            let next_page = response
+                .headers()
+                .get("Link")
+                .and_then(|h| h.to_str().ok())
+                .and_then(parse_next_page_from_link_header);
+
+            let items: Vec<ListPrItem> = response
+                .json()
                 .await
-                .map_err(map_sdk_error)?;
+                .map_err(|e| CoreError::network(format!("GitHub HTTP client error: {e}")))?;
 
-            let has_next = response.has_next();
-            let next_page_num = response.next_page_number();
-
-            for sdk_pr in response.items {
+            for pr_item in items {
                 // Client-side head-branch prefix filter.
                 if let Some(prefix) = head {
-                    if !sdk_pr.head.branch_ref.starts_with(prefix) {
+                    if !pr_item.head.branch_ref.starts_with(prefix) {
                         continue;
                     }
                 }
                 // Client-side base-branch exact-match filter.
                 if let Some(base_branch) = base {
-                    if sdk_pr.base.branch_ref != base_branch {
+                    if pr_item.base.branch_ref != base_branch {
                         continue;
                     }
                 }
-                all_prs.push(convert_sdk_pr_to_release_regent_pr(sdk_pr)?);
+                all_prs.push(list_pr_item_to_release_regent_pr(pr_item));
             }
 
-            match (has_next, next_page_num) {
-                (true, Some(next)) => page = Some(next),
-                _ => break,
+            match next_page {
+                Some(next) => page = Some(next),
+                None => break,
             }
         }
 
@@ -630,32 +646,46 @@ impl GitHubOperations for GitHubClient {
             .split_whitespace()
             .find_map(|token| token.strip_prefix("head:").map(|p| p.trim_end_matches('*')));
 
+        // Use the raw HTTP endpoint instead of the SDK helper.
+        // See the comment in list_pull_requests for why the SDK is bypassed.
         let installation = self.installation().await?;
         let mut all_prs: Vec<PullRequest> = Vec::new();
         let mut page: Option<u32> = None;
 
         loop {
-            let response = installation
-                .list_pull_requests(owner, repo, Some(state), page)
+            let path = match page {
+                Some(p) => {
+                    format!("/repos/{owner}/{repo}/pulls?state={state}&per_page=100&page={p}")
+                }
+                None => format!("/repos/{owner}/{repo}/pulls?state={state}&per_page=100"),
+            };
+
+            let response = installation.get(&path).await.map_err(map_sdk_error)?;
+
+            let next_page = response
+                .headers()
+                .get("Link")
+                .and_then(|h| h.to_str().ok())
+                .and_then(parse_next_page_from_link_header);
+
+            let items: Vec<ListPrItem> = response
+                .json()
                 .await
-                .map_err(map_sdk_error)?;
+                .map_err(|e| CoreError::network(format!("GitHub HTTP client error: {e}")))?;
 
-            let has_next = response.has_next();
-            let next_page_num = response.next_page_number();
-
-            for sdk_pr in response.items {
+            for pr_item in items {
                 // Filter by head branch prefix when specified.
                 if let Some(prefix) = head_prefix {
-                    if !sdk_pr.head.branch_ref.starts_with(prefix) {
+                    if !pr_item.head.branch_ref.starts_with(prefix) {
                         continue;
                     }
                 }
-                all_prs.push(convert_sdk_pr_to_release_regent_pr(sdk_pr)?);
+                all_prs.push(list_pr_item_to_release_regent_pr(pr_item));
             }
 
-            match (has_next, next_page_num) {
-                (true, Some(next)) => page = Some(next),
-                _ => break,
+            match next_page {
+                Some(next) => page = Some(next),
+                None => break,
             }
         }
 
@@ -962,6 +992,133 @@ struct CompareGitHubUser {
 #[derive(serde::Deserialize)]
 struct CompareCommitParent {
     sha: String,
+}
+
+// ── List-PRs API local types ────────────────────────────────────────────────
+//
+// The SDK's `PullRequest` type has `head.repo: PullRequestRepo` (required).
+// GitHub's REST API returns `null` for `head.repo` / `base.repo` when the
+// head repository has been deleted (common with merged or closed forks).
+// Using the SDK type therefore causes "error decoding response body" for any
+// response that contains such a PR.
+//
+// These private types mirror what GitHub actually returns.
+
+#[derive(serde::Deserialize)]
+struct ListPrItem {
+    number: u64,
+    title: String,
+    body: Option<String>,
+    state: String,
+    draft: bool,
+    user: ListPrUser,
+    head: ListPrBranch,
+    base: ListPrBranch,
+    created_at: chrono::DateTime<chrono::Utc>,
+    updated_at: chrono::DateTime<chrono::Utc>,
+    #[serde(default)]
+    merged_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+#[derive(serde::Deserialize)]
+struct ListPrBranch {
+    #[serde(rename = "ref")]
+    branch_ref: String,
+    sha: String,
+    /// `null` when the fork repository has been deleted.
+    repo: Option<ListPrBranchRepo>,
+}
+
+#[derive(serde::Deserialize)]
+struct ListPrBranchRepo {
+    id: u64,
+    name: String,
+    full_name: String,
+}
+
+#[derive(serde::Deserialize)]
+struct ListPrUser {
+    login: String,
+}
+
+/// Parse the `Link` response header and return the page number from the
+/// `rel="next"` URL, if present.
+fn parse_next_page_from_link_header(header_value: &str) -> Option<u32> {
+    for part in header_value.split(',') {
+        let part = part.trim();
+        if part.contains(r#"rel="next""#) {
+            if let (Some(start), Some(end)) = (part.find('<'), part.find('>')) {
+                let url = &part[start + 1..end];
+                for param in url.split('?').nth(1).unwrap_or("").split('&') {
+                    if let Some(val) = param.strip_prefix("page=") {
+                        return val.parse().ok();
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Convert a raw GitHub list-PRs-API item into the core `PullRequest` type.
+fn list_pr_item_to_release_regent_pr(pr: ListPrItem) -> PullRequest {
+    let head_repo = pr.head.repo.as_ref();
+    let base_repo = pr.base.repo.as_ref();
+
+    let head_owner = head_repo
+        .and_then(|r| r.full_name.split('/').next().map(str::to_string))
+        .unwrap_or_default();
+    let base_owner = base_repo
+        .and_then(|r| r.full_name.split('/').next().map(str::to_string))
+        .unwrap_or_default();
+
+    PullRequest {
+        number: pr.number,
+        title: pr.title,
+        body: pr.body,
+        state: pr.state,
+        draft: pr.draft,
+        created_at: pr.created_at,
+        updated_at: pr.updated_at,
+        merged_at: pr.merged_at,
+        user: GitHubUser {
+            name: pr.user.login.clone(),
+            email: format!("{}@users.noreply.github.com", pr.user.login),
+            login: Some(pr.user.login),
+        },
+        head: PullRequestBranch {
+            ref_name: pr.head.branch_ref,
+            sha: pr.head.sha,
+            repo: Repository {
+                id: head_repo.map(|r| r.id).unwrap_or(0),
+                name: head_repo.map(|r| r.name.clone()).unwrap_or_default(),
+                full_name: head_repo.map(|r| r.full_name.clone()).unwrap_or_default(),
+                owner: head_owner,
+                description: None,
+                private: false,
+                default_branch: String::new(),
+                clone_url: String::new(),
+                ssh_url: String::new(),
+                homepage: None,
+            },
+        },
+        base: PullRequestBranch {
+            ref_name: pr.base.branch_ref,
+            sha: pr.base.sha,
+            repo: Repository {
+                id: base_repo.map(|r| r.id).unwrap_or(0),
+                name: base_repo.map(|r| r.name.clone()).unwrap_or_default(),
+                full_name: base_repo.map(|r| r.full_name.clone()).unwrap_or_default(),
+                owner: base_owner,
+                description: None,
+                private: false,
+                default_branch: String::new(),
+                clone_url: String::new(),
+                ssh_url: String::new(),
+                homepage: None,
+            },
+        },
+    }
 }
 
 /// Convert a raw GitHub compare-API commit envelope into the core `GitCommit` type.
