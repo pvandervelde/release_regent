@@ -888,6 +888,70 @@ async fn test_custom_branch_prefix_is_used() {
     }
 }
 
+/// Config-file style `${version}` placeholder in title template is substituted correctly.
+#[tokio::test]
+async fn test_title_template_dollar_brace_syntax_is_substituted() {
+    let config = OrchestratorConfig {
+        title_template: "chore(release): ${version}".to_string(),
+        ..OrchestratorConfig::default()
+    };
+    let github = TestGitHub::new();
+    let orchestrator = ReleaseOrchestrator::new(config, &github);
+
+    let result = orchestrator
+        .orchestrate(
+            "testorg",
+            "testrepo",
+            &ver(1, 2, 3),
+            "- feat: something [ab12cd34ef5678901234abcdef12345678901234]",
+            "main",
+            "sha009",
+            "corr-009",
+        )
+        .await
+        .expect("orchestrate should succeed");
+
+    if let OrchestratorResult::Created { .. } = result {
+        let prs = github.created_prs().await;
+        assert_eq!(prs.len(), 1);
+        assert_eq!(prs[0].title, "chore(release): 1.2.3");
+    } else {
+        panic!("expected Created, got {result:?}");
+    }
+}
+
+/// Config-file style `${version_tag}` placeholder in title template is substituted correctly.
+#[tokio::test]
+async fn test_title_template_dollar_brace_version_tag_syntax_is_substituted() {
+    let config = OrchestratorConfig {
+        title_template: "chore(release): ${version_tag}".to_string(),
+        ..OrchestratorConfig::default()
+    };
+    let github = TestGitHub::new();
+    let orchestrator = ReleaseOrchestrator::new(config, &github);
+
+    let result = orchestrator
+        .orchestrate(
+            "testorg",
+            "testrepo",
+            &ver(1, 2, 3),
+            "- feat: something [ab12cd34ef5678901234abcdef12345678901234]",
+            "main",
+            "sha010",
+            "corr-010",
+        )
+        .await
+        .expect("orchestrate should succeed");
+
+    if let OrchestratorResult::Created { .. } = result {
+        let prs = github.created_prs().await;
+        assert_eq!(prs.len(), 1);
+        assert_eq!(prs[0].title, "chore(release): v1.2.3");
+    } else {
+        panic!("expected Created, got {result:?}");
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Unit tests for internal helpers
 // ─────────────────────────────────────────────────────────────────────────────

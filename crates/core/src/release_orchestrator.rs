@@ -329,8 +329,10 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
         let body = self.render_body(changelog);
 
         // Commit CHANGELOG.md to the release branch so the PR has a real diff.
-        let changelog_commit_message =
-            format!("chore(release): update CHANGELOG for {}", version.to_string_with_prefix(true));
+        let changelog_commit_message = format!(
+            "chore(release): update CHANGELOG for {}",
+            version.to_string_with_prefix(true)
+        );
         self.github
             .upsert_file(
                 owner,
@@ -508,11 +510,18 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
     // ── Template / body helpers ────────────────────────────────────────────
 
     /// Render the PR title from the configured template.
+    ///
+    /// Supports both `${variable}` (config-file style) and `{variable}` (internal style)
+    /// for `version` (e.g. `"0.2.0"`) and `version_tag` (e.g. `"v0.2.0"`).
     fn render_title(&self, version: &SemanticVersion) -> String {
+        let version_str = version.to_string();
+        let version_tag_str = version.to_string_with_prefix(true);
         self.config
             .title_template
-            .replace("{version}", &version.to_string())
-            .replace("{version_tag}", &version.to_string_with_prefix(true))
+            .replace("${version_tag}", &version_tag_str)
+            .replace("${version}", &version_str)
+            .replace("{version_tag}", &version_tag_str)
+            .replace("{version}", &version_str)
     }
 
     /// Wrap the changelog body in the standard PR body format.
