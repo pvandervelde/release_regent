@@ -11,6 +11,7 @@ description = "Core business logic for Release Regent"
 
 [dependencies]
 # Core dependencies
+futures = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 serde = { workspace = true }

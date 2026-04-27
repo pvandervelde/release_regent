@@ -25,6 +25,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::debug;
 
+#[cfg(test)]
+#[path = "github_version_calculator_tests.rs"]
+mod tests;
+
 /// Version calculator that fetches commits via the GitHub API.
 ///
 /// Holds an unscoped GitHub API client (`G`).  On each `calculate_version`
@@ -292,21 +296,32 @@ impl<G: GitHubOperations + 'static> VersionCalculatorTrait for GitHubVersionCalc
     }
 
     /// Analyse individual commits identified by their SHAs using the GitHub API.
+    ///
+    /// All commits are fetched concurrently to avoid an O(N × RTT) sequential
+    /// chain of API round-trips. GitHub provides no batch commit endpoint, so
+    /// N requests are still sent, but they are issued in parallel and the total
+    /// latency is O(RTT) rather than O(N × RTT).
     async fn analyze_commits(
         &self,
         context: VersionContext,
         _strategy: VersioningStrategy,
         commit_shas: Vec<String>,
     ) -> CoreResult<Vec<CommitAnalysis>> {
-        let mut analyses = Vec::with_capacity(commit_shas.len());
+        use futures::future::try_join_all;
 
-        for sha in &commit_shas {
-            let commit = self
-                .github_operations
-                .get_commit(&context.owner, &context.repo, sha)
+        let owner = context.owner.as_str();
+        let repo = context.repo.as_str();
+
+        let commits = try_join_all(commit_shas.iter().map(|sha| async move {
+            self.github_operations
+                .get_commit(owner, repo, sha)
                 .await
-                .map_err(|e| CoreError::versioning(format!("Failed to fetch commit {sha}: {e}")))?;
+                .map_err(|e| CoreError::versioning(format!("Failed to fetch commit {sha}: {e}")))
+        }))
+        .await?;
 
+        let mut analyses = Vec::with_capacity(commits.len());
+        for commit in commits {
             let date = commit.author_date;
             let author = commit.author.name.clone();
             let raw = vec![(commit.sha.clone(), commit.subject.clone())];
