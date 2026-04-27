@@ -82,8 +82,7 @@ pub struct MockGitHubOperations {
     ///
     /// Wrapped in `Arc<RwLock<...>>` so that the `&self` async-trait methods
     /// can mutate the vec without requiring `&mut self`.
-    upsert_file_calls:
-        Arc<RwLock<Vec<(String, String, String, String, String, String)>>>,
+    upsert_file_calls: Arc<RwLock<Vec<(String, String, String, String, String, String)>>>,
 }
 
 impl MockGitHubOperations {
@@ -1238,11 +1237,7 @@ impl GitHubOperations for MockGitHubOperations {
         Ok(labels)
     }
 
-    async fn get_installation_id_for_repo(
-        &self,
-        _owner: &str,
-        _repo: &str,
-    ) -> CoreResult<u64> {
+    async fn get_installation_id_for_repo(&self, _owner: &str, _repo: &str) -> CoreResult<u64> {
         Ok(0)
     }
 

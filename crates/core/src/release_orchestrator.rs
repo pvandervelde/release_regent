@@ -215,7 +215,14 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
                             "Existing PR has same version; merging changelogs"
                         );
                         let pr = self
-                            .update_release_pr(owner, repo, &existing_pr, version, changelog, base_sha)
+                            .update_release_pr(
+                                owner,
+                                repo,
+                                &existing_pr,
+                                version,
+                                changelog,
+                                base_sha,
+                            )
                             .await?;
                         Ok(OrchestratorResult::Updated { pr })
                     }

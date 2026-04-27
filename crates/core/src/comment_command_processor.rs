@@ -229,7 +229,6 @@ impl<'a, G: GitHubOperations + Send + Sync> CommentCommandProcessor<'a, G> {
                 .await;
         }
 
-
         match command {
             // Unknown is handled above with an early return; this arm is
             // unreachable but kept to satisfy exhaustiveness.

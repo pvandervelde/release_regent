@@ -456,7 +456,10 @@ impl VersionCalculatorTrait for DefaultVersionCalculator {
         Ok(next)
     }
 
-    fn scoped_to(&self, _installation_id: u64) -> std::sync::Arc<dyn VersionCalculatorTrait + Send + Sync> {
+    fn scoped_to(
+        &self,
+        _installation_id: u64,
+    ) -> std::sync::Arc<dyn VersionCalculatorTrait + Send + Sync> {
         // Local-git calculator is not GitHub-scoped; return a fresh instance.
         std::sync::Arc::new(DefaultVersionCalculator::new())
     }
