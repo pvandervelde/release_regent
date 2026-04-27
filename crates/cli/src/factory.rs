@@ -97,23 +97,16 @@ pub async fn create_production_processor() -> CliResult<ProductionProcessor> {
     // Webhook secret is optional — an empty string disables signature validation.
     let webhook_secret = std::env::var("GITHUB_WEBHOOK_SECRET").unwrap_or_default();
 
-    let installation_id: u64 = std::env::var("GITHUB_INSTALLATION_ID")
-        .map_err(|_| {
-            CliError::missing_dependency("GITHUB_INSTALLATION_ID", "environment variable not set")
-        })?
-        .parse::<u64>()
-        .map_err(|e| {
-            CliError::invalid_argument("GITHUB_INSTALLATION_ID", format!("Must be a number: {e}"))
-        })?;
-
     let auth_config = release_regent_github_client::AuthConfig {
         app_id,
         private_key,
         webhook_secret,
     };
 
-    let github_client =
-        release_regent_github_client::GitHubClient::from_config(auth_config, installation_id)?;
+    // The installation ID is extracted per-event from the webhook payload
+    // (payload["installation"]["id"]), so it does not need to be a static
+    // env var here.  `scoped_to` is called when each event is dispatched.
+    let github_client = release_regent_github_client::GitHubClient::from_config(auth_config)?;
 
     let config_dir = std::env::current_dir().map_err(|e| {
         CliError::command_execution(

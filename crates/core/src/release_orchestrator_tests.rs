@@ -41,6 +41,10 @@ struct TestState {
     updated_prs: Vec<(u64, Option<String>, Option<String>, Option<String>)>,
     /// Recorded `delete_branch` calls: branch name.
     deleted_branches: Vec<String>,
+    /// Recorded `force_update_branch` calls: (branch_name, sha).
+    force_updated_branches: Vec<(String, String)>,
+    /// Recorded `upsert_file` calls: (path, branch).
+    upserted_files: Vec<(String, String)>,
     /// Sequential PR number to return from `create_pull_request`.
     next_pr_number: u64,
     /// Whether `search_pull_requests` should return an error.
@@ -98,6 +102,14 @@ impl TestGitHub {
 
     async fn deleted_branches(&self) -> Vec<String> {
         self.state.lock().await.deleted_branches.clone()
+    }
+
+    async fn force_updated_branches(&self) -> Vec<(String, String)> {
+        self.state.lock().await.force_updated_branches.clone()
+    }
+
+    async fn upserted_files(&self) -> Vec<(String, String)> {
+        self.state.lock().await.upserted_files.clone()
     }
 }
 
@@ -352,6 +364,21 @@ impl GitHubOperations for TestGitHub {
         Ok(())
     }
 
+    async fn force_update_branch(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        branch_name: &str,
+        sha: &str,
+    ) -> CoreResult<()> {
+        self.state
+            .lock()
+            .await
+            .force_updated_branches
+            .push((branch_name.to_string(), sha.to_string()));
+        Ok(())
+    }
+
     async fn create_issue_comment(
         &self,
         _owner: &str,
@@ -398,6 +425,33 @@ impl GitHubOperations for TestGitHub {
         _issue_number: u64,
     ) -> CoreResult<Vec<crate::traits::github_operations::Label>> {
         Ok(vec![])
+    }
+
+    async fn get_installation_id_for_repo(&self, _owner: &str, _repo: &str) -> CoreResult<u64> {
+        Ok(0)
+    }
+
+    async fn upsert_file(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        path: &str,
+        _commit_message: &str,
+        _content: &str,
+        branch: &str,
+    ) -> CoreResult<()> {
+        self.state
+            .lock()
+            .await
+            .upserted_files
+            .push((path.to_string(), branch.to_string()));
+        Ok(())
+    }
+
+    fn scoped_to(&self, _installation_id: u64) -> Self {
+        Self {
+            state: Arc::clone(&self.state),
+        }
     }
 }
 // ─────────────────────────────────────────────────────────────────────────────
@@ -517,6 +571,15 @@ async fn test_orchestrate_no_existing_pr_creates_branch_and_pr() {
         .as_deref()
         .unwrap_or("")
         .contains("## Changelog"));
+
+    let upserted = github.upserted_files().await;
+    assert_eq!(
+        upserted.len(),
+        1,
+        "CHANGELOG.md should be committed to the release branch"
+    );
+    assert_eq!(upserted[0].0, "CHANGELOG.md");
+    assert_eq!(upserted[0].1, "release/v1.2.3");
 }
 
 /// Existing PR has the same version → changelog is merged (Updated).
@@ -561,6 +624,22 @@ async fn test_orchestrate_existing_equal_version_pr_updates_changelog() {
     let body = updates[0].2.as_deref().unwrap_or("");
     assert!(body.contains("old fix"), "should keep existing entry");
     assert!(body.contains("new feature"), "should add new entry");
+
+    // CHANGELOG.md should be committed to the existing branch.
+    let upserted = github.upserted_files().await;
+    assert_eq!(
+        upserted.len(),
+        1,
+        "CHANGELOG.md should be updated on the existing branch"
+    );
+    assert_eq!(upserted[0].0, "CHANGELOG.md");
+    assert_eq!(upserted[0].1, "release/v1.0.0");
+
+    // The release branch should be force-reset to the latest base SHA before the commit.
+    let force_updated = github.force_updated_branches().await;
+    assert_eq!(force_updated.len(), 1, "branch should be force-reset once");
+    assert_eq!(force_updated[0].0, "release/v1.0.0");
+    assert_eq!(force_updated[0].1, "sha002");
 }
 
 /// Existing PR has a lower version → rename (Renamed).
@@ -614,6 +693,16 @@ async fn test_orchestrate_existing_lower_version_pr_renames() {
         deleted.contains(&"release/v1.0.0".to_string()),
         "old branch not deleted; {deleted:?}"
     );
+
+    // CHANGELOG.md should be committed to the new release branch.
+    let upserted = github.upserted_files().await;
+    assert_eq!(
+        upserted.len(),
+        1,
+        "CHANGELOG.md should be committed to the new release branch"
+    );
+    assert_eq!(upserted[0].0, "CHANGELOG.md");
+    assert_eq!(upserted[0].1, "release/v1.1.0");
 }
 
 /// Existing PR has a *higher* version → NoOp (never downgrade).
@@ -650,11 +739,15 @@ async fn test_orchestrate_existing_higher_version_pr_is_no_op() {
     assert!(github.created_prs().await.is_empty());
     assert!(github.updated_prs().await.is_empty());
     assert!(github.deleted_branches().await.is_empty());
+    assert!(
+        github.upserted_files().await.is_empty(),
+        "NoOp should not commit any files"
+    );
 }
 
-/// Branch name conflict on first attempt → retries with timestamped fallback.
+/// Branch already exists (conflict from create_branch) → orchestrator reuses it.
 #[tokio::test]
-async fn test_orchestrate_branch_conflict_uses_timestamped_fallback() {
+async fn test_orchestrate_branch_already_exists_reuses_it() {
     let github = TestGitHub::new().with_next_create_branch_conflict().await;
 
     let orchestrator = ReleaseOrchestrator::new(default_config(), &github);
@@ -670,27 +763,48 @@ async fn test_orchestrate_branch_conflict_uses_timestamped_fallback() {
             "corr-005",
         )
         .await
-        .expect("orchestrate should succeed despite first branch conflict");
+        .expect("orchestrate should succeed when branch already exists");
 
-    // The result should still be Created.
+    // The result should still be Created, using the canonical branch name.
     if let OrchestratorResult::Created { branch_name, .. } = &result {
-        // The fallback branch should start with "release/v1.0.0-" (plus timestamp).
-        assert!(
-            branch_name.starts_with("release/v1.0.0-"),
-            "fallback branch name unexpected: {branch_name}"
+        assert_eq!(
+            branch_name, "release/v1.0.0",
+            "should reuse canonical branch, got {branch_name}"
         );
     } else {
         panic!("expected Created, got {result:?}");
     }
 
-    // Two branch creation attempts should have been recorded.
-    let branches = github.created_branches().await;
-    assert_eq!(branches.len(), 1, "only the successful attempt is tracked");
+    // No new branch was successfully created (the conflict was on the only attempt).
     assert!(
-        branches[0].0.starts_with("release/v1.0.0-"),
-        "expected timestamped branch, got {:?}",
-        branches[0].0
+        github.created_branches().await.is_empty(),
+        "no successful branch creation expected when reusing existing"
     );
+
+    // A PR should have been opened on the canonical branch.
+    let prs = github.created_prs().await;
+    assert_eq!(prs.len(), 1);
+    assert_eq!(prs[0].head, "release/v1.0.0");
+
+    // CHANGELOG.md should be committed to the canonical branch.
+    let upserted = github.upserted_files().await;
+    assert_eq!(
+        upserted.len(),
+        1,
+        "CHANGELOG.md should be committed to the existing branch"
+    );
+    assert_eq!(upserted[0].0, "CHANGELOG.md");
+    assert_eq!(upserted[0].1, "release/v1.0.0");
+
+    // The existing branch should be force-reset to the current base SHA before the commit.
+    let force_updated = github.force_updated_branches().await;
+    assert_eq!(
+        force_updated.len(),
+        1,
+        "existing branch should be force-reset to base SHA"
+    );
+    assert_eq!(force_updated[0].0, "release/v1.0.0");
+    assert_eq!(force_updated[0].1, "sha005");
 }
 
 /// `search_pull_requests` returns an error → propagated to caller.
@@ -754,6 +868,16 @@ async fn test_orchestrate_changelog_merge_deduplicates_commits() {
         count, 1,
         "duplicate SHA should be deduplicated; body:\n{body}"
     );
+
+    // CHANGELOG.md should be committed to the existing branch.
+    let upserted = github.upserted_files().await;
+    assert_eq!(
+        upserted.len(),
+        1,
+        "CHANGELOG.md should be updated on the existing branch"
+    );
+    assert_eq!(upserted[0].0, "CHANGELOG.md");
+    assert_eq!(upserted[0].1, "release/v1.0.0");
 }
 
 /// Branch name helper: `make_branch_name` formats as `"release/v{major}.{minor}.{patch}"`.
@@ -768,23 +892,6 @@ fn test_make_branch_name_format() {
     assert_eq!(
         orchestrator.make_branch_name(&ver(0, 1, 0)),
         "release/v0.1.0"
-    );
-}
-
-/// Fallback branch name starts with the canonical name and has a numeric suffix.
-#[test]
-fn test_make_fallback_branch_name_contains_timestamp() {
-    let github = TestGitHub::new();
-    let orchestrator = ReleaseOrchestrator::new(default_config(), &github);
-    let fallback = orchestrator.make_fallback_branch_name(&ver(1, 0, 0));
-    assert!(
-        fallback.starts_with("release/v1.0.0-"),
-        "fallback should start with canonical prefix: {fallback}"
-    );
-    let suffix = fallback.trim_start_matches("release/v1.0.0-");
-    assert!(
-        suffix.chars().all(|c| c.is_ascii_digit()),
-        "suffix should be numeric timestamp: {suffix}"
     );
 }
 
@@ -815,6 +922,70 @@ async fn test_custom_branch_prefix_is_used() {
         assert_eq!(branch_name, "releases/v2.0.0");
     } else {
         panic!("expected Created");
+    }
+}
+
+/// Config-file style `${version}` placeholder in title template is substituted correctly.
+#[tokio::test]
+async fn test_title_template_dollar_brace_syntax_is_substituted() {
+    let config = OrchestratorConfig {
+        title_template: "chore(release): ${version}".to_string(),
+        ..OrchestratorConfig::default()
+    };
+    let github = TestGitHub::new();
+    let orchestrator = ReleaseOrchestrator::new(config, &github);
+
+    let result = orchestrator
+        .orchestrate(
+            "testorg",
+            "testrepo",
+            &ver(1, 2, 3),
+            "- feat: something [ab12cd34ef5678901234abcdef12345678901234]",
+            "main",
+            "sha009",
+            "corr-009",
+        )
+        .await
+        .expect("orchestrate should succeed");
+
+    if let OrchestratorResult::Created { .. } = result {
+        let prs = github.created_prs().await;
+        assert_eq!(prs.len(), 1);
+        assert_eq!(prs[0].title, "chore(release): 1.2.3");
+    } else {
+        panic!("expected Created, got {result:?}");
+    }
+}
+
+/// Config-file style `${version_tag}` placeholder in title template is substituted correctly.
+#[tokio::test]
+async fn test_title_template_dollar_brace_version_tag_syntax_is_substituted() {
+    let config = OrchestratorConfig {
+        title_template: "chore(release): ${version_tag}".to_string(),
+        ..OrchestratorConfig::default()
+    };
+    let github = TestGitHub::new();
+    let orchestrator = ReleaseOrchestrator::new(config, &github);
+
+    let result = orchestrator
+        .orchestrate(
+            "testorg",
+            "testrepo",
+            &ver(1, 2, 3),
+            "- feat: something [ab12cd34ef5678901234abcdef12345678901234]",
+            "main",
+            "sha010",
+            "corr-010",
+        )
+        .await
+        .expect("orchestrate should succeed");
+
+    if let OrchestratorResult::Created { .. } = result {
+        let prs = github.created_prs().await;
+        assert_eq!(prs.len(), 1);
+        assert_eq!(prs[0].title, "chore(release): v1.2.3");
+    } else {
+        panic!("expected Created, got {result:?}");
     }
 }
 

@@ -1,0 +1,88 @@
+# =============================================================================
+# Release Regent — sample repository configuration
+# =============================================================================
+# All fields shown here are optional — they match the built-in defaults.
+# You only need to include the fields you want to override.
+#
+# The server looks for a file named release-regent.toml (or .yaml) in
+# the CONFIG_DIR directory (default: /config inside the container).
+#
+# Full reference: docs/configuration-reference.md
+# =============================================================================
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Core settings
+# ─────────────────────────────────────────────────────────────────────────────
+
+[core]
+# Prefix prepended to version numbers in tags and PR titles.
+version_prefix = "v"
+
+[core.branches]
+# The default branch of the repository.
+main = "main"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Versioning
+# ─────────────────────────────────────────────────────────────────────────────
+
+[versioning]
+# How to calculate the next version.
+# Options: "conventional" (conventional commits) | "external" (custom command)
+strategy = "conventional"
+
+# Allow contributors to override the calculated bump via PR comments
+# (e.g. /override-bump minor).
+allow_override = true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Release pull request
+# ─────────────────────────────────────────────────────────────────────────────
+
+[release_pr]
+# Template for the release PR title. ${version} is replaced at runtime.
+title_template = "chore(release): ${version}"
+
+# Template for the release PR body. ${changelog} is replaced at runtime.
+body_template = "## Changelog\n\n${changelog}"
+
+# Create release PRs as drafts.
+draft = false
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GitHub releases
+# ─────────────────────────────────────────────────────────────────────────────
+
+[releases]
+# Publish releases as drafts (not publicly visible until manually published).
+draft = false
+
+# Mark releases as pre-releases.
+prerelease = false
+
+# Auto-generate release notes from merged PRs in addition to the changelog.
+generate_notes = true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Error handling / retries
+# ─────────────────────────────────────────────────────────────────────────────
+
+[error_handling]
+max_retries = 5
+backoff_multiplier = 2.0
+initial_delay_ms = 1000
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Notifications
+# ─────────────────────────────────────────────────────────────────────────────
+
+[notifications]
+enabled = true
+
+# How to report errors encountered during processing.
+# Options: "github_issue" | "webhook" | "slack" | "none"
+strategy = "github_issue"
+
+[notifications.github_issue]
+labels = ["release-regent", "bug"]
+assignees = []

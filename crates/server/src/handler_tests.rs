@@ -537,6 +537,7 @@ async fn test_handle_event_full_channel_drops_event_without_error() {
         payload: json!({}),
         received_at: Utc::now(),
         source: EventSourceKind::Webhook,
+        installation_id: 0,
     };
     tx.try_send(filler).expect("pre-fill must succeed");
 
@@ -586,6 +587,7 @@ async fn test_next_event_with_event_available_returns_some() {
         payload: json!({}),
         received_at: Utc::now(),
         source: EventSourceKind::Webhook,
+        installation_id: 0,
     };
     tx.try_send(event.clone()).expect("send must succeed");
 
@@ -615,6 +617,7 @@ async fn test_next_event_returns_none_after_channel_is_drained() {
         payload: json!({}),
         received_at: Utc::now(),
         source: EventSourceKind::Webhook,
+        installation_id: 0,
     };
     tx.try_send(event).expect("send must succeed");
     let source = WebhookEventSource::new(rx);

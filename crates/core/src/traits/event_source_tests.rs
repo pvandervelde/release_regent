@@ -16,6 +16,7 @@ fn make_processing_event(source: EventSourceKind) -> ProcessingEvent {
         payload: serde_json::json!({ "action": "closed", "merged": true }),
         received_at: Utc.with_ymd_and_hms(2026, 3, 8, 12, 0, 0).unwrap(),
         source,
+        installation_id: 0,
     }
 }
 

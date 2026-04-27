@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # =============================================================================
 # Release Regent — multi-stage Docker build
 #
@@ -80,8 +81,15 @@ RUN mkdir -p \
     && printf 'pub fn _stub() {}\n' > crates/core/src/lib.rs \
     && printf 'pub fn _stub() {}\n' > crates/github_client/src/lib.rs \
     && printf 'fn main() {}\n' > crates/server/src/main.rs \
-    && printf 'pub fn _stub() {}\n' > crates/testing/src/lib.rs \
-    && cargo build --release --locked --package release-regent-server || true
+    && printf 'pub fn _stub() {}\n' > crates/testing/src/lib.rs
+
+# Pre-compile external dependencies using the stub sources.
+# --mount=type=cache keeps the cargo registry and incremental artifacts on the
+# host between builds, so external crates are not re-downloaded or recompiled
+# on every docker build invocation.
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/build/target \
+    cargo build --release --locked --package release-regent-server || true
 
 # =============================================================================
 # Stage 2 — final compilation
@@ -95,8 +103,11 @@ FROM deps AS builder
 COPY crates/ crates/
 
 # Touch all .rs files so that Cargo detects them as newer than the stubs.
-RUN find crates -name '*.rs' -exec touch {} + \
-    && cargo build --release --locked --package release-regent-server
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/build/target \
+    find crates -name '*.rs' -exec touch {} + \
+    && cargo build --release --locked --package release-regent-server \
+    && cp target/release/rr-server /build/rr-server-bin
 
 # =============================================================================
 # Stage 3 — minimal runtime image
@@ -124,7 +135,7 @@ RUN useradd \
     --uid 10001 \
     rr
 
-COPY --from=builder /build/target/release/rr-server /usr/local/bin/rr-server
+COPY --from=builder /build/rr-server-bin /usr/local/bin/rr-server
 
 USER rr
 

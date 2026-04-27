@@ -13,27 +13,78 @@ use tracing::{debug, info};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BranchConfig {
     /// Main branch name
+    #[serde(default = "default_main_branch")]
     pub main: String,
+}
+
+fn default_main_branch() -> String {
+    "main".to_string()
+}
+
+impl Default for BranchConfig {
+    fn default() -> Self {
+        Self {
+            main: default_main_branch(),
+        }
+    }
 }
 
 /// Core Release Regent settings
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CoreConfig {
     /// Version prefix (e.g., "v" for "v1.0.0")
+    #[serde(default = "default_version_prefix")]
     pub version_prefix: String,
     /// Branch configuration
+    #[serde(default)]
     pub branches: BranchConfig,
+}
+
+fn default_version_prefix() -> String {
+    "v".to_string()
+}
+
+impl Default for CoreConfig {
+    fn default() -> Self {
+        Self {
+            version_prefix: default_version_prefix(),
+            branches: BranchConfig::default(),
+        }
+    }
 }
 
 /// Error handling configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErrorHandlingConfig {
     /// Maximum number of retries
+    #[serde(default = "default_max_retries")]
     pub max_retries: u32,
     /// Backoff multiplier for retries
+    #[serde(default = "default_backoff_multiplier")]
     pub backoff_multiplier: f64,
     /// Initial delay in milliseconds
+    #[serde(default = "default_initial_delay_ms")]
     pub initial_delay_ms: u64,
+}
+
+fn default_max_retries() -> u32 {
+    5
+}
+fn default_backoff_multiplier() -> f64 {
+    2.0
+}
+fn default_initial_delay_ms() -> u64 {
+    1000
+}
+
+impl Default for ErrorHandlingConfig {
+    fn default() -> Self {
+        Self {
+            max_retries: default_max_retries(),
+            backoff_multiplier: default_backoff_multiplier(),
+            initial_delay_ms: default_initial_delay_ms(),
+        }
+    }
 }
 
 /// External versioning configuration
@@ -58,8 +109,10 @@ pub struct GitHubIssueConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NotificationConfig {
     /// Whether notifications are enabled
+    #[serde(default = "default_notifications_enabled")]
     pub enabled: bool,
     /// Notification strategy
+    #[serde(default = "default_notification_strategy")]
     pub strategy: NotificationStrategy,
     /// GitHub issue notification settings
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -72,31 +125,79 @@ pub struct NotificationConfig {
     pub slack: Option<SlackConfig>,
 }
 
+fn default_notifications_enabled() -> bool {
+    true
+}
+fn default_notification_strategy() -> NotificationStrategy {
+    NotificationStrategy::GitHubIssue
+}
+
+impl Default for NotificationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_notifications_enabled(),
+            strategy: default_notification_strategy(),
+            github_issue: Some(GitHubIssueConfig {
+                labels: vec!["release-regent".to_string(), "bug".to_string()],
+                assignees: vec![],
+            }),
+            webhook: None,
+            slack: None,
+        }
+    }
+}
+
 /// Release PR configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReleasePrConfig {
     /// PR title template
+    #[serde(default = "default_pr_title_template")]
     pub title_template: String,
     /// PR body template
+    #[serde(default = "default_pr_body_template")]
     pub body_template: String,
     /// Whether to create PRs as drafts
+    #[serde(default)]
     pub draft: bool,
+}
+
+fn default_pr_title_template() -> String {
+    "chore(release): ${version}".to_string()
+}
+fn default_pr_body_template() -> String {
+    "## Changelog\n\n${changelog}".to_string()
+}
+
+impl Default for ReleasePrConfig {
+    fn default() -> Self {
+        Self {
+            title_template: default_pr_title_template(),
+            body_template: default_pr_body_template(),
+            draft: false,
+        }
+    }
 }
 
 /// Main Release Regent configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReleaseRegentConfig {
     /// Core settings
+    #[serde(default)]
     pub core: CoreConfig,
     /// Release PR settings
+    #[serde(default)]
     pub release_pr: ReleasePrConfig,
     /// GitHub release settings
+    #[serde(default)]
     pub releases: ReleasesConfig,
     /// Error handling configuration
+    #[serde(default)]
     pub error_handling: ErrorHandlingConfig,
     /// Notification settings
+    #[serde(default)]
     pub notifications: NotificationConfig,
     /// Versioning strategy
+    #[serde(default)]
     pub versioning: VersioningConfig,
 }
 
@@ -104,11 +205,28 @@ pub struct ReleaseRegentConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReleasesConfig {
     /// Whether to create releases as drafts
+    #[serde(default)]
     pub draft: bool,
     /// Whether to mark as prerelease
+    #[serde(default)]
     pub prerelease: bool,
     /// Whether to generate release notes automatically
+    #[serde(default = "default_generate_notes")]
     pub generate_notes: bool,
+}
+
+fn default_generate_notes() -> bool {
+    true
+}
+
+impl Default for ReleasesConfig {
+    fn default() -> Self {
+        Self {
+            draft: false,
+            prerelease: false,
+            generate_notes: default_generate_notes(),
+        }
+    }
 }
 
 /// Slack notification configuration
@@ -125,12 +243,31 @@ pub struct SlackConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VersioningConfig {
     /// Versioning strategy
+    #[serde(default = "default_versioning_strategy")]
     pub strategy: VersioningStrategy,
     /// External versioning settings
     #[serde(skip_serializing_if = "Option::is_none")]
     pub external: Option<ExternalVersioningConfig>,
     /// Whether to allow PR comment overrides
+    #[serde(default = "default_allow_override")]
     pub allow_override: bool,
+}
+
+fn default_versioning_strategy() -> VersioningStrategy {
+    VersioningStrategy::Conventional
+}
+fn default_allow_override() -> bool {
+    true
+}
+
+impl Default for VersioningConfig {
+    fn default() -> Self {
+        Self {
+            strategy: default_versioning_strategy(),
+            external: None,
+            allow_override: default_allow_override(),
+        }
+    }
 }
 
 /// Webhook notification configuration
@@ -148,6 +285,7 @@ pub struct WebhookConfig {
 #[serde(rename_all = "snake_case")]
 pub enum NotificationStrategy {
     /// Create GitHub issues for errors
+    #[serde(rename = "github_issue")]
     GitHubIssue,
     /// Send webhook notifications
     Webhook,
@@ -170,42 +308,12 @@ pub enum VersioningStrategy {
 impl Default for ReleaseRegentConfig {
     fn default() -> Self {
         Self {
-            core: CoreConfig {
-                version_prefix: "v".to_string(),
-                branches: BranchConfig {
-                    main: "main".to_string(),
-                },
-            },
-            release_pr: ReleasePrConfig {
-                title_template: "chore(release): ${version}".to_string(),
-                body_template: "## Changelog\n\n${changelog}".to_string(),
-                draft: false,
-            },
-            releases: ReleasesConfig {
-                draft: false,
-                prerelease: false,
-                generate_notes: true,
-            },
-            error_handling: ErrorHandlingConfig {
-                max_retries: 5,
-                backoff_multiplier: 2.0,
-                initial_delay_ms: 1000,
-            },
-            notifications: NotificationConfig {
-                enabled: true,
-                strategy: NotificationStrategy::GitHubIssue,
-                github_issue: Some(GitHubIssueConfig {
-                    labels: vec!["release-regent".to_string(), "bug".to_string()],
-                    assignees: vec![],
-                }),
-                webhook: None,
-                slack: None,
-            },
-            versioning: VersioningConfig {
-                strategy: VersioningStrategy::Conventional,
-                external: None,
-                allow_override: true,
-            },
+            core: CoreConfig::default(),
+            release_pr: ReleasePrConfig::default(),
+            releases: ReleasesConfig::default(),
+            error_handling: ErrorHandlingConfig::default(),
+            notifications: NotificationConfig::default(),
+            versioning: VersioningConfig::default(),
         }
     }
 }

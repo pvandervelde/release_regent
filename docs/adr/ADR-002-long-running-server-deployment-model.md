@@ -89,7 +89,6 @@ ENTRYPOINT ["rr-server"]
 | `GITHUB_WEBHOOK_SECRET`   | HMAC-SHA256 secret (**required**)                    | —       |
 | `GITHUB_APP_ID`           | GitHub App numeric ID (**required**)                 | —       |
 | `GITHUB_PRIVATE_KEY`      | PEM-encoded GitHub App private key (**required**)    | —       |
-| `GITHUB_INSTALLATION_ID`  | GitHub App installation ID (**required**)            | —       |
 | `CONFIG_DIR`              | Directory containing `.release-regent.toml`          | current directory |
 | `ALLOWED_REPOS`           | Comma-separated `owner/repo` list, or `*`            | `*`     |
 | `EVENT_CHANNEL_CAPACITY`  | Bounded channel depth for in-flight events           | `1024`  |

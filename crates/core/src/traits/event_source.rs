@@ -253,6 +253,20 @@ pub struct ProcessingEvent {
 
     /// Delivery mechanism that produced this event.
     pub source: EventSourceKind,
+
+    /// GitHub App installation ID extracted from the webhook payload field
+    /// `installation.id`.
+    ///
+    /// Every webhook sent by a GitHub App includes the installation ID of the
+    /// specific account or organisation where the app is installed. Using this
+    /// value — rather than a static environment variable — means the server can
+    /// serve webhooks from any installation of the same GitHub App without
+    /// reconfiguration.
+    ///
+    /// Set to `0` for events that do not originate from a GitHub App webhook
+    /// (e.g. events injected by tests or produced by queue-based sources that
+    /// do not carry installation context).
+    pub installation_id: u64,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -164,6 +164,30 @@ flowchart TD
 - Handle rate limiting and retries
 - Manage installation tokens
 
+#### 7. Version Calculator
+
+**Purpose**: Derive the next semantic version and changelog from commit history
+**Implementations**:
+
+- `DefaultVersionCalculator` (`crates/core/src/version_calculator.rs`) — CLI
+  deployment. Runs a local `git` subprocess to read commit history from a
+  checked-out working tree.
+- `GitHubVersionCalculator` (`crates/core/src/github_version_calculator.rs`) —
+  **server deployment**. Fetches commit history via the GitHub compare API
+  instead of a local git clone. This implementation is used by the server
+  (container) deployment where no local git clone exists.
+
+**When to use each**:
+
+| Context | Calculator |
+|---------|-----------|
+| `rr` CLI (developer workstation) | `DefaultVersionCalculator` |
+| Long-running server / webhook handler | `GitHubVersionCalculator` |
+
+Both implementations satisfy the `VersionCalculator` trait
+(`crates/core/src/traits/version_calculator.rs`) so domain code is agnostic
+to the underlying strategy.
+
 ## Data Flow Architecture
 
 ### Webhook Processing Pipeline

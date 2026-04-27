@@ -161,6 +161,7 @@ fn make_test_event(id: &str, event_type: EventType) -> ProcessingEvent {
         payload: serde_json::json!({}),
         received_at: Utc::now(),
         source: EventSourceKind::Webhook,
+        installation_id: 0,
     }
 }
 
@@ -860,6 +861,16 @@ impl GitHubOperations for TestGitHubForLib {
         Ok(())
     }
 
+    async fn force_update_branch(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _branch_name: &str,
+        _sha: &str,
+    ) -> CoreResult<()> {
+        Ok(())
+    }
+
     async fn create_issue_comment(
         &self,
         _owner: &str,
@@ -934,6 +945,39 @@ impl GitHubOperations for TestGitHubForLib {
             .get(&issue_number)
             .cloned()
             .unwrap_or_default())
+    }
+
+    async fn get_installation_id_for_repo(&self, _owner: &str, _repo: &str) -> CoreResult<u64> {
+        Ok(0)
+    }
+
+    async fn upsert_file(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _path: &str,
+        _commit_message: &str,
+        _content: &str,
+        _branch: &str,
+    ) -> CoreResult<()> {
+        Ok(())
+    }
+
+    fn scoped_to(&self, _installation_id: u64) -> Self {
+        Self {
+            tags: self.tags.clone(),
+            existing_prs: self.existing_prs.clone(),
+            search_results: self.search_results.clone(),
+            pr_labels: self.pr_labels.clone(),
+            created_prs: Arc::clone(&self.created_prs),
+            create_branch_calls: Arc::clone(&self.create_branch_calls),
+            removed_labels: Arc::clone(&self.removed_labels),
+            issue_comments: Arc::clone(&self.issue_comments),
+            fail_search_for_label: self.fail_search_for_label.clone(),
+            fail_remove_label_for_pr: self.fail_remove_label_for_pr,
+            fail_comment_for_pr: self.fail_comment_for_pr,
+            fail_list_labels_for_pr: self.fail_list_labels_for_pr,
+        }
     }
 }
 
@@ -1143,6 +1187,13 @@ impl VersionCalculator for TestVersionCalcForLib {
     ) -> CoreResult<SemanticVersion> {
         Ok(current_version)
     }
+
+    fn scoped_to(&self, _installation_id: u64) -> Arc<dyn VersionCalculator + Send + Sync> {
+        Arc::new(TestVersionCalcForLib {
+            next_version: self.next_version.clone(),
+            changelog_entries: self.changelog_entries.clone(),
+        })
+    }
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
@@ -1173,6 +1224,7 @@ async fn test_handle_merged_pr_creates_release_pr_when_none_exists() {
         }),
         received_at: Utc::now(),
         source: EventSourceKind::Webhook,
+        installation_id: 0,
     };
 
     let result = processor.handle_merged_pull_request(&event).await.unwrap();
@@ -1220,6 +1272,7 @@ async fn test_handle_merged_pr_returns_invalid_input_when_sha_missing() {
         payload: serde_json::json!({ "pull_request": { "base": { "ref": "main" } } }),
         received_at: Utc::now(),
         source: EventSourceKind::Webhook,
+        installation_id: 0,
     };
 
     let err = processor
@@ -1259,6 +1312,7 @@ async fn test_handle_merged_pr_uses_default_branch_when_base_ref_absent() {
         }),
         received_at: Utc::now(),
         source: EventSourceKind::Webhook,
+        installation_id: 0,
     };
 
     let result = processor.handle_merged_pull_request(&event).await.unwrap();
@@ -1318,6 +1372,7 @@ async fn test_handle_merged_pr_includes_changelog_entries_in_pr_body() {
         }),
         received_at: Utc::now(),
         source: EventSourceKind::Webhook,
+        installation_id: 0,
     };
 
     processor.handle_merged_pull_request(&event).await.unwrap();
@@ -1399,6 +1454,7 @@ async fn test_handle_merged_feature_pr_with_override_major_label_applies_floor()
         }),
         received_at: Utc::now(),
         source: EventSourceKind::Webhook,
+        installation_id: 0,
     };
 
     let result = processor.handle_merged_pull_request(&event).await.unwrap();
@@ -1489,6 +1545,7 @@ async fn test_handle_merged_feature_pr_without_override_label_uses_calculated_ve
         }),
         received_at: Utc::now(),
         source: EventSourceKind::Webhook,
+        installation_id: 0,
     };
 
     let result = processor.handle_merged_pull_request(&event).await.unwrap();
@@ -1550,6 +1607,7 @@ async fn test_handle_merged_release_pr_clears_stale_override_labels_from_open_pr
         }),
         received_at: Utc::now(),
         source: EventSourceKind::Webhook,
+        installation_id: 0,
     };
 
     processor.handle_merged_pull_request(&event).await.unwrap();
@@ -1648,6 +1706,7 @@ async fn test_handle_merged_feature_pr_with_override_minor_label_applies_floor()
         }),
         received_at: Utc::now(),
         source: EventSourceKind::Webhook,
+        installation_id: 0,
     };
 
     let result = processor.handle_merged_pull_request(&event).await.unwrap();
@@ -1724,6 +1783,7 @@ async fn test_handle_merged_feature_pr_with_patch_floor_no_effect_when_calculate
         }),
         received_at: Utc::now(),
         source: EventSourceKind::Webhook,
+        installation_id: 0,
     };
 
     let result = processor.handle_merged_pull_request(&event).await.unwrap();
@@ -1796,6 +1856,7 @@ async fn test_handle_merged_release_pr_search_failure_for_one_label_continues() 
         }),
         received_at: Utc::now(),
         source: EventSourceKind::Webhook,
+        installation_id: 0,
     };
 
     // Event must succeed despite the partial search failure.
@@ -1853,6 +1914,7 @@ async fn test_handle_merged_release_pr_remove_label_failure_still_posts_cleanup_
         }),
         received_at: Utc::now(),
         source: EventSourceKind::Webhook,
+        installation_id: 0,
     };
 
     // Event must succeed despite remove_label failures.
@@ -1903,6 +1965,7 @@ async fn test_handle_merged_release_pr_cleanup_comment_failure_event_still_succe
         }),
         received_at: Utc::now(),
         source: EventSourceKind::Webhook,
+        installation_id: 0,
     };
 
     // Event must succeed despite comment posting failure.
@@ -1976,6 +2039,7 @@ async fn test_handle_merged_feature_pr_audit_comment_failure_returns_ok() {
         }),
         received_at: Utc::now(),
         source: EventSourceKind::Webhook,
+        installation_id: 0,
     };
 
     // The overall result must be Ok even though the audit comment failed.

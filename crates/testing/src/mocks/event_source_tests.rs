@@ -28,6 +28,7 @@ fn make_event(id: &str) -> ProcessingEvent {
         payload: serde_json::json!({}),
         received_at: Utc::now(),
         source: EventSourceKind::Webhook,
+        installation_id: 0,
     }
 }
 

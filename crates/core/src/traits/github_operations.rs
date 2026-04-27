@@ -214,6 +214,32 @@ pub trait GitHubOperations: GitOperations + Send + Sync {
     /// - `CoreError::GitHub` - API communication failed
     async fn delete_branch(&self, owner: &str, repo: &str, branch_name: &str) -> CoreResult<()>;
 
+    /// Force-reset an existing branch tip to a specific commit SHA.
+    ///
+    /// Equivalent to `git push --force origin <sha>:refs/heads/<branch_name>`.
+    /// Used to keep the release branch exactly one commit ahead of the base branch
+    /// on every changelog update, so the PR always shows a single diff.
+    ///
+    /// # Parameters
+    /// - `owner`: Repository owner name
+    /// - `repo`: Repository name
+    /// - `branch_name`: Name of the branch to reset (without `refs/heads/` prefix)
+    /// - `sha`: The commit SHA to reset the branch tip to
+    ///
+    /// # Returns
+    /// `Ok(())` on success
+    ///
+    /// # Errors
+    /// - `CoreError::NotFound` - Branch does not exist
+    /// - `CoreError::GitHub` - API communication failed
+    async fn force_update_branch(
+        &self,
+        owner: &str,
+        repo: &str,
+        branch_name: &str,
+        sha: &str,
+    ) -> CoreResult<()>;
+
     /// Get the permission level a specific user has on a repository
     ///
     /// Used to authorise PR comment commands: only collaborators with `Write`,
@@ -330,6 +356,12 @@ pub trait GitHubOperations: GitOperations + Send + Sync {
     /// - `per_page`: Number of PRs per page, max 100 (optional)
     /// - `page`: Page number, 1-based (optional)
     ///
+    /// # Note on pagination
+    ///
+    /// Implementations may ignore `per_page` and `page` and instead return a
+    /// complete, fully-paginated result set in a single call.  Callers should
+    /// not rely on these parameters to page through results themselves.
+    ///
     /// # Returns
     /// List of pull requests matching the filters
     ///
@@ -408,8 +440,14 @@ pub trait GitHubOperations: GitOperations + Send + Sync {
     /// Supports a subset of GitHub search qualifiers:
     /// - `is:open` / `is:closed` / `is:merged` — filter by state
     /// - `head:BRANCH` or `head:PREFIX*` — filter by head branch (glob prefix with `*`)
-    /// - `base:BRANCH` — filter by exact base branch name
-    /// - `label:NAME` — filter by label name (exact match)
+    ///
+    /// # Note on supported qualifiers
+    ///
+    /// The `label:NAME` qualifier documented here is **not yet implemented** in
+    /// the current `GitHubClient` implementation.  Passing `label:NAME` in the
+    /// query will silently return results without filtering by label.  Track the
+    /// implementation gap and add label-based client-side filtering before
+    /// relying on this qualifier in production callers.
     ///
     /// # Parameters
     /// - `owner`: Repository owner name
@@ -477,6 +515,79 @@ pub trait GitHubOperations: GitOperations + Send + Sync {
         release_id: u64,
         params: UpdateReleaseParams,
     ) -> CoreResult<Release>;
+
+    /// Look up the GitHub App installation ID for a specific repository.
+    ///
+    /// Calls `GET /repos/{owner}/{repo}/installation` using app-level JWT
+    /// authentication and returns the numeric installation ID.
+    ///
+    /// Use this when no installation ID is available in the incoming event
+    /// (e.g. queue-sourced events that do not carry the `installation` field).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError::GitHub`] if the API call fails or if the App is not
+    /// installed on the repository.
+    async fn get_installation_id_for_repo(&self, owner: &str, repo: &str) -> CoreResult<u64>;
+
+    /// Create or update a file at the given path on a branch.
+    ///
+    /// Uses the GitHub Contents API (`PUT /repos/{owner}/{repo}/contents/{path}`)
+    /// to commit the file content directly onto the specified branch. If the
+    /// file already exists, the current blob SHA is fetched automatically so
+    /// the update can succeed without the caller needing to track the previous
+    /// content.
+    ///
+    /// The `content` string is plain UTF-8 text; base64 encoding is handled
+    /// internally.
+    ///
+    /// # Parameters
+    /// - `owner`: Repository owner name
+    /// - `repo`: Repository name
+    /// - `path`: File path relative to the repository root (e.g. `"CHANGELOG.md"`)
+    /// - `commit_message`: Commit message for the change
+    /// - `content`: File content as plain UTF-8 text
+    /// - `branch`: Branch to commit to
+    ///
+    /// # Returns
+    /// `Ok(())` on success.
+    ///
+    /// # Errors
+    /// - `CoreError::GitHub` — the API call failed
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// github.upsert_file(
+    ///     "owner", "repo",
+    ///     "CHANGELOG.md",
+    ///     "chore(release): update CHANGELOG for v1.2.3",
+    ///     "## Changelog\n\n- feat: add thing",
+    ///     "release/v1.2.3",
+    /// ).await?;
+    /// ```
+    async fn upsert_file(
+        &self,
+        owner: &str,
+        repo: &str,
+        path: &str,
+        commit_message: &str,
+        content: &str,
+        branch: &str,
+    ) -> CoreResult<()>;
+
+    /// Return a clone of this client scoped to the given GitHub App installation.
+    ///
+    /// All subsequent API calls on the returned client will use an installation
+    /// access token obtained for `installation_id` rather than the token used
+    /// by `self`.  This allows a single top-level client to serve webhooks from
+    /// any installation of the GitHub App without re-initialisation.
+    ///
+    /// Implementations must not make any network calls in this method — the
+    /// installation token is obtained lazily on the first API call.
+    fn scoped_to(&self, installation_id: u64) -> Self
+    where
+        Self: Sized;
 }
 
 // Note: Git commit information is now provided by GitOperations trait

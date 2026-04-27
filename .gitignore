@@ -27,3 +27,8 @@ target/
 
 # Coverage reports
 codecov.json
+
+# Local development credentials — never commit these
+samples/.env
+*.pem
+samples/config/test.env

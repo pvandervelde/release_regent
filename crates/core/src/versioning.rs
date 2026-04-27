@@ -418,8 +418,20 @@ impl VersionCalculator {
     }
 
     /// Apply version bump to base version
+    ///
+    /// When `major == 0` (pre-1.0 development), a `Major` bump is treated as a
+    /// `Minor` bump. Semver 2.0 allows breaking changes within major version 0 to
+    /// only advance the minor component so that projects stay on `0.x` until they
+    /// deliberately ship their first stable `1.0.0` release.
     fn apply_version_bump(base: &SemanticVersion, bump: &VersionBump) -> SemanticVersion {
         match bump {
+            VersionBump::Major if base.major == 0 => SemanticVersion {
+                major: 0,
+                minor: base.minor + 1,
+                patch: 0,
+                prerelease: None,
+                build: None,
+            },
             VersionBump::Major => SemanticVersion {
                 major: base.major + 1,
                 minor: 0,

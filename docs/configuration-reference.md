@@ -78,10 +78,15 @@ Controls how release PRs are created and formatted.
 - `{version_tag}` - Version with prefix (e.g., "v1.2.3")
 - `{date}` - Current date in ISO format (e.g., "2025-07-18")
 
+> **Variable syntax**: Both `{variable}` and `${variable}` are supported so that
+> TOML/shell-style placeholders work without modification.
+> For example, `${version_tag}` and `{version_tag}` are equivalent.
+
 ```toml
 [release_pr]
 title_template = "chore(release): prepare version {version}"
 # title_template = "Release {version_tag}"
+# title_template = "Release ${version_tag}"   # shell-style syntax also works
 # title_template = "Prepare release {version} ({date})"
 ```
 
@@ -98,6 +103,9 @@ title_template = "chore(release): prepare version {version}"
 - `{changelog}` - Generated changelog content
 - `{commit_count}` - Number of commits since last release
 - `{date}` - Current date in ISO format
+
+> **Variable syntax**: Both `{variable}` and `${variable}` are supported.
+> For example, `${version}` and `{version}` are equivalent.
 
 ```toml
 [release_pr]

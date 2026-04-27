@@ -19,6 +19,7 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 
 # GitHub integration - using github-bot-sdk
+base64 = { workspace = true }
 github-bot-sdk = { workspace = true }
 jsonwebtoken = { workspace = true }
 reqwest = { workspace = true }
