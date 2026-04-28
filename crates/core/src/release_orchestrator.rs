@@ -435,20 +435,11 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
             Some(new_title)
         };
 
-        let updated = self
-            .github
-            .update_pull_request(
-                owner,
-                repo,
-                fresh_pr.number,
-                title_update,
-                Some(new_body),
-                None,
-            )
-            .await?;
-
         // Force-reset the release branch to the latest base SHA so the PR always
         // shows exactly one commit on top of main.
+        //
+        // Files are committed BEFORE the PR metadata is updated so that, if the
+        // commit step fails, the PR body never drifts ahead of the branch content.
         self.github
             .force_update_branch(owner, repo, &fresh_pr.head.ref_name, base_sha)
             .await?;
@@ -478,6 +469,20 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
                 &fresh_pr.head.ref_name,
                 &file_updates,
                 &commit_message,
+            )
+            .await?;
+
+        // Update the PR title/body only after the branch files are committed so
+        // the metadata always reflects what is actually on the branch.
+        let updated = self
+            .github
+            .update_pull_request(
+                owner,
+                repo,
+                fresh_pr.number,
+                title_update,
+                Some(new_body),
+                None,
             )
             .await?;
 
@@ -606,14 +611,17 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
             .collect();
 
         if self.config.auto_detect_manifests {
-            // Probe the set of well-known files.
+            // Probe the set of well-known files.  We store the content from the
+            // probe so auto-detected files can be updated without a second API
+            // call.  Explicit-list files always do a fresh fetch below.
             let candidates = [
                 "Cargo.toml",
                 "package.json",
                 "pyproject.toml",
                 "composer.json",
             ];
-            let mut existing: Vec<&str> = Vec::new();
+            let mut probe_cache: std::collections::HashMap<&str, String> =
+                std::collections::HashMap::new();
             for &candidate in &candidates {
                 if explicit_paths.contains(candidate) {
                     continue; // explicit list takes precedence
@@ -623,7 +631,9 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
                     .get_file_content(owner, repo, candidate, branch)
                     .await
                 {
-                    Ok(Some(_)) => existing.push(candidate),
+                    Ok(Some(content)) => {
+                        probe_cache.insert(candidate, content);
+                    }
                     Ok(None) => {} // file not present — skip silently
                     Err(e) => {
                         warn!(
@@ -634,61 +644,122 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
                     }
                 }
             }
+            let existing: Vec<&str> = probe_cache.keys().copied().collect();
             for cfg in detect_standard_manifests(&existing) {
                 manifests.push(std::borrow::Cow::Owned(cfg));
             }
-        }
 
-        // For each manifest, read current content and apply update.
-        for manifest in &manifests {
-            let content = match self
-                .github
-                .get_file_content(owner, repo, &manifest.path, branch)
-                .await
-            {
-                Ok(Some(c)) => c,
-                Ok(None) => {
-                    warn!(
-                        path = %manifest.path,
-                        branch,
-                        "Manifest file not found on release branch; skipping"
-                    );
-                    continue;
-                }
-                Err(e) => {
-                    warn!(
-                        path = %manifest.path,
-                        error = %e,
-                        "Failed to read manifest file; skipping"
-                    );
-                    continue;
-                }
-            };
+            // For each manifest, read current content and apply update.
+            for manifest in &manifests {
+                // Reuse cached probe content for auto-detected files; explicit-list
+                // files always get a fresh fetch.
+                let content = if let Some(cached) = probe_cache.get(manifest.path.as_str()) {
+                    cached.clone()
+                } else {
+                    match self
+                        .github
+                        .get_file_content(owner, repo, &manifest.path, branch)
+                        .await
+                    {
+                        Ok(Some(c)) => c,
+                        Ok(None) => {
+                            warn!(
+                                path = %manifest.path,
+                                branch,
+                                "Manifest file not found on release branch; skipping"
+                            );
+                            continue;
+                        }
+                        Err(e) => {
+                            warn!(
+                                path = %manifest.path,
+                                error = %e,
+                                "Failed to read manifest file; skipping"
+                            );
+                            continue;
+                        }
+                    }
+                };
 
-            match update_manifest_content(
-                &content,
-                &manifest.format,
-                &manifest.version_key,
-                &version_str,
-            ) {
-                Ok(updated) => {
-                    updates.push(FileUpdate {
-                        path: manifest.path.clone(),
-                        content: updated,
-                    });
-                    debug!(
-                        path = %manifest.path,
-                        version = %version_str,
-                        "Manifest file queued for version update"
-                    );
+                match update_manifest_content(
+                    &content,
+                    &manifest.format,
+                    &manifest.version_key,
+                    &version_str,
+                ) {
+                    Ok(updated) => {
+                        updates.push(FileUpdate {
+                            path: manifest.path.clone(),
+                            content: updated,
+                        });
+                        debug!(
+                            path = %manifest.path,
+                            version = %version_str,
+                            "Manifest file queued for version update"
+                        );
+                    }
+                    Err(e) => {
+                        warn!(
+                            path = %manifest.path,
+                            key = %manifest.version_key,
+                            error = %e,
+                            "Failed to apply version to manifest file; skipping"
+                        );
+                    }
                 }
-                Err(e) => {
-                    warn!(
-                        path = %manifest.path,
-                        key = %manifest.version_key,
-                        error = %e,
-                        "Failed to apply version to manifest file; skipping"
-                    );
+            }
+        } else {
+            // No auto-detection; process only explicitly configured manifests.
+            for manifest in &manifests {
+                let content = match self
+                    .github
+                    .get_file_content(owner, repo, &manifest.path, branch)
+                    .await
+                {
+                    Ok(Some(c)) => c,
+                    Ok(None) => {
+                        warn!(
+                            path = %manifest.path,
+                            branch,
+                            "Manifest file not found on release branch; skipping"
+                        );
+                        continue;
+                    }
+                    Err(e) => {
+                        warn!(
+                            path = %manifest.path,
+                            error = %e,
+                            "Failed to read manifest file; skipping"
+                        );
+                        continue;
+                    }
+                };
+
+                match update_manifest_content(
+                    &content,
+                    &manifest.format,
+                    &manifest.version_key,
+                    &version_str,
+                ) {
+                    Ok(updated) => {
+                        updates.push(FileUpdate {
+                            path: manifest.path.clone(),
+                            content: updated,
+                        });
+                        debug!(
+                            path = %manifest.path,
+                            version = %version_str,
+                            "Manifest file queued for version update"
+                        );
+                    }
+                    Err(e) => {
+                        warn!(
+                            path = %manifest.path,
+                            key = %manifest.version_key,
+                            error = %e,
+                            "Failed to apply version to manifest file; skipping"
+                        );
+                    }
                 }
             }
         }

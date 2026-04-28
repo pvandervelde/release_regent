@@ -9,6 +9,15 @@ use crate::CoreResult;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+/// A single file path and content pair used by [`GitHubOperations::batch_commit_files`].
+#[derive(Debug, Clone)]
+pub struct FileUpdate {
+    /// Repo-relative file path (e.g. `"Cargo.toml"`, `"package.json"`).
+    pub path: String,
+    /// Full UTF-8 file content to write.
+    pub content: String,
+}
+
 /// GitHub API operations contract
 ///
 /// This trait extends `GitOperations` with GitHub-specific functionality including
@@ -664,15 +673,6 @@ pub trait GitHubOperations: GitOperations + Send + Sync {
 
 // Note: Git commit information is now provided by GitOperations trait
 // Use super::git_operations::GitCommit for commit data
-
-/// A single file path and content pair used by [`GitHubOperations::batch_commit_files`].
-#[derive(Debug, Clone)]
-pub struct FileUpdate {
-    /// Repo-relative file path (e.g. `"Cargo.toml"`, `"package.json"`).
-    pub path: String,
-    /// Full UTF-8 file content to write.
-    pub content: String,
-}
 
 /// Parameters for creating a new pull request
 #[derive(Debug, Clone, Serialize, Deserialize)]

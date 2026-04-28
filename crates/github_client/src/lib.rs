@@ -1070,7 +1070,13 @@ impl GitHubOperations for GitHubClient {
                                 format!("base64 decode for {path}: {e}"),
                             ))
                         })?;
-                    Ok(Some(String::from_utf8_lossy(&bytes).into_owned()))
+                    let text = String::from_utf8(bytes).map_err(|e| {
+                        CoreError::github(std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            format!("file {path} contains non-UTF-8 bytes: {e}"),
+                        ))
+                    })?;
+                    Ok(Some(text))
                 } else if status == 404 {
                     Ok(None)
                 } else {
@@ -1095,6 +1101,13 @@ impl GitHubOperations for GitHubClient {
         files: &[FileUpdate],
         message: &str,
     ) -> CoreResult<()> {
+        if files.is_empty() {
+            return Err(CoreError::invalid_input(
+                "batch_commit_files",
+                "files slice must not be empty".to_string(),
+            ));
+        }
+
         info!(
             owner,
             repo,

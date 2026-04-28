@@ -224,66 +224,74 @@ pub fn detect_standard_manifests(existing_paths: &[&str]) -> Vec<ManifestFileCon
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Update the version in a TOML document at the given dot-separated key path.
+///
+/// The key path may have any number of dot-separated segments, e.g.:
+/// - `"version"` — top-level key
+/// - `"package.version"` — one table level
+/// - `"tool.poetry.version"` — two table levels (Poetry)
+///
+/// Each intermediate segment must be a TOML table.  The final segment must
+/// be an existing string value.
 #[allow(clippy::result_large_err)]
 fn update_toml(content: &str, key: &str, version: &str) -> CoreResult<String> {
     let mut doc: toml_edit::DocumentMut = content
         .parse()
         .map_err(|e| CoreError::invalid_input("manifest", format!("Failed to parse TOML: {e}")))?;
 
-    // Navigate the dot-separated key path.
-    let segments: Vec<&str> = key.splitn(2, '.').collect();
-    match segments.as_slice() {
-        [table_key, field_key] => {
-            let table = doc
-                .get_mut(table_key)
-                .and_then(|v| v.as_table_mut())
-                .ok_or_else(|| {
-                    CoreError::invalid_input(
-                        "manifest",
-                        format!("TOML key '{table_key}' not found or not a table"),
-                    )
-                })?;
-
-            let item = table.get_mut(field_key).ok_or_else(|| {
-                CoreError::invalid_input("manifest", format!(
-                    "TOML key '{key}' not found: field '{field_key}' missing from table '{table_key}'"
-                ))
-            })?;
-
-            if !item.is_str() {
-                return Err(CoreError::invalid_input(
-                    "manifest",
-                    format!("TOML key '{key}' is not a string value"),
-                ));
-            }
-
-            *item = toml_edit::value(version);
-        }
-        [field_key] => {
-            // Top-level key (no table).
-            let item = doc.get_mut(field_key).ok_or_else(|| {
-                CoreError::invalid_input(
-                    "manifest",
-                    format!("TOML top-level key '{key}' not found"),
-                )
-            })?;
-
-            if !item.is_str() {
-                return Err(CoreError::invalid_input(
-                    "manifest",
-                    format!("TOML key '{key}' is not a string value"),
-                ));
-            }
-
-            *item = toml_edit::value(version);
-        }
-        _ => {
+    let segments: Vec<&str> = key.split('.').collect();
+    let (table_segments, field_key) = match segments.split_last() {
+        Some((last, rest)) => (rest, *last),
+        None => {
             return Err(CoreError::invalid_input(
                 "manifest",
-                format!("TOML key path '{key}' is not supported (maximum one level of nesting)"),
+                format!("TOML key path '{key}' is empty"),
             ));
         }
+    };
+
+    // Navigate all intermediate table segments.
+    let mut current: &mut toml_edit::Item = doc.as_item_mut();
+    for segment in table_segments {
+        current = current
+            .as_table_mut()
+            .ok_or_else(|| {
+                CoreError::invalid_input(
+                    "manifest",
+                    format!("TOML path '{key}': '{segment}' is not a table"),
+                )
+            })?
+            .get_mut(segment)
+            .ok_or_else(|| {
+                CoreError::invalid_input(
+                    "manifest",
+                    format!("TOML path '{key}': table '{segment}' not found"),
+                )
+            })?;
     }
+
+    // Now `current` points at the innermost table; find the field.
+    let table = current.as_table_mut().ok_or_else(|| {
+        CoreError::invalid_input(
+            "manifest",
+            format!("TOML path '{key}': intermediate segment is not a table"),
+        )
+    })?;
+
+    let item = table.get_mut(field_key).ok_or_else(|| {
+        CoreError::invalid_input(
+            "manifest",
+            format!("TOML key '{key}': field '{field_key}' not found"),
+        )
+    })?;
+
+    if !item.is_str() {
+        return Err(CoreError::invalid_input(
+            "manifest",
+            format!("TOML key '{key}' is not a string value"),
+        ));
+    }
+
+    *item = toml_edit::value(version);
 
     Ok(doc.to_string())
 }

@@ -174,24 +174,6 @@ impl<G: GitHubOperations> GitHubVersionCalculator<G> {
         next.build = build;
         Ok(next)
     }
-
-    /// Map from core `versioning::VersionBump` to the trait-layer `VersionBump`.
-    ///
-    /// This conversion helper is not yet called by any production code path — the
-    /// trait's `VersionBump` is currently derived directly from
-    /// `ConventionalCommit.breaking_change` / `commit_type` in
-    /// [`to_commit_analysis`].  It is retained here because future refactors may
-    /// need to convert an already-computed `versioning::VersionBump` (e.g., when
-    /// integrating with `DefaultVersionCalculator` output) into the trait type.
-    #[allow(dead_code)]
-    fn local_to_trait_bump(bump: &crate::versioning::VersionBump) -> TraitVersionBump {
-        match bump {
-            crate::versioning::VersionBump::Major => TraitVersionBump::Major,
-            crate::versioning::VersionBump::Minor => TraitVersionBump::Minor,
-            crate::versioning::VersionBump::Patch => TraitVersionBump::Patch,
-            crate::versioning::VersionBump::None => TraitVersionBump::None,
-        }
-    }
 }
 
 #[async_trait]

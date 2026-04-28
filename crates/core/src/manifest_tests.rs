@@ -21,18 +21,25 @@ fn update_manifest_content_toml_replaces_package_version() {
 #[test]
 fn update_manifest_content_toml_replaces_tool_poetry_version() {
     let content = "[tool.poetry]\nname = \"mypkg\"\nversion = \"0.1.0\"\n";
-    // Two-level key requires two dot segments; our impl only supports one level of nesting.
-    // tool.poetry.version would need three segments — this test validates the rejection path.
     let result = update_manifest_content(
         content,
         &ManifestFormat::Toml,
         "tool.poetry.version",
         "2.0.0",
     );
-    // Three-segment key is not supported — expect an error.
     assert!(
-        result.is_err(),
-        "three-segment TOML key should return an error"
+        result.is_ok(),
+        "three-segment TOML key should succeed: {:?}",
+        result
+    );
+    let updated = result.unwrap();
+    assert!(
+        updated.contains("2.0.0"),
+        "updated content should contain the new version"
+    );
+    assert!(
+        !updated.contains("0.1.0"),
+        "updated content should not contain the old version"
     );
 }
 
