@@ -602,6 +602,15 @@ pub trait GitHubOperations: GitOperations + Send + Sync {
     ///
     /// # Errors
     /// - `CoreError::GitHub` — the API call failed for any reason other than 404
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// match github.get_file_content("owner", "repo", "Cargo.toml", "release/v1.2.3").await? {
+    ///     Some(content) => println!("File content: {content}"),
+    ///     None => println!("File does not exist on this branch"),
+    /// }
+    /// ```
     async fn get_file_content(
         &self,
         owner: &str,
@@ -627,6 +636,22 @@ pub trait GitHubOperations: GitOperations + Send + Sync {
     /// # Errors
     /// - `CoreError::GitHub` — any step in the Trees/Commits/Refs pipeline failed
     /// - `CoreError::InvalidInput` — `files` is empty
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// use release_regent_core::traits::github_operations::FileUpdate;
+    ///
+    /// github.batch_commit_files(
+    ///     "owner", "repo",
+    ///     "release/v1.2.3",
+    ///     &[
+    ///         FileUpdate { path: "CHANGELOG.md".to_string(), content: "## Changelog\n\n- feat: add thing".to_string() },
+    ///         FileUpdate { path: "Cargo.toml".to_string(), content: updated_cargo_toml },
+    ///     ],
+    ///     "chore(release): update manifests for v1.2.3",
+    /// ).await?;
+    /// ```
     async fn batch_commit_files(
         &self,
         owner: &str,
