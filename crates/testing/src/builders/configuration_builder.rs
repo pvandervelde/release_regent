@@ -92,6 +92,8 @@ fn create_default_config() -> ReleaseRegentConfig {
             title_template: "Release {{version}}".to_string(),
             body_template: "Release notes for {{version}}".to_string(),
             draft: false,
+            manifest_files: Vec::new(),
+            auto_detect_manifests: true,
         },
         releases: ReleasesConfig {
             draft: false,

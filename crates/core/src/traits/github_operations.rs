@@ -588,10 +588,66 @@ pub trait GitHubOperations: GitOperations + Send + Sync {
     fn scoped_to(&self, installation_id: u64) -> Self
     where
         Self: Sized;
+
+    /// Retrieve the raw UTF-8 content of a file from a branch.
+    ///
+    /// Returns `Ok(None)` when the file does not exist (HTTP 404).  Returns
+    /// `Err` only for hard API failures (auth, network, invalid path, etc.).
+    ///
+    /// # Parameters
+    /// - `owner`: Repository owner name
+    /// - `repo`: Repository name
+    /// - `path`: File path relative to the repository root
+    /// - `branch`: Branch (ref) to read from
+    ///
+    /// # Errors
+    /// - `CoreError::GitHub` — the API call failed for any reason other than 404
+    async fn get_file_content(
+        &self,
+        owner: &str,
+        repo: &str,
+        path: &str,
+        branch: &str,
+    ) -> CoreResult<Option<String>>;
+
+    /// Atomically commit multiple file changes to a branch in a single Git commit.
+    ///
+    /// Uses the GitHub Git Trees API (create blob → create tree → create commit →
+    /// update ref) so that all file changes land in exactly one commit regardless
+    /// of how many files are included.  The release branch will therefore always
+    /// show a single commit on top of the base branch.
+    ///
+    /// # Parameters
+    /// - `owner`: Repository owner name
+    /// - `repo`: Repository name
+    /// - `branch`: Branch to commit to (must already exist)
+    /// - `files`: Slice of [`FileUpdate`] describing each file path and its new content
+    /// - `message`: Commit message for the batch commit
+    ///
+    /// # Errors
+    /// - `CoreError::GitHub` — any step in the Trees/Commits/Refs pipeline failed
+    /// - `CoreError::InvalidInput` — `files` is empty
+    async fn batch_commit_files(
+        &self,
+        owner: &str,
+        repo: &str,
+        branch: &str,
+        files: &[FileUpdate],
+        message: &str,
+    ) -> CoreResult<()>;
 }
 
 // Note: Git commit information is now provided by GitOperations trait
 // Use super::git_operations::GitCommit for commit data
+
+/// A single file path and content pair used by [`GitHubOperations::batch_commit_files`].
+#[derive(Debug, Clone)]
+pub struct FileUpdate {
+    /// Repo-relative file path (e.g. `"Cargo.toml"`, `"package.json"`).
+    pub path: String,
+    /// Full UTF-8 file content to write.
+    pub content: String,
+}
 
 /// Parameters for creating a new pull request
 #[derive(Debug, Clone, Serialize, Deserialize)]

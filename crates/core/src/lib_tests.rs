@@ -963,6 +963,27 @@ impl GitHubOperations for TestGitHubForLib {
         Ok(())
     }
 
+    async fn get_file_content(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _path: &str,
+        _branch: &str,
+    ) -> CoreResult<Option<String>> {
+        Ok(None)
+    }
+
+    async fn batch_commit_files(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _branch: &str,
+        _files: &[crate::traits::github_operations::FileUpdate],
+        _message: &str,
+    ) -> CoreResult<()> {
+        Ok(())
+    }
+
     fn scoped_to(&self, _installation_id: u64) -> Self {
         Self {
             tags: self.tags.clone(),

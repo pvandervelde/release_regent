@@ -5,8 +5,9 @@ use crate::{
             GetCommitsOptions, GitCommit, GitOperations, GitRepository, GitTag, ListTagsOptions,
         },
         github_operations::{
-            CreatePullRequestParams, CreateReleaseParams, GitHubOperations, GitUser as GitHubUser,
-            PullRequest, PullRequestBranch, Release, Repository, Tag, UpdateReleaseParams,
+            CreatePullRequestParams, CreateReleaseParams, FileUpdate, GitHubOperations,
+            GitUser as GitHubUser, PullRequest, PullRequestBranch, Release, Repository, Tag,
+            UpdateReleaseParams,
         },
     },
     versioning::SemanticVersion,
@@ -45,6 +46,10 @@ struct TestState {
     force_updated_branches: Vec<(String, String)>,
     /// Recorded `upsert_file` calls: (path, branch).
     upserted_files: Vec<(String, String)>,
+    /// Recorded `batch_commit_files` calls: (branch, paths, message).
+    batch_commits: Vec<(String, Vec<String>, String)>,
+    /// Pre-loaded file contents for `get_file_content`: (path, branch) → content.
+    file_contents: std::collections::HashMap<(String, String), String>,
     /// Sequential PR number to return from `create_pull_request`.
     next_pr_number: u64,
     /// Whether `search_pull_requests` should return an error.
@@ -110,6 +115,20 @@ impl TestGitHub {
 
     async fn upserted_files(&self) -> Vec<(String, String)> {
         self.state.lock().await.upserted_files.clone()
+    }
+
+    async fn batch_commits(&self) -> Vec<(String, Vec<String>, String)> {
+        self.state.lock().await.batch_commits.clone()
+    }
+
+    /// Pre-load a file content so `get_file_content` returns it.
+    async fn with_file_content(self, path: &str, branch: &str, content: &str) -> Self {
+        self.state
+            .lock()
+            .await
+            .file_contents
+            .insert((path.to_string(), branch.to_string()), content.to_string());
+        self
     }
 }
 
@@ -448,6 +467,37 @@ impl GitHubOperations for TestGitHub {
         Ok(())
     }
 
+    async fn get_file_content(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        path: &str,
+        branch: &str,
+    ) -> CoreResult<Option<String>> {
+        let st = self.state.lock().await;
+        Ok(st
+            .file_contents
+            .get(&(path.to_string(), branch.to_string()))
+            .cloned())
+    }
+
+    async fn batch_commit_files(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        branch: &str,
+        files: &[FileUpdate],
+        message: &str,
+    ) -> CoreResult<()> {
+        let paths: Vec<String> = files.iter().map(|f| f.path.clone()).collect();
+        self.state.lock().await.batch_commits.push((
+            branch.to_string(),
+            paths,
+            message.to_string(),
+        ));
+        Ok(())
+    }
+
     fn scoped_to(&self, _installation_id: u64) -> Self {
         Self {
             state: Arc::clone(&self.state),
@@ -572,14 +622,14 @@ async fn test_orchestrate_no_existing_pr_creates_branch_and_pr() {
         .unwrap_or("")
         .contains("## Changelog"));
 
-    let upserted = github.upserted_files().await;
+    let commits = github.batch_commits().await;
     assert_eq!(
-        upserted.len(),
+        commits.len(),
         1,
         "CHANGELOG.md should be committed to the release branch"
     );
-    assert_eq!(upserted[0].0, "CHANGELOG.md");
-    assert_eq!(upserted[0].1, "release/v1.2.3");
+    assert!(commits[0].1.contains(&"CHANGELOG.md".to_string()));
+    assert_eq!(commits[0].0, "release/v1.2.3");
 }
 
 /// Existing PR has the same version → changelog is merged (Updated).
@@ -626,14 +676,14 @@ async fn test_orchestrate_existing_equal_version_pr_updates_changelog() {
     assert!(body.contains("new feature"), "should add new entry");
 
     // CHANGELOG.md should be committed to the existing branch.
-    let upserted = github.upserted_files().await;
+    let commits = github.batch_commits().await;
     assert_eq!(
-        upserted.len(),
+        commits.len(),
         1,
         "CHANGELOG.md should be updated on the existing branch"
     );
-    assert_eq!(upserted[0].0, "CHANGELOG.md");
-    assert_eq!(upserted[0].1, "release/v1.0.0");
+    assert!(commits[0].1.contains(&"CHANGELOG.md".to_string()));
+    assert_eq!(commits[0].0, "release/v1.0.0");
 
     // The release branch should be force-reset to the latest base SHA before the commit.
     let force_updated = github.force_updated_branches().await;
@@ -695,14 +745,14 @@ async fn test_orchestrate_existing_lower_version_pr_renames() {
     );
 
     // CHANGELOG.md should be committed to the new release branch.
-    let upserted = github.upserted_files().await;
+    let commits = github.batch_commits().await;
     assert_eq!(
-        upserted.len(),
+        commits.len(),
         1,
         "CHANGELOG.md should be committed to the new release branch"
     );
-    assert_eq!(upserted[0].0, "CHANGELOG.md");
-    assert_eq!(upserted[0].1, "release/v1.1.0");
+    assert!(commits[0].1.contains(&"CHANGELOG.md".to_string()));
+    assert_eq!(commits[0].0, "release/v1.1.0");
 }
 
 /// Existing PR has a *higher* version → NoOp (never downgrade).
@@ -740,7 +790,7 @@ async fn test_orchestrate_existing_higher_version_pr_is_no_op() {
     assert!(github.updated_prs().await.is_empty());
     assert!(github.deleted_branches().await.is_empty());
     assert!(
-        github.upserted_files().await.is_empty(),
+        github.batch_commits().await.is_empty(),
         "NoOp should not commit any files"
     );
 }
@@ -787,14 +837,14 @@ async fn test_orchestrate_branch_already_exists_reuses_it() {
     assert_eq!(prs[0].head, "release/v1.0.0");
 
     // CHANGELOG.md should be committed to the canonical branch.
-    let upserted = github.upserted_files().await;
+    let commits = github.batch_commits().await;
     assert_eq!(
-        upserted.len(),
+        commits.len(),
         1,
         "CHANGELOG.md should be committed to the existing branch"
     );
-    assert_eq!(upserted[0].0, "CHANGELOG.md");
-    assert_eq!(upserted[0].1, "release/v1.0.0");
+    assert!(commits[0].1.contains(&"CHANGELOG.md".to_string()));
+    assert_eq!(commits[0].0, "release/v1.0.0");
 
     // The existing branch should be force-reset to the current base SHA before the commit.
     let force_updated = github.force_updated_branches().await;
@@ -870,14 +920,14 @@ async fn test_orchestrate_changelog_merge_deduplicates_commits() {
     );
 
     // CHANGELOG.md should be committed to the existing branch.
-    let upserted = github.upserted_files().await;
+    let commits = github.batch_commits().await;
     assert_eq!(
-        upserted.len(),
+        commits.len(),
         1,
         "CHANGELOG.md should be updated on the existing branch"
     );
-    assert_eq!(upserted[0].0, "CHANGELOG.md");
-    assert_eq!(upserted[0].1, "release/v1.0.0");
+    assert!(commits[0].1.contains(&"CHANGELOG.md".to_string()));
+    assert_eq!(commits[0].0, "release/v1.0.0");
 }
 
 /// Branch name helper: `make_branch_name` formats as `"release/v{major}.{minor}.{patch}"`.

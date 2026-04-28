@@ -26,6 +26,8 @@ git-cliff-core = { version = "2.12", default-features = false, features = [
     "repo",
 ] }
 toml = { workspace = true }
+toml_edit = { workspace = true }
+regex = { workspace = true }
 
 [dev-dependencies]
 tokio-test = { workspace = true }

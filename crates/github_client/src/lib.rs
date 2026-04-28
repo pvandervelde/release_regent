@@ -22,9 +22,9 @@ use release_regent_core::{
             GitUser as GitOpsUser, ListTagsOptions, TagSortOrder,
         },
         github_operations::{
-            CollaboratorPermission, CreatePullRequestParams, CreateReleaseParams, GitHubOperations,
-            GitUser as GitHubUser, Label, PullRequest, PullRequestBranch, Release, Repository, Tag,
-            UpdateReleaseParams,
+            CollaboratorPermission, CreatePullRequestParams, CreateReleaseParams, FileUpdate,
+            GitHubOperations, GitUser as GitHubUser, Label, PullRequest, PullRequestBranch,
+            Release, Repository, Tag, UpdateReleaseParams,
         },
     },
     CoreError, CoreResult,
@@ -994,9 +994,10 @@ impl GitHubOperations for GitHubClient {
                     None
                 } else {
                     let body = resp.text().await.unwrap_or_default();
-                    return Err(CoreError::github(std::io::Error::other(format!(
-                        "GET /contents failed with status {status}: {body}"
-                    ))));
+                    return Err(CoreError::github(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        format!("GET /contents failed with status {status}: {body}"),
+                    )));
                 }
             }
             Err(ApiError::NotFound) => None,
@@ -1022,12 +1023,242 @@ impl GitHubOperations for GitHubClient {
         let status = response.status().as_u16();
         if !(200..=201).contains(&status) {
             let resp_body = response.text().await.unwrap_or_default();
-            return Err(CoreError::github(std::io::Error::other(format!(
-                "PUT /contents failed with status {status}: {resp_body}"
-            ))));
+            return Err(CoreError::github(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("PUT /contents failed with status {status}: {resp_body}"),
+            )));
         }
 
         info!(owner, repo, path, branch, "File upserted successfully");
+        Ok(())
+    }
+
+    #[instrument(skip(self))]
+    async fn get_file_content(
+        &self,
+        owner: &str,
+        repo: &str,
+        path: &str,
+        branch: &str,
+    ) -> CoreResult<Option<String>> {
+        info!(
+            owner,
+            repo, path, branch, "Getting file content from branch"
+        );
+
+        let installation = self.installation().await?;
+        let get_url = format!(
+            "/repos/{owner}/{repo}/contents/{}?ref={}",
+            urlencoding_encode(path),
+            urlencoding_encode_query_value(branch),
+        );
+
+        match installation.get(&get_url).await {
+            Ok(resp) => {
+                let status = resp.status().as_u16();
+                if status == 200 {
+                    let json: serde_json::Value = resp.json().await.map_err(CoreError::github)?;
+                    let encoded = json["content"]
+                        .as_str()
+                        .unwrap_or("")
+                        .replace(['\n', '\r'], "");
+                    let bytes = base64::engine::general_purpose::STANDARD
+                        .decode(&encoded)
+                        .map_err(|e| {
+                            CoreError::github(std::io::Error::new(
+                                std::io::ErrorKind::Other,
+                                format!("base64 decode for {path}: {e}"),
+                            ))
+                        })?;
+                    Ok(Some(String::from_utf8_lossy(&bytes).into_owned()))
+                } else if status == 404 {
+                    Ok(None)
+                } else {
+                    let body = resp.text().await.unwrap_or_default();
+                    Err(CoreError::github(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        format!("GET /contents failed with status {status}: {body}"),
+                    )))
+                }
+            }
+            Err(ApiError::NotFound) => Ok(None),
+            Err(e) => Err(map_sdk_error(e)),
+        }
+    }
+
+    #[instrument(skip(self, files))]
+    async fn batch_commit_files(
+        &self,
+        owner: &str,
+        repo: &str,
+        branch: &str,
+        files: &[FileUpdate],
+        message: &str,
+    ) -> CoreResult<()> {
+        info!(
+            owner,
+            repo,
+            branch,
+            file_count = files.len(),
+            "Committing files via Git Trees API"
+        );
+
+        let installation = self.installation().await?;
+
+        // Step 1: Get the current HEAD commit SHA for the branch.
+        let ref_url = format!("/repos/{owner}/{repo}/git/ref/heads/{branch}");
+        let ref_resp = installation.get(&ref_url).await.map_err(map_sdk_error)?;
+        let ref_status = ref_resp.status().as_u16();
+        let ref_json: serde_json::Value = ref_resp.json().await.map_err(CoreError::github)?;
+        if ref_status != 200 {
+            return Err(CoreError::github(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("GET ref failed with status {ref_status}"),
+            )));
+        }
+        let head_sha = ref_json["object"]["sha"]
+            .as_str()
+            .ok_or_else(|| {
+                CoreError::github(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "ref response missing object.sha",
+                ))
+            })?
+            .to_owned();
+
+        // Step 2: Get the base tree SHA from the HEAD commit.
+        let commit_url = format!("/repos/{owner}/{repo}/git/commits/{head_sha}");
+        let commit_resp = installation.get(&commit_url).await.map_err(map_sdk_error)?;
+        let commit_json: serde_json::Value = commit_resp.json().await.map_err(CoreError::github)?;
+        let base_tree_sha = commit_json["tree"]["sha"]
+            .as_str()
+            .ok_or_else(|| {
+                CoreError::github(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "commit response missing tree.sha",
+                ))
+            })?
+            .to_owned();
+
+        // Step 3: Create a blob for each file.
+        let mut tree_entries = Vec::with_capacity(files.len());
+        for file in files {
+            let encoded = base64::engine::general_purpose::STANDARD.encode(file.content.as_bytes());
+            let blob_body = serde_json::json!({
+                "content": encoded,
+                "encoding": "base64",
+            });
+            let blob_url = format!("/repos/{owner}/{repo}/git/blobs");
+            let blob_resp = installation
+                .post(&blob_url, &blob_body)
+                .await
+                .map_err(map_sdk_error)?;
+            let blob_status = blob_resp.status().as_u16();
+            let blob_json: serde_json::Value = blob_resp.json().await.map_err(CoreError::github)?;
+            if blob_status != 201 {
+                return Err(CoreError::github(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!(
+                        "POST /git/blobs failed with status {blob_status} for {}",
+                        file.path
+                    ),
+                )));
+            }
+            let blob_sha = blob_json["sha"]
+                .as_str()
+                .ok_or_else(|| {
+                    CoreError::github(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        format!("blob response missing sha for {}", file.path),
+                    ))
+                })?
+                .to_owned();
+            tree_entries.push(serde_json::json!({
+                "path": file.path,
+                "mode": "100644",
+                "type": "blob",
+                "sha": blob_sha,
+            }));
+        }
+
+        // Step 4: Create a new tree.
+        let tree_body = serde_json::json!({
+            "base_tree": base_tree_sha,
+            "tree": tree_entries,
+        });
+        let tree_url = format!("/repos/{owner}/{repo}/git/trees");
+        let tree_resp = installation
+            .post(&tree_url, &tree_body)
+            .await
+            .map_err(map_sdk_error)?;
+        let tree_status = tree_resp.status().as_u16();
+        let tree_json: serde_json::Value = tree_resp.json().await.map_err(CoreError::github)?;
+        if tree_status != 201 {
+            return Err(CoreError::github(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("POST /git/trees failed with status {tree_status}"),
+            )));
+        }
+        let new_tree_sha = tree_json["sha"]
+            .as_str()
+            .ok_or_else(|| {
+                CoreError::github(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "tree response missing sha",
+                ))
+            })?
+            .to_owned();
+
+        // Step 5: Create a new commit.
+        let new_commit_body = serde_json::json!({
+            "message": message,
+            "tree": new_tree_sha,
+            "parents": [head_sha],
+        });
+        let new_commit_url = format!("/repos/{owner}/{repo}/git/commits");
+        let new_commit_resp = installation
+            .post(&new_commit_url, &new_commit_body)
+            .await
+            .map_err(map_sdk_error)?;
+        let new_commit_status = new_commit_resp.status().as_u16();
+        let new_commit_json: serde_json::Value =
+            new_commit_resp.json().await.map_err(CoreError::github)?;
+        if new_commit_status != 201 {
+            return Err(CoreError::github(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("POST /git/commits failed with status {new_commit_status}"),
+            )));
+        }
+        let new_commit_sha = new_commit_json["sha"]
+            .as_str()
+            .ok_or_else(|| {
+                CoreError::github(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "new commit response missing sha",
+                ))
+            })?
+            .to_owned();
+
+        // Step 6: Update the branch ref to point to the new commit.
+        let patch_ref_url = format!("/repos/{owner}/{repo}/git/refs/heads/{branch}");
+        let patch_body = serde_json::json!({
+            "sha": new_commit_sha,
+            "force": false,
+        });
+        let patch_resp = installation
+            .patch(&patch_ref_url, &patch_body)
+            .await
+            .map_err(map_sdk_error)?;
+        let patch_status = patch_resp.status().as_u16();
+        if patch_status != 200 {
+            let body = patch_resp.text().await.unwrap_or_default();
+            return Err(CoreError::github(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("PATCH /git/refs failed with status {patch_status}: {body}"),
+            )));
+        }
+
+        info!(owner, repo, branch, commit_sha = %new_commit_sha, "Files committed successfully");
         Ok(())
     }
 
@@ -1042,7 +1273,8 @@ impl GitHubOperations for GitHubClient {
             .map_err(map_sdk_error)?;
         let body: serde_json::Value = response.json().await.map_err(CoreError::github)?;
         body["id"].as_u64().ok_or_else(|| CoreError::GitHub {
-            source: Box::new(std::io::Error::other(
+            source: Box::new(std::io::Error::new(
+                std::io::ErrorKind::Other,
                 "installation lookup response missing 'id' field",
             )),
             context: None,

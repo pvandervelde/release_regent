@@ -3,7 +3,7 @@
 //! This module handles loading and validating Release Regent configuration from
 //! YAML files with support for both application-wide and repository-specific settings.
 
-use crate::{CoreError, CoreResult};
+use crate::{manifest::ManifestFileConfig, CoreError, CoreResult};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
@@ -159,6 +159,12 @@ pub struct ReleasePrConfig {
     /// Whether to create PRs as drafts
     #[serde(default)]
     pub draft: bool,
+    /// Manifest files to update on the release branch.
+    #[serde(default)]
+    pub manifest_files: Vec<ManifestFileConfig>,
+    /// Whether to auto-detect standard language manifests (Cargo.toml, package.json, etc.).
+    #[serde(default = "default_auto_detect_manifests")]
+    pub auto_detect_manifests: bool,
 }
 
 fn default_pr_title_template() -> String {
@@ -167,6 +173,9 @@ fn default_pr_title_template() -> String {
 fn default_pr_body_template() -> String {
     "## Changelog\n\n${changelog}".to_string()
 }
+fn default_auto_detect_manifests() -> bool {
+    true
+}
 
 impl Default for ReleasePrConfig {
     fn default() -> Self {
@@ -174,12 +183,14 @@ impl Default for ReleasePrConfig {
             title_template: default_pr_title_template(),
             body_template: default_pr_body_template(),
             draft: false,
+            manifest_files: Vec::new(),
+            auto_detect_manifests: default_auto_detect_manifests(),
         }
     }
 }
 
 /// Main Release Regent configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ReleaseRegentConfig {
     /// Core settings
     #[serde(default)]
@@ -303,19 +314,6 @@ pub enum VersioningStrategy {
     Conventional,
     /// Use external script/command
     External,
-}
-
-impl Default for ReleaseRegentConfig {
-    fn default() -> Self {
-        Self {
-            core: CoreConfig::default(),
-            release_pr: ReleasePrConfig::default(),
-            releases: ReleasesConfig::default(),
-            error_handling: ErrorHandlingConfig::default(),
-            notifications: NotificationConfig::default(),
-            versioning: VersioningConfig::default(),
-        }
-    }
 }
 
 impl ReleaseRegentConfig {

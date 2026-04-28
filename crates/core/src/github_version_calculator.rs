@@ -156,6 +156,7 @@ impl<G: GitHubOperations> GitHubVersionCalculator<G> {
     /// `Minor` bump. Semver 2.0 allows breaking changes within major version 0 to
     /// only advance the minor component so that projects stay on `0.x` until they
     /// deliberately ship their first stable `1.0.0` release.
+    #[allow(clippy::result_large_err)] // CoreError is intentionally large; established pattern
     fn bump_version(
         current: SemanticVersion,
         bump: &TraitVersionBump,
