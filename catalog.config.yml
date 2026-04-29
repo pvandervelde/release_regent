@@ -1,0 +1,138 @@
+# catalog.config.yml
+#
+# Configuration for scripts/update_catalog.py
+#
+# ── How domains work ──────────────────────────────────────────────────────────
+#
+# Each extracted symbol is assigned to a domain based on its file path.
+# Domains are checked in order — the first path pattern that matches wins.
+# The last domain entry should always be a catch-all (paths: ["**"]).
+#
+# Per-domain output files are written to docs/catalog/<domain>.md
+# A master index is written to docs/catalog/index.md
+#
+# ── How languages work ────────────────────────────────────────────────────────
+#
+# Each language entry lists:
+#   extensions:       File extensions to scan
+#   exclude_patterns: Glob patterns to skip (in addition to exclude_global)
+#   symbols:          ast-grep patterns to extract
+#
+# The $NAME metavariable in each pattern must capture the symbol name.
+# The 'kind' field becomes the Kind column in the catalog table.
+# The 'tags' field adds static tags to every symbol matched by this pattern.
+# The 'filter' field supports: "not_private" (skip names starting with _)
+
+# ── Output & state ────────────────────────────────────────────────────────────
+
+catalog:
+  output_dir: docs/catalog # Where to write catalog markdown files
+  state_file: .llm/.catalog-state.json # Tracks last-indexed commit
+
+# ── LLM settings ─────────────────────────────────────────────────────────────
+
+llm:
+  # claude-haiku-4-5-20251001 is fast and cheap — suitable for bulk description generation.
+  # Upgrade to claude-sonnet-4-6 if you want richer descriptions.
+  model: claude-haiku-4-5-20251001
+  batch_size: 20 # Symbols per API call. Reduce if you hit token limits.
+
+# ── Global exclusions ─────────────────────────────────────────────────────────
+# Applied to all languages. Use **/dir/** to exclude directories anywhere in the tree.
+
+exclude_global:
+  - "**/target/**"
+  - "**/.git/**"
+  - "**/generated/**"
+
+# ── Language definitions ──────────────────────────────────────────────────────
+
+languages:
+
+  rust:
+    extensions: [ ".rs" ]
+    exclude_patterns:
+      # Test files in this repo follow the *_tests.rs naming convention
+      - "**/*_tests.rs"
+      # Standard Rust test/bench/example directories
+      - "**/tests/**"
+      - "**/benches/**"
+      - "**/examples/**"
+    symbols:
+      - kind: fn
+        pattern: "pub fn $NAME($$$)"
+        tags: []
+      - kind: fn
+        pattern: "pub async fn $NAME($$$)"
+        tags: [ async ]
+      - kind: struct
+        pattern: "pub struct $NAME"
+        tags: []
+      - kind: enum
+        pattern: "pub enum $NAME"
+        tags: []
+      - kind: trait
+        pattern: "pub trait $NAME"
+        tags: [ trait ]
+      - kind: type
+        pattern: "pub type $NAME = $$$"
+        tags: []
+
+# ── Domain definitions ────────────────────────────────────────────────────────
+#
+# Order matters — first match wins.
+# Each entry needs: name, description, paths (list of globs), tags (list).
+# The last entry should always match "**" to catch everything else.
+#
+# Paths are matched against repo-relative, forward-slash paths (e.g.
+# "crates/core/src/checks.rs").
+
+domains:
+  - name: core
+    description: "Core release automation — orchestration, changelog generation,
+      versioning, manifest updates, comment commands, and release PR/tag
+      creation"
+    paths:
+      - "crates/core/**"
+    tags: [ core ]
+
+  - name: github-client
+    description: "GitHub API client — App authentication (JWT, token exchange),
+      webhook secret provider, and REST operations (PRs, releases, tags, files)"
+    paths:
+      - "crates/github_client/**"
+    tags: [ github, auth ]
+
+  - name: config-provider
+    description: "Configuration loading — file-based provider, TOML/YAML format
+      detection, schema validation, and config builder"
+    paths:
+      - "crates/config_provider/**"
+    tags: [ config ]
+
+  - name: server
+    description: "Server binary — webhook ingress, event classification,
+      channel-based event source, and startup wiring"
+    paths:
+      - "crates/server/**"
+    tags: [ server, webhook ]
+
+  - name: cli
+    description: "CLI binary — commands for manually triggering releases and running
+      the event loop with mock or real processors"
+    paths:
+      - "crates/cli/**"
+    tags: [ cli ]
+
+  - name: testing
+    description: "Testing utilities — mock implementations, test data builders, spec
+      assertion helpers, and fixture factories"
+    paths:
+      - "crates/testing/**"
+    tags: [ testing, mock ]
+
+  - name: general
+    description: "Uncategorised entries — add domain rules above to reduce this"
+    paths:
+      - "**" # Catch-all — always keep this last
+    tags: []
