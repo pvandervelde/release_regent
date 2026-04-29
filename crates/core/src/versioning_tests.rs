@@ -1015,3 +1015,387 @@ fn test_apply_bump_floor_raises_patch_to_minor() {
 
     assert_eq!(result.to_string(), "1.3.0");
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// apply_semver_bump — canonical free function
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn apply_semver_bump_major_bumps_major_for_v1_plus() {
+    let base = SemanticVersion {
+        major: 1,
+        minor: 2,
+        patch: 3,
+        prerelease: None,
+        build: None,
+    };
+    let result = apply_semver_bump(&base, VersionBump::Major);
+    assert_eq!(result.major, 2);
+    assert_eq!(result.minor, 0);
+    assert_eq!(result.patch, 0);
+    assert!(result.prerelease.is_none());
+    assert!(result.build.is_none());
+}
+
+#[test]
+fn apply_semver_bump_major_on_pre_one_zero_bumps_minor_not_major() {
+    // The canonical pre-1.0 rule: breaking change on 0.x must not cross the major boundary.
+    let base = SemanticVersion {
+        major: 0,
+        minor: 1,
+        patch: 0,
+        prerelease: None,
+        build: None,
+    };
+    let result = apply_semver_bump(&base, VersionBump::Major);
+    assert_eq!(result.major, 0, "major must stay 0 in pre-1.0 mode");
+    assert_eq!(result.minor, 2, "0.1.0 + Major → 0.2.0, not 1.0.0");
+    assert_eq!(result.patch, 0);
+}
+
+#[test]
+fn apply_semver_bump_minor_increments_minor_and_resets_patch() {
+    let base = SemanticVersion {
+        major: 1,
+        minor: 2,
+        patch: 3,
+        prerelease: None,
+        build: None,
+    };
+    let result = apply_semver_bump(&base, VersionBump::Minor);
+    assert_eq!(result.major, 1);
+    assert_eq!(result.minor, 3);
+    assert_eq!(result.patch, 0);
+}
+
+#[test]
+fn apply_semver_bump_patch_increments_patch_only() {
+    let base = SemanticVersion {
+        major: 1,
+        minor: 2,
+        patch: 3,
+        prerelease: None,
+        build: None,
+    };
+    let result = apply_semver_bump(&base, VersionBump::Patch);
+    assert_eq!(result.major, 1);
+    assert_eq!(result.minor, 2);
+    assert_eq!(result.patch, 4);
+}
+
+#[test]
+fn apply_semver_bump_none_leaves_version_unchanged() {
+    let base = SemanticVersion {
+        major: 3,
+        minor: 4,
+        patch: 5,
+        prerelease: None,
+        build: None,
+    };
+    let result = apply_semver_bump(&base, VersionBump::None);
+    assert_eq!(result, base);
+}
+
+#[test]
+fn apply_semver_bump_strips_prerelease_and_build_metadata() {
+    // The output of a bump should never carry pre-release/build from the input.
+    let base = SemanticVersion {
+        major: 1,
+        minor: 0,
+        patch: 0,
+        prerelease: Some("rc.1".to_string()),
+        build: Some("20240101".to_string()),
+    };
+    let result = apply_semver_bump(&base, VersionBump::Patch);
+    assert!(
+        result.prerelease.is_none(),
+        "bumped version must not carry pre-release tag"
+    );
+    assert!(
+        result.build.is_none(),
+        "bumped version must not carry build metadata"
+    );
+    assert_eq!(result.to_string(), "1.0.1");
+}
+
+// Cross-entry-point consistency test: all three calculator paths must produce
+// identical output for the same (0.1.0, Major) input, exercising the pre-1.0 rule.
+#[cfg(test)]
+mod cross_calculator_consistency {
+    use super::*;
+    use crate::default_version_calculator::DefaultVersionCalculator;
+    use crate::github_version_calculator::GitHubVersionCalculator;
+    use crate::traits::git_operations::{
+        GetCommitsOptions, GitCommit, GitOperations, GitRepository, ListTagsOptions,
+    };
+    use crate::traits::github_operations::{
+        CollaboratorPermission, CreatePullRequestParams, CreateReleaseParams, GitHubOperations,
+        GitUser, Label, PullRequest, Release, Repository, Tag, UpdateReleaseParams,
+    };
+    use crate::traits::version_calculator::{
+        VersionBump as TraitVersionBump, VersionCalculator as VersionCalculatorTrait,
+    };
+    use async_trait::async_trait;
+
+    // Minimal stub that satisfies GitHubOperations for GitHubVersionCalculator.
+    #[derive(Clone)]
+    struct StubGitHub;
+
+    #[async_trait]
+    impl GitOperations for StubGitHub {
+        async fn get_commits_between(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: GetCommitsOptions,
+        ) -> crate::CoreResult<Vec<GitCommit>> {
+            Ok(vec![])
+        }
+        async fn get_commit(&self, _: &str, _: &str, _: &str) -> crate::CoreResult<GitCommit> {
+            Err(crate::CoreError::not_found("stub"))
+        }
+        async fn list_tags(
+            &self,
+            _: &str,
+            _: &str,
+            _: ListTagsOptions,
+        ) -> crate::CoreResult<Vec<GitTag>> {
+            Ok(vec![])
+        }
+        async fn get_tag(&self, _: &str, _: &str, _: &str) -> crate::CoreResult<GitTag> {
+            Err(crate::CoreError::not_found("stub"))
+        }
+        async fn tag_exists(&self, _: &str, _: &str, _: &str) -> crate::CoreResult<bool> {
+            Ok(false)
+        }
+        async fn get_head_commit(
+            &self,
+            _: &str,
+            _: &str,
+            _: Option<&str>,
+        ) -> crate::CoreResult<GitCommit> {
+            Err(crate::CoreError::not_found("stub"))
+        }
+        async fn get_repository_info(&self, _: &str, _: &str) -> crate::CoreResult<GitRepository> {
+            Err(crate::CoreError::not_found("stub"))
+        }
+    }
+
+    #[async_trait]
+    impl GitHubOperations for StubGitHub {
+        async fn add_labels(&self, _: &str, _: &str, _: u64, _: &[&str]) -> crate::CoreResult<()> {
+            Ok(())
+        }
+        async fn create_branch(&self, _: &str, _: &str, _: &str, _: &str) -> crate::CoreResult<()> {
+            Ok(())
+        }
+        async fn create_issue_comment(
+            &self,
+            _: &str,
+            _: &str,
+            _: u64,
+            _: &str,
+        ) -> crate::CoreResult<()> {
+            Ok(())
+        }
+        async fn create_pull_request(
+            &self,
+            _: &str,
+            _: &str,
+            _: CreatePullRequestParams,
+        ) -> crate::CoreResult<PullRequest> {
+            Err(crate::CoreError::not_found("stub"))
+        }
+        async fn create_release(
+            &self,
+            _: &str,
+            _: &str,
+            _: CreateReleaseParams,
+        ) -> crate::CoreResult<Release> {
+            Err(crate::CoreError::not_found("stub"))
+        }
+        async fn create_tag(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: Option<String>,
+            _: Option<GitUser>,
+        ) -> crate::CoreResult<Tag> {
+            Err(crate::CoreError::not_found("stub"))
+        }
+        async fn delete_branch(&self, _: &str, _: &str, _: &str) -> crate::CoreResult<()> {
+            Ok(())
+        }
+        async fn force_update_branch(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &str,
+        ) -> crate::CoreResult<()> {
+            Ok(())
+        }
+        async fn get_collaborator_permission(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+        ) -> crate::CoreResult<CollaboratorPermission> {
+            Ok(CollaboratorPermission::Write)
+        }
+        async fn get_installation_id_for_repo(&self, _: &str, _: &str) -> crate::CoreResult<u64> {
+            Ok(0)
+        }
+        async fn get_latest_release(&self, _: &str, _: &str) -> crate::CoreResult<Option<Release>> {
+            Ok(None)
+        }
+        async fn get_pull_request(
+            &self,
+            _: &str,
+            _: &str,
+            _: u64,
+        ) -> crate::CoreResult<PullRequest> {
+            Err(crate::CoreError::not_found("stub"))
+        }
+        async fn get_release_by_tag(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+        ) -> crate::CoreResult<Release> {
+            Err(crate::CoreError::not_found("stub"))
+        }
+        async fn list_pr_labels(&self, _: &str, _: &str, _: u64) -> crate::CoreResult<Vec<Label>> {
+            Ok(vec![])
+        }
+        async fn list_pull_requests(
+            &self,
+            _: &str,
+            _: &str,
+            _: Option<&str>,
+            _: Option<&str>,
+            _: Option<&str>,
+            _: Option<u8>,
+            _: Option<u32>,
+        ) -> crate::CoreResult<Vec<PullRequest>> {
+            Ok(vec![])
+        }
+        async fn list_releases(
+            &self,
+            _: &str,
+            _: &str,
+            _: Option<u8>,
+            _: Option<u32>,
+        ) -> crate::CoreResult<Vec<Release>> {
+            Ok(vec![])
+        }
+        async fn remove_label(&self, _: &str, _: &str, _: u64, _: &str) -> crate::CoreResult<()> {
+            Ok(())
+        }
+        async fn search_pull_requests(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+        ) -> crate::CoreResult<Vec<PullRequest>> {
+            Ok(vec![])
+        }
+        async fn update_pull_request(
+            &self,
+            _: &str,
+            _: &str,
+            _: u64,
+            _: Option<String>,
+            _: Option<String>,
+            _: Option<String>,
+        ) -> crate::CoreResult<PullRequest> {
+            Err(crate::CoreError::not_found("stub"))
+        }
+        async fn update_release(
+            &self,
+            _: &str,
+            _: &str,
+            _: u64,
+            _: UpdateReleaseParams,
+        ) -> crate::CoreResult<Release> {
+            Err(crate::CoreError::not_found("stub"))
+        }
+        async fn upsert_file(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &str,
+        ) -> crate::CoreResult<()> {
+            Ok(())
+        }
+        async fn get_file_content(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &str,
+        ) -> crate::CoreResult<Option<String>> {
+            Ok(None)
+        }
+        async fn batch_commit_files(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &[crate::traits::github_operations::FileUpdate],
+            _: &str,
+        ) -> crate::CoreResult<()> {
+            Ok(())
+        }
+        fn scoped_to(&self, _: u64) -> Self {
+            Self
+        }
+    }
+
+    #[test]
+    fn all_three_calculators_agree_on_pre_one_zero_major_bump() {
+        // ( 0.1.0, Major ) → 0.2.0 — the pre-1.0 rule — must be identical
+        // across all three calculator paths.
+        let base = SemanticVersion {
+            major: 0,
+            minor: 1,
+            patch: 0,
+            prerelease: None,
+            build: None,
+        };
+
+        // Path 1: VersionCalculator (core versioning engine)
+        let v1 = VersionCalculator::apply_version_bump(&base, &VersionBump::Major);
+        assert_eq!(v1.to_string(), "0.2.0", "VersionCalculator path");
+
+        // Path 2: DefaultVersionCalculator
+        let calc2 = DefaultVersionCalculator::new();
+        let v2 = calc2
+            .apply_version_bump(base.clone(), TraitVersionBump::Major, None, None)
+            .expect("DefaultVersionCalculator::apply_version_bump should not fail");
+        assert_eq!(v2.to_string(), "0.2.0", "DefaultVersionCalculator path");
+
+        // Path 3: GitHubVersionCalculator (via apply_version_bump trait method)
+        let calc3 = GitHubVersionCalculator::new(StubGitHub);
+        let v3 = calc3
+            .apply_version_bump(base.clone(), TraitVersionBump::Major, None, None)
+            .expect("GitHubVersionCalculator::apply_version_bump should not fail");
+        assert_eq!(v3.to_string(), "0.2.0", "GitHubVersionCalculator path");
+
+        assert_eq!(
+            v1, v2,
+            "VersionCalculator and DefaultVersionCalculator must agree"
+        );
+        assert_eq!(
+            v2, v3,
+            "DefaultVersionCalculator and GitHubVersionCalculator must agree"
+        );
+    }
+}

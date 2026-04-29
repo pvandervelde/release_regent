@@ -2743,6 +2743,7 @@ dependencies = [
  "futures",
  "git-cliff-core",
  "git-conventional",
+ "regex",
  "release_regent_testing",
  "serde",
  "serde_json",
@@ -2752,6 +2753,7 @@ dependencies = [
  "tokio-test",
  "tokio-util",
  "toml 0.8.23",
+ "toml_edit",
  "tracing",
  "tracing-test",
 ]

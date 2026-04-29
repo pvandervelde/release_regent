@@ -154,7 +154,55 @@ auto_merge = false  # Manual merge required
 # auto_merge = true # Auto-merge when checks pass
 ```
 
-## Changelog Configuration
+### `release_pr.auto_detect_manifests`
+
+**Type**: Boolean
+**Default**: `true`
+**Description**: When `true`, Release Regent automatically probes the repository for well-known
+manifest files (`Cargo.toml`, `package.json`, `pyproject.toml`, `composer.json`) and updates
+version fields in any that are present.  Files listed in `manifest_files` are always processed
+regardless of this setting.
+
+> **Migration note**: This setting defaults to `true`, which is a behaviour change for repositories
+> that were configured before manifest auto-detection was introduced.  If you do not want Release
+> Regent to probe for manifest files automatically, add `auto_detect_manifests = false` to your
+> `[release_pr]` section to preserve the previous behaviour.
+
+```toml
+[release_pr]
+auto_detect_manifests = true   # Default: probe for well-known manifest files
+# auto_detect_manifests = false # Disable; update only files listed in manifest_files
+```
+
+### `release_pr.manifest_files`
+
+**Type**: Array of inline tables
+**Default**: `[]` (empty — rely on auto-detection or no manifest updates)
+**Description**: Explicit list of manifest files to update on each release.  Each entry specifies
+the repository-relative path, the file format, and the dot-separated key path within the file
+that holds the version string.
+
+Supported formats: `"toml"`, `"json"`, `"plain_text"`.
+
+| Format | Typical file | `version_key` meaning |
+|---|---|---|
+| `"toml"` | `Cargo.toml`, `pyproject.toml` | Dot-separated table path, e.g. `"package.version"` or `"tool.poetry.version"` |
+| `"json"` | `package.json`, `composer.json` | Top-level JSON key, e.g. `"version"` |
+| `"plain_text"` | any text file | Regex with one capture group matching the current version |
+
+```toml
+[release_pr]
+manifest_files = [
+  { path = "Cargo.toml",     format = "toml",       version_key = "package.version"       },
+  { path = "package.json",   format = "json",       version_key = "version"               },
+  # Standard pyproject.toml (PEP 621):
+  { path = "pyproject.toml", format = "toml",       version_key = "project.version"       },
+  # Poetry-style pyproject.toml:
+  # { path = "pyproject.toml", format = "toml",     version_key = "tool.poetry.version"   },
+  # Plain-text escape hatch (regex with one capture group):
+  # { path = "version.txt",  format = "plain_text", version_key = "^([0-9]+\\.[0-9]+\\.[0-9]+)$" },
+]
+```
 
 Release Regent uses the git-cliff-core library for advanced changelog generation, providing powerful templating and customization capabilities.
 

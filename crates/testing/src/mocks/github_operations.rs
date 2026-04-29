@@ -22,6 +22,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+// ─── Type aliases to keep field types below the complexity threshold ──────────
+
+type GetFileContentCalls = Arc<RwLock<Vec<(String, String, String, String)>>>;
+type GetFileContentResponses =
+    Arc<RwLock<HashMap<(String, String, String, String), Option<String>>>>;
+type BatchCommitFilesCalls = Arc<RwLock<Vec<(String, String, String, Vec<String>, String)>>>;
+type UpsertFileCalls = Arc<RwLock<Vec<(String, String, String, String, String, String)>>>;
+
 /// Mock implementation of `GitHubOperations` trait
 ///
 /// This mock supports:
@@ -82,7 +90,13 @@ pub struct MockGitHubOperations {
     ///
     /// Wrapped in `Arc<RwLock<...>>` so that the `&self` async-trait methods
     /// can mutate the vec without requiring `&mut self`.
-    upsert_file_calls: Arc<RwLock<Vec<(String, String, String, String, String, String)>>>,
+    upsert_file_calls: UpsertFileCalls,
+    /// Recorded `get_file_content` calls: (owner, repo, path, branch).
+    get_file_content_calls: GetFileContentCalls,
+    /// Configurable responses for `get_file_content`. Key is (owner, repo, path, branch).
+    get_file_content_responses: GetFileContentResponses,
+    /// Recorded `batch_commit_files` calls: (owner, repo, branch, file_paths, message).
+    batch_commit_files_calls: BatchCommitFilesCalls,
 }
 
 impl MockGitHubOperations {
@@ -133,6 +147,9 @@ impl MockGitHubOperations {
             collaborator_permission: None,
             method_errors: HashMap::new(),
             upsert_file_calls: Arc::new(RwLock::new(Vec::new())),
+            get_file_content_calls: Arc::new(RwLock::new(Vec::new())),
+            get_file_content_responses: Arc::new(RwLock::new(HashMap::new())),
+            batch_commit_files_calls: Arc::new(RwLock::new(Vec::new())),
         }
     }
 
@@ -141,6 +158,42 @@ impl MockGitHubOperations {
     /// Each element is `(owner, repo, path, commit_message, content, branch)`.
     pub async fn upsert_file_calls(&self) -> Vec<(String, String, String, String, String, String)> {
         self.upsert_file_calls.read().await.clone()
+    }
+
+    /// Return all recorded `get_file_content` calls.
+    ///
+    /// Each element is `(owner, repo, path, branch)`.
+    pub async fn get_file_content_calls(&self) -> Vec<(String, String, String, String)> {
+        self.get_file_content_calls.read().await.clone()
+    }
+
+    /// Configure a response for a specific `get_file_content` call.
+    pub async fn with_file_content(
+        &self,
+        owner: &str,
+        repo: &str,
+        path: &str,
+        branch: &str,
+        content: Option<String>,
+    ) {
+        self.get_file_content_responses.write().await.insert(
+            (
+                owner.to_string(),
+                repo.to_string(),
+                path.to_string(),
+                branch.to_string(),
+            ),
+            content,
+        );
+    }
+
+    /// Return all recorded `batch_commit_files` calls.
+    ///
+    /// Each element is `(owner, repo, branch, file_paths, message)`.
+    pub async fn batch_commit_files_calls(
+        &self,
+    ) -> Vec<(String, String, String, Vec<String>, String)> {
+        self.batch_commit_files_calls.read().await.clone()
     }
 
     /// Record a method call for tracking
@@ -200,6 +253,9 @@ impl MockGitHubOperations {
             collaborator_permission: None,
             method_errors: HashMap::new(),
             upsert_file_calls: Arc::new(RwLock::new(Vec::new())),
+            get_file_content_calls: Arc::new(RwLock::new(Vec::new())),
+            get_file_content_responses: Arc::new(RwLock::new(HashMap::new())),
+            batch_commit_files_calls: Arc::new(RwLock::new(Vec::new())),
         }
     }
 
@@ -1258,6 +1314,9 @@ impl GitHubOperations for MockGitHubOperations {
             collaborator_permission: self.collaborator_permission.clone(),
             method_errors: self.method_errors.clone(),
             upsert_file_calls: Arc::clone(&self.upsert_file_calls),
+            get_file_content_calls: Arc::clone(&self.get_file_content_calls),
+            get_file_content_responses: Arc::clone(&self.get_file_content_responses),
+            batch_commit_files_calls: Arc::clone(&self.batch_commit_files_calls),
         }
     }
 
@@ -1297,6 +1356,103 @@ impl GitHubOperations for MockGitHubOperations {
             commit_message.to_string(),
             content.to_string(),
             branch.to_string(),
+        ));
+
+        self.record_call(method, &params_str, CallResult::Success)
+            .await;
+        Ok(())
+    }
+
+    async fn get_file_content(
+        &self,
+        owner: &str,
+        repo: &str,
+        path: &str,
+        branch: &str,
+    ) -> CoreResult<Option<String>> {
+        let method = "get_file_content";
+        let params_str = format!("owner={owner}, repo={repo}, path={path}, branch={branch}");
+
+        self.check_quota().await?;
+        self.simulate_latency().await;
+
+        if self.should_simulate_failure().await {
+            let error = CoreError::network("Simulated GitHub API error");
+            self.record_call(method, &params_str, CallResult::Error(error.to_string()))
+                .await;
+            return Err(error);
+        }
+
+        if let Some(msg) = self.method_errors.get(method) {
+            let error = CoreError::network(msg.clone());
+            self.record_call(method, &params_str, CallResult::Error(error.to_string()))
+                .await;
+            return Err(error);
+        }
+
+        self.get_file_content_calls.write().await.push((
+            owner.to_string(),
+            repo.to_string(),
+            path.to_string(),
+            branch.to_string(),
+        ));
+
+        let key = (
+            owner.to_string(),
+            repo.to_string(),
+            path.to_string(),
+            branch.to_string(),
+        );
+        let response = self
+            .get_file_content_responses
+            .read()
+            .await
+            .get(&key)
+            .cloned();
+
+        self.record_call(method, &params_str, CallResult::Success)
+            .await;
+        Ok(response.unwrap_or(None))
+    }
+
+    async fn batch_commit_files(
+        &self,
+        owner: &str,
+        repo: &str,
+        branch: &str,
+        files: &[release_regent_core::traits::github_operations::FileUpdate],
+        message: &str,
+    ) -> CoreResult<()> {
+        let method = "batch_commit_files";
+        let params_str = format!(
+            "owner={owner}, repo={repo}, branch={branch}, files={}",
+            files.len()
+        );
+
+        self.check_quota().await?;
+        self.simulate_latency().await;
+
+        if self.should_simulate_failure().await {
+            let error = CoreError::network("Simulated GitHub API error");
+            self.record_call(method, &params_str, CallResult::Error(error.to_string()))
+                .await;
+            return Err(error);
+        }
+
+        if let Some(msg) = self.method_errors.get(method) {
+            let error = CoreError::network(msg.clone());
+            self.record_call(method, &params_str, CallResult::Error(error.to_string()))
+                .await;
+            return Err(error);
+        }
+
+        let file_paths: Vec<String> = files.iter().map(|f| f.path.clone()).collect();
+        self.batch_commit_files_calls.write().await.push((
+            owner.to_string(),
+            repo.to_string(),
+            branch.to_string(),
+            file_paths,
+            message.to_string(),
         ));
 
         self.record_call(method, &params_str, CallResult::Success)

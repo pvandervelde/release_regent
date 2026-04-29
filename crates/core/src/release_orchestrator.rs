@@ -47,7 +47,10 @@
 //! ```
 
 use crate::{
-    traits::github_operations::{CreatePullRequestParams, GitHubOperations, PullRequest},
+    manifest::ManifestFileConfig,
+    traits::github_operations::{
+        CreatePullRequestParams, FileUpdate, GitHubOperations, PullRequest,
+    },
     versioning::SemanticVersion,
     CoreError, CoreResult,
 };
@@ -77,6 +80,23 @@ pub struct OrchestratorConfig {
     ///
     /// Defaults to `"## Changelog"`.
     pub changelog_header: String,
+
+    /// Explicit list of version manifest files to update when creating or updating
+    /// the release branch.  Each entry is committed as part of the single atomic
+    /// batch commit together with `CHANGELOG.md`.
+    ///
+    /// Entries here take precedence over auto-detected files when the same path
+    /// appears in both lists.
+    ///
+    /// Defaults to an empty list (no explicit manifest files).
+    pub manifest_files: Vec<ManifestFileConfig>,
+
+    /// When `true` (the default), the orchestrator probes the repository for the
+    /// well-known manifest files defined in [`crate::manifest::detect_standard_manifests`]
+    /// and includes any that exist alongside the explicit [`Self::manifest_files`].
+    ///
+    /// Set to `false` to disable auto-detection and rely solely on the explicit list.
+    pub auto_detect_manifests: bool,
 }
 
 impl OrchestratorConfig {
@@ -90,6 +110,8 @@ impl Default for OrchestratorConfig {
             branch_prefix: Self::DEFAULT_BRANCH_PREFIX.to_string(),
             title_template: "chore(release): {version_tag}".to_string(),
             changelog_header: "## Changelog".to_string(),
+            manifest_files: Vec::new(),
+            auto_detect_manifests: true,
         }
     }
 }
@@ -303,6 +325,10 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
     ///
     /// On a `CoreError::Conflict` (branch already exists) the method retries once
     /// with a timestamped fallback branch name.
+    ///
+    /// All file changes (CHANGELOG.md plus any version manifest files) are made
+    /// in a **single atomic Git commit** via [`GitHubOperations::batch_commit_files`]
+    /// so the release branch always shows exactly one commit on top of the base branch.
     async fn create_release_branch_and_pr(
         &self,
         owner: &str,
@@ -340,20 +366,25 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
         let title = self.render_title(version);
         let body = self.render_body(changelog);
 
-        // Commit CHANGELOG.md to the release branch so the PR has a real diff.
-        let changelog_commit_message = format!(
-            "chore(release): update CHANGELOG for {}",
+        // Build the batch of files: CHANGELOG.md plus any manifest files.
+        let mut file_updates = vec![FileUpdate {
+            path: "CHANGELOG.md".to_string(),
+            content: changelog.to_string(),
+        }];
+        self.collect_manifest_updates(owner, repo, &actual_branch, version, &mut file_updates)
+            .await;
+
+        // Deduplicate by path — detect_standard_manifests may emit two configs for
+        // the same file (e.g. PEP-617 + Poetry keys for pyproject.toml).  Keep the
+        // last entry per path to match the Git Trees API's last-writer-wins semantics.
+        let file_updates = dedup_file_updates_by_path(file_updates);
+
+        let commit_message = format!(
+            "chore(release): update release files for {}",
             version.to_string_with_prefix(true)
         );
         self.github
-            .upsert_file(
-                owner,
-                repo,
-                "CHANGELOG.md",
-                &changelog_commit_message,
-                changelog,
-                &actual_branch,
-            )
+            .batch_commit_files(owner, repo, &actual_branch, &file_updates, &commit_message)
             .await?;
 
         let pr = self
@@ -409,6 +440,48 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
             Some(new_title)
         };
 
+        // Force-reset the release branch to the latest base SHA so the PR always
+        // shows exactly one commit on top of main.
+        //
+        // Files are committed BEFORE the PR metadata is updated so that, if the
+        // commit step fails, the PR body never drifts ahead of the branch content.
+        self.github
+            .force_update_branch(owner, repo, &fresh_pr.head.ref_name, base_sha)
+            .await?;
+
+        // Build batch: CHANGELOG.md plus manifest files — all in one atomic commit.
+        let mut file_updates = vec![FileUpdate {
+            path: "CHANGELOG.md".to_string(),
+            content: merged_changelog.clone(),
+        }];
+        self.collect_manifest_updates(
+            owner,
+            repo,
+            &fresh_pr.head.ref_name,
+            version,
+            &mut file_updates,
+        )
+        .await;
+
+        // Deduplicate by path — see create_release_branch_and_pr for rationale.
+        let file_updates = dedup_file_updates_by_path(file_updates);
+
+        let commit_message = format!(
+            "chore(release): update release files for {}",
+            version.to_string_with_prefix(true)
+        );
+        self.github
+            .batch_commit_files(
+                owner,
+                repo,
+                &fresh_pr.head.ref_name,
+                &file_updates,
+                &commit_message,
+            )
+            .await?;
+
+        // Update the PR title/body only after the branch files are committed so
+        // the metadata always reflects what is actually on the branch.
         let updated = self
             .github
             .update_pull_request(
@@ -418,28 +491,6 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
                 title_update,
                 Some(new_body),
                 None,
-            )
-            .await?;
-
-        // Force-reset the release branch to the latest base SHA so the PR always
-        // shows exactly one commit (the CHANGELOG.md update) on top of main.
-        self.github
-            .force_update_branch(owner, repo, &fresh_pr.head.ref_name, base_sha)
-            .await?;
-
-        // Keep CHANGELOG.md on the release branch in sync with the PR body.
-        let changelog_commit_message = format!(
-            "chore(release): update CHANGELOG for {}",
-            version.to_string_with_prefix(true)
-        );
-        self.github
-            .upsert_file(
-                owner,
-                repo,
-                "CHANGELOG.md",
-                &changelog_commit_message,
-                &merged_changelog,
-                &fresh_pr.head.ref_name,
             )
             .await?;
 
@@ -526,7 +577,201 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
         )
     }
 
-    // ── Template / body helpers ────────────────────────────────────────────
+    // ── Manifest file helpers ─────────────────────────────────────────────
+
+    /// Build the list of manifest [`FileUpdate`] entries for the release commit.
+    ///
+    /// Combines auto-detected and explicitly configured manifest files, reads
+    /// their current content from the branch, applies the version substitution,
+    /// and appends the results to `updates`.  Files that are absent on the branch
+    /// or whose update fails are skipped with a `warn!` log — they must not
+    /// prevent PR creation from succeeding.
+    ///
+    /// Explicit entries from `self.config.manifest_files` take precedence: if
+    /// a path appears in both the explicit list and the auto-detected set, the
+    /// explicit config is used and the auto-detected one is dropped.
+    async fn collect_manifest_updates(
+        &self,
+        owner: &str,
+        repo: &str,
+        branch: &str,
+        version: &SemanticVersion,
+        updates: &mut Vec<FileUpdate>,
+    ) {
+        use crate::manifest::{detect_standard_manifests, update_manifest_content};
+
+        let version_str = version.to_string();
+
+        // Build the effective manifest list: explicit entries first, then
+        // auto-detected ones that do not duplicate an explicit path.
+        let explicit_paths: std::collections::HashSet<&str> = self
+            .config
+            .manifest_files
+            .iter()
+            .map(|m| m.path.as_str())
+            .collect();
+
+        let mut manifests: Vec<std::borrow::Cow<'_, crate::manifest::ManifestFileConfig>> = self
+            .config
+            .manifest_files
+            .iter()
+            .map(std::borrow::Cow::Borrowed)
+            .collect();
+
+        if self.config.auto_detect_manifests {
+            // Probe the set of well-known files.  We store the content from the
+            // probe so auto-detected files can be updated without a second API
+            // call.  Explicit-list files always do a fresh fetch below.
+            let candidates = [
+                "Cargo.toml",
+                "package.json",
+                "pyproject.toml",
+                "composer.json",
+            ];
+            let mut probe_cache: std::collections::HashMap<&str, String> =
+                std::collections::HashMap::new();
+            for &candidate in &candidates {
+                if explicit_paths.contains(candidate) {
+                    continue; // explicit list takes precedence
+                }
+                match self
+                    .github
+                    .get_file_content(owner, repo, candidate, branch)
+                    .await
+                {
+                    Ok(Some(content)) => {
+                        probe_cache.insert(candidate, content);
+                    }
+                    Ok(None) => {} // file not present — skip silently
+                    Err(e) => {
+                        warn!(
+                            path = candidate,
+                            error = %e,
+                            "Failed to probe for manifest file during auto-detection; skipping"
+                        );
+                    }
+                }
+            }
+            let existing: Vec<&str> = probe_cache.keys().copied().collect();
+            for cfg in detect_standard_manifests(&existing) {
+                manifests.push(std::borrow::Cow::Owned(cfg));
+            }
+
+            // For each manifest, read current content and apply update.
+            for manifest in &manifests {
+                // Reuse cached probe content for auto-detected files; explicit-list
+                // files always get a fresh fetch.
+                let content = if let Some(cached) = probe_cache.get(manifest.path.as_str()) {
+                    cached.clone()
+                } else {
+                    match self
+                        .github
+                        .get_file_content(owner, repo, &manifest.path, branch)
+                        .await
+                    {
+                        Ok(Some(c)) => c,
+                        Ok(None) => {
+                            warn!(
+                                path = %manifest.path,
+                                branch,
+                                "Manifest file not found on release branch; skipping"
+                            );
+                            continue;
+                        }
+                        Err(e) => {
+                            warn!(
+                                path = %manifest.path,
+                                error = %e,
+                                "Failed to read manifest file; skipping"
+                            );
+                            continue;
+                        }
+                    }
+                };
+
+                match update_manifest_content(
+                    &content,
+                    &manifest.format,
+                    &manifest.version_key,
+                    &version_str,
+                ) {
+                    Ok(updated) => {
+                        updates.push(FileUpdate {
+                            path: manifest.path.clone(),
+                            content: updated,
+                        });
+                        debug!(
+                            path = %manifest.path,
+                            version = %version_str,
+                            "Manifest file queued for version update"
+                        );
+                    }
+                    Err(e) => {
+                        warn!(
+                            path = %manifest.path,
+                            key = %manifest.version_key,
+                            error = %e,
+                            "Failed to apply version to manifest file; skipping"
+                        );
+                    }
+                }
+            }
+        } else {
+            // No auto-detection; process only explicitly configured manifests.
+            for manifest in &manifests {
+                let content = match self
+                    .github
+                    .get_file_content(owner, repo, &manifest.path, branch)
+                    .await
+                {
+                    Ok(Some(c)) => c,
+                    Ok(None) => {
+                        warn!(
+                            path = %manifest.path,
+                            branch,
+                            "Manifest file not found on release branch; skipping"
+                        );
+                        continue;
+                    }
+                    Err(e) => {
+                        warn!(
+                            path = %manifest.path,
+                            error = %e,
+                            "Failed to read manifest file; skipping"
+                        );
+                        continue;
+                    }
+                };
+
+                match update_manifest_content(
+                    &content,
+                    &manifest.format,
+                    &manifest.version_key,
+                    &version_str,
+                ) {
+                    Ok(updated) => {
+                        updates.push(FileUpdate {
+                            path: manifest.path.clone(),
+                            content: updated,
+                        });
+                        debug!(
+                            path = %manifest.path,
+                            version = %version_str,
+                            "Manifest file queued for version update"
+                        );
+                    }
+                    Err(e) => {
+                        warn!(
+                            path = %manifest.path,
+                            key = %manifest.version_key,
+                            error = %e,
+                            "Failed to apply version to manifest file; skipping"
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     /// Render the PR title from the configured template.
     ///
@@ -594,6 +839,29 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
         let version_str = branch.strip_prefix(&prefix)?;
         crate::versioning::VersionCalculator::parse_version(version_str).ok()
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Private helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Deduplicate a [`FileUpdate`] list by path, keeping the **last** entry for
+/// each unique path.
+///
+/// `detect_standard_manifests` may produce two configs for the same file (e.g.
+/// both `project.version` and `tool.poetry.version` for `pyproject.toml`).
+/// Passing duplicate paths to the Git Trees API results in silent data loss — the
+/// last blob silently wins.  This helper makes the last-writer-wins semantics
+/// explicit and predictable.
+fn dedup_file_updates_by_path(updates: Vec<FileUpdate>) -> Vec<FileUpdate> {
+    let mut seen = std::collections::HashSet::new();
+    let mut deduped: Vec<FileUpdate> = updates
+        .into_iter()
+        .rev()
+        .filter(|u| seen.insert(u.path.clone()))
+        .collect();
+    deduped.reverse();
+    deduped
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

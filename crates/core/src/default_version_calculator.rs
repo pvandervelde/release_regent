@@ -22,7 +22,7 @@ use crate::{
         VersionCalculator as VersionCalculatorTrait, VersionContext, VersioningStrategy,
     },
     versioning::{
-        ConventionalCommit, SemanticVersion, VersionBump as LocalVersionBump,
+        apply_semver_bump, ConventionalCommit, SemanticVersion, VersionBump as LocalVersionBump,
         VersionCalculator as ConventionalCalculator,
     },
     CoreError, CoreResult,
@@ -72,7 +72,6 @@ impl DefaultVersionCalculator {
     }
 
     /// Map from the trait-layer `VersionBump` to core `versioning::VersionBump`.
-    #[allow(dead_code)] // only called from tests; kept for symmetry with local_to_trait_bump
     fn trait_to_local_bump(bump: &TraitVersionBump) -> LocalVersionBump {
         match bump {
             TraitVersionBump::Major => LocalVersionBump::Major,
@@ -411,6 +410,9 @@ impl VersionCalculatorTrait for DefaultVersionCalculator {
 
     /// Apply a version bump to an existing version.
     ///
+    /// Delegates to [`apply_semver_bump`] — the single canonical arithmetic
+    /// implementation — after converting from the trait-layer bump type.
+    ///
     /// When `major == 0` (pre-1.0 development), a `Major` bump is treated as a
     /// `Minor` bump so the project stays on `0.x` until it deliberately ships 1.0.0.
     fn apply_version_bump(
@@ -420,37 +422,8 @@ impl VersionCalculatorTrait for DefaultVersionCalculator {
         prerelease: Option<String>,
         build: Option<String>,
     ) -> CoreResult<SemanticVersion> {
-        let mut next = match bump_type {
-            TraitVersionBump::Major if current_version.major == 0 => SemanticVersion {
-                major: 0,
-                minor: current_version.minor + 1,
-                patch: 0,
-                prerelease: None,
-                build: None,
-            },
-            TraitVersionBump::Major => SemanticVersion {
-                major: current_version.major + 1,
-                minor: 0,
-                patch: 0,
-                prerelease: None,
-                build: None,
-            },
-            TraitVersionBump::Minor => SemanticVersion {
-                major: current_version.major,
-                minor: current_version.minor + 1,
-                patch: 0,
-                prerelease: None,
-                build: None,
-            },
-            TraitVersionBump::Patch => SemanticVersion {
-                major: current_version.major,
-                minor: current_version.minor,
-                patch: current_version.patch + 1,
-                prerelease: None,
-                build: None,
-            },
-            TraitVersionBump::None => current_version,
-        };
+        let local_bump = Self::trait_to_local_bump(&bump_type);
+        let mut next = apply_semver_bump(&current_version, local_bump);
         next.prerelease = prerelease;
         next.build = build;
         Ok(next)

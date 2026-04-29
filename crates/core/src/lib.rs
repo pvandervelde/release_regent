@@ -209,6 +209,7 @@ pub mod config;
 pub(crate) mod default_version_calculator;
 pub mod errors;
 pub(crate) mod github_version_calculator;
+pub mod manifest;
 pub mod release_automator;
 pub mod release_orchestrator;
 pub mod traits;
@@ -217,6 +218,7 @@ pub mod versioning;
 pub use default_version_calculator::DefaultVersionCalculator;
 pub use errors::{CoreError, CoreResult};
 pub use github_version_calculator::GitHubVersionCalculator;
+pub use manifest::{ManifestFileConfig, ManifestFormat};
 pub use traits::{ConfigurationProvider, GitHubOperations, GitOperations, VersionCalculator};
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -348,6 +350,8 @@ where
                 branch_prefix: release_orchestrator::OrchestratorConfig::default().branch_prefix,
                 title_template: repo_config.release_pr.title_template.clone(),
                 changelog_header: "## Changelog".to_string(),
+                manifest_files: repo_config.release_pr.manifest_files.clone(),
+                auto_detect_manifests: repo_config.release_pr.auto_detect_manifests,
             },
             allow_override: repo_config.versioning.allow_override,
         };
@@ -743,6 +747,8 @@ where
                 .to_string(),
             title_template: repo_config.release_pr.title_template.clone(),
             changelog_header: "## Changelog".to_string(),
+            manifest_files: repo_config.release_pr.manifest_files.clone(),
+            auto_detect_manifests: repo_config.release_pr.auto_detect_manifests,
         };
 
         // Determine whether the merged PR is itself a release PR by checking

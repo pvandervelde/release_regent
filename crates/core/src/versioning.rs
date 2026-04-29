@@ -419,42 +419,11 @@ impl VersionCalculator {
 
     /// Apply version bump to base version
     ///
-    /// When `major == 0` (pre-1.0 development), a `Major` bump is treated as a
-    /// `Minor` bump. Semver 2.0 allows breaking changes within major version 0 to
-    /// only advance the minor component so that projects stay on `0.x` until they
-    /// deliberately ship their first stable `1.0.0` release.
+    /// Delegates to the public [`apply_semver_bump`] free function so that all
+    /// callers share the single canonical semver arithmetic — including the
+    /// pre-1.0 rule.
     fn apply_version_bump(base: &SemanticVersion, bump: &VersionBump) -> SemanticVersion {
-        match bump {
-            VersionBump::Major if base.major == 0 => SemanticVersion {
-                major: 0,
-                minor: base.minor + 1,
-                patch: 0,
-                prerelease: None,
-                build: None,
-            },
-            VersionBump::Major => SemanticVersion {
-                major: base.major + 1,
-                minor: 0,
-                patch: 0,
-                prerelease: None,
-                build: None,
-            },
-            VersionBump::Minor => SemanticVersion {
-                major: base.major,
-                minor: base.minor + 1,
-                patch: 0,
-                prerelease: None,
-                build: None,
-            },
-            VersionBump::Patch => SemanticVersion {
-                major: base.major,
-                minor: base.minor,
-                patch: base.patch + 1,
-                prerelease: None,
-                build: None,
-            },
-            VersionBump::None => base.clone(),
-        }
+        apply_semver_bump(base, bump.clone())
     }
 
     /// Parse a semantic version string
@@ -674,6 +643,77 @@ impl VersionCalculator {
                 }
             }
         }
+    }
+}
+
+/// Apply a standard semver bump to a base version.
+///
+/// This is the single canonical implementation of semver arithmetic for
+/// Release Regent. All version calculators — [`VersionCalculator`],
+/// [`DefaultVersionCalculator`], and [`GitHubVersionCalculator`] — delegate
+/// to this function so that the bump rules are defined exactly once.
+///
+/// Custom [`crate::traits::version_calculator::VersionCalculator`]
+/// implementations may also call this function to reuse the standard semver
+/// arithmetic, including the pre-1.0 rule, rather than re-implementing it.
+///
+/// ## Pre-1.0 rule
+///
+/// When `base.major == 0`, a `Major` bump is treated as a `Minor` bump.
+/// Semver 2.0 allows breaking changes within major version 0 to only advance
+/// the minor component, so that projects stay on `0.x` until they
+/// deliberately ship their first stable `1.0.0` release.
+///
+/// ## Examples
+///
+/// ```
+/// use release_regent_core::versioning::{apply_semver_bump, SemanticVersion, VersionBump};
+///
+/// let v = SemanticVersion { major: 1, minor: 2, patch: 3,
+///                            prerelease: None, build: None };
+///
+/// assert_eq!(apply_semver_bump(&v, VersionBump::Major).to_string(), "2.0.0");
+/// assert_eq!(apply_semver_bump(&v, VersionBump::Minor).to_string(), "1.3.0");
+/// assert_eq!(apply_semver_bump(&v, VersionBump::Patch).to_string(), "1.2.4");
+/// assert_eq!(apply_semver_bump(&v, VersionBump::None).to_string(),  "1.2.3");
+///
+/// // Pre-1.0: Major bump advances minor only.
+/// let pre = SemanticVersion { major: 0, minor: 1, patch: 0,
+///                              prerelease: None, build: None };
+/// assert_eq!(apply_semver_bump(&pre, VersionBump::Major).to_string(), "0.2.0");
+/// ```
+#[must_use]
+pub fn apply_semver_bump(base: &SemanticVersion, bump: VersionBump) -> SemanticVersion {
+    match bump {
+        VersionBump::Major if base.major == 0 => SemanticVersion {
+            major: 0,
+            minor: base.minor + 1,
+            patch: 0,
+            prerelease: None,
+            build: None,
+        },
+        VersionBump::Major => SemanticVersion {
+            major: base.major + 1,
+            minor: 0,
+            patch: 0,
+            prerelease: None,
+            build: None,
+        },
+        VersionBump::Minor => SemanticVersion {
+            major: base.major,
+            minor: base.minor + 1,
+            patch: 0,
+            prerelease: None,
+            build: None,
+        },
+        VersionBump::Patch => SemanticVersion {
+            major: base.major,
+            minor: base.minor,
+            patch: base.patch + 1,
+            prerelease: None,
+            build: None,
+        },
+        VersionBump::None => base.clone(),
     }
 }
 

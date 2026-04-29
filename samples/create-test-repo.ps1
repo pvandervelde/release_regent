@@ -376,7 +376,17 @@ initial_version = "0.1.0"
 [release_pr]
 title_template = "chore(release): prepare version {version}"
 draft = false
-auto_merge = false
+auto_detect_manifests = false
+
+[[release_pr.manifest_files]]
+path = "package.json"
+format = "json"
+version_key = "version"
+
+[[release_pr.manifest_files]]
+path = "version.txt"
+format = "plain_text"
+version_key = 'version = "([^"]+)"'
 
 [changelog]
 include_authors = false
@@ -415,6 +425,17 @@ Returns a greeting for the given name.
 { "message": "Hello, Alice!" }
 ``````
 "@
+
+New-RepoFile 'package.json' @"
+{
+  "name": "greeting-service",
+  "version": "0.1.0",
+  "description": "A simple greeting service API",
+  "license": "MIT"
+}
+"@
+
+New-RepoFile 'version.txt' 'version = "0.1.0"'
 
 New-Commit -Message 'chore: initial repository setup'
 
@@ -470,30 +491,17 @@ whitespace-only `name` field, which previously caused a 500 response.
 Manually tested with `curl -X POST /greet -d '{"name":""}'`.
 '@ `
     -FilesBlock {
-    New-RepoFile 'src/greeting.md' @"
-# Greeting Service API
+    New-RepoFile 'src/validation.md' @"
+# Input Validation
 
-## Endpoints
+## POST /greet
 
-### POST /greet
+| Field | Type   | Required | Rules                         |
+| :---- | :----- | :------: | :---------------------------- |
+| name  | string | yes      | Non-blank; max 200 characters |
 
-Returns a greeting for the given name. Returns `400 Bad Request` when
-`name` is missing or blank.
-
-**Request body**
-``````json
-{ "name": "Alice" }
-``````
-
-**Response — success**
-``````json
-{ "message": "Hello, Alice!" }
-``````
-
-**Response — validation error**
-``````json
-{ "error": "name must not be blank" }
-``````
+When the name field is missing or blank the endpoint returns HTTP 400
+with body: { "error": "name must not be blank" }
 "@
     New-Commit -Message 'fix(api): return 400 when input name is empty'
 }
@@ -521,42 +529,17 @@ greeting registers without changing the endpoint URL.
 Tested all three style values (explicit formal, explicit casual, omitted).
 '@ `
     -FilesBlock {
-    New-RepoFile 'src/greeting.md' @"
-# Greeting Service API
-
-## Endpoints
-
-### POST /greet
-
-Returns a greeting for the given name.
-
-**Request body**
-``````json
-{
-  "name": "Alice",
-  "style": "formal"
-}
-``````
-
-`style` values: `"casual"` (default), `"formal"`.
-
-**Response — casual**
-``````json
-{ "message": "Hey, Alice!" }
-``````
-
-**Response — formal**
-``````json
-{ "message": "Good day, Alice." }
-``````
-"@
     New-RepoFile 'src/styles.md' @"
 # Greeting Styles
 
-| Style    | Example output         |
-| :------- | :--------------------- |
-| casual   | Hey, Alice!            |
-| formal   | Good day, Alice.       |
+Greeting style is controlled by the optional style field in the request body.
+
+| Style  | Description          | Example output      |
+| :----- | :------------------- | :------------------ |
+| casual | Friendly, informal   | Hey, Alice!         |
+| formal | Professional, polite | Good day, Alice.    |
+
+Default style is casual.
 "@
     New-Commit -Message 'feat(api): add formal and casual greeting styles'
 }
@@ -586,37 +569,17 @@ Tested all supported languages and an unsupported code (`"zh"`).
     New-RepoFile 'src/languages.md' @"
 # Supported Languages
 
+Pass an ISO 639-1 language code in the language field to receive a
+greeting in a language other than the default English.
+
 | Code | Language |
 | :--- | :------- |
 | en   | English  |
 | es   | Spanish  |
 | fr   | French   |
 | de   | German   |
-"@
-    New-RepoFile 'src/greeting.md' @"
-# Greeting Service API
 
-## Endpoints
-
-### POST /greet
-
-Returns a greeting in the requested language and style.
-
-**Request body**
-``````json
-{
-  "name": "Alice",
-  "style": "formal",
-  "language": "fr"
-}
-``````
-
-**Response**
-``````json
-{ "message": "Bonjour, Alice." }
-``````
-
-Supported languages: `en`, `es`, `fr`, `de`. Defaults to `en`.
+Default language is en. Unknown codes return HTTP 400.
 "@
     New-Commit -Message 'feat(i18n): add multi-language greeting support'
 }
