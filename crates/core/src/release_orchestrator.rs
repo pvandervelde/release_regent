@@ -374,6 +374,11 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
         self.collect_manifest_updates(owner, repo, &actual_branch, version, &mut file_updates)
             .await;
 
+        // Deduplicate by path — detect_standard_manifests may emit two configs for
+        // the same file (e.g. PEP-617 + Poetry keys for pyproject.toml).  Keep the
+        // last entry per path to match the Git Trees API's last-writer-wins semantics.
+        let file_updates = dedup_file_updates_by_path(file_updates);
+
         let commit_message = format!(
             "chore(release): update release files for {}",
             version.to_string_with_prefix(true)
@@ -457,6 +462,9 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
             &mut file_updates,
         )
         .await;
+
+        // Deduplicate by path — see create_release_branch_and_pr for rationale.
+        let file_updates = dedup_file_updates_by_path(file_updates);
 
         let commit_message = format!(
             "chore(release): update release files for {}",
@@ -831,6 +839,29 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
         let version_str = branch.strip_prefix(&prefix)?;
         crate::versioning::VersionCalculator::parse_version(version_str).ok()
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Private helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Deduplicate a [`FileUpdate`] list by path, keeping the **last** entry for
+/// each unique path.
+///
+/// `detect_standard_manifests` may produce two configs for the same file (e.g.
+/// both `project.version` and `tool.poetry.version` for `pyproject.toml`).
+/// Passing duplicate paths to the Git Trees API results in silent data loss — the
+/// last blob silently wins.  This helper makes the last-writer-wins semantics
+/// explicit and predictable.
+fn dedup_file_updates_by_path(updates: Vec<FileUpdate>) -> Vec<FileUpdate> {
+    let mut seen = std::collections::HashSet::new();
+    let mut deduped: Vec<FileUpdate> = updates
+        .into_iter()
+        .rev()
+        .filter(|u| seen.insert(u.path.clone()))
+        .collect();
+    deduped.reverse();
+    deduped
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
