@@ -318,6 +318,13 @@ if (-not $gitUserEmail.Trim())
     Invoke-Git @('config', 'user.email', 'rr-test@example.com')
 }
 
+# Disable GPG/SSH signing for this throwaway test repo. Developer machines
+# often have tag.gpgsign=true (or commit.gpgsign=true) in global git config;
+# if GPG is unavailable or misconfigured that causes `git tag --annotate` to
+# exit 128 (fatal). These local overrides ensure the script always works.
+Invoke-Git @('config', 'tag.gpgsign',    'false')
+Invoke-Git @('config', 'commit.gpgsign', 'false')
+
 # Cloning an empty repo leaves HEAD in an "unborn" state. The branch name used
 # for the first commit comes from the local init.defaultBranch git setting,
 # which varies from system to system (commonly 'master' on older git installs).
