@@ -27,6 +27,7 @@ Environment:
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -177,8 +178,10 @@ def path_matches_any(rel_posix: str, patterns: List[str]) -> bool:
     for pattern in patterns:
         if fnmatch(rel_posix, pattern) or fnmatch(name, pattern):
             return True
-        # Support patterns like **/target/** by matching interior segments
-        clean_pattern = pattern.lstrip("*/")
+        # Support patterns like **/target/** by matching interior segments.
+        # strip (not lstrip) removes both leading **/ and trailing /** so that
+        # "**/target/**" → "target" and "target" in "target/debug/..." is True.
+        clean_pattern = pattern.strip("*/")
         if clean_pattern and clean_pattern in rel_posix:
             return True
     return False
@@ -446,14 +449,21 @@ _TABLE_HEADER = (
 
 def _parse_table_row(row: str, domain: str) -> Optional[CatalogEntry]:
     """Parse one markdown table row back into a CatalogEntry. Returns None on bad rows."""
-    cells = [c.strip() for c in row.strip().strip("|").split("|")]
+    # Split on unescaped pipes only so that descriptions containing \| round-trip correctly.
+    inner = row.strip()
+    if inner.startswith("|"):
+        inner = inner[1:]
+    if inner.endswith("|"):
+        inner = inner[:-1]
+    cells = [c.strip() for c in re.split(r"(?<!\\)\|", inner)]
     if len(cells) < 5:
         return None
 
     name = cells[0].strip("`").strip()
     kind = cells[1].strip()
     loc_raw = cells[2].strip().strip("`").strip()
-    description = cells[3].strip()
+    # Unescape \| back to | in the stored description
+    description = cells[3].strip().replace("\\|", "|")
     tags_raw = cells[4].strip()
 
     if not name or name == "Name":  # Skip header rows
@@ -555,9 +565,10 @@ Rules:
 - Be specific about what the code DOES — avoid "handles", "manages", "processes"
 - Do not restate the symbol name
 - Include a constraint if it matters: "Panics if slice is empty", "Must be called after init()"
+- Do NOT use pipe characters (|) in descriptions — they corrupt the markdown table format
 
 Return ONLY valid JSON — no explanation, no code fences:
-{"descriptions": {"<key>": "<description>", ...}}\
+{"descriptions": {"<key>": "<description>", ...}}\"
 """
 
 
@@ -613,7 +624,20 @@ def generate_descriptions(symbols: List[Symbol], config: dict) -> List[Symbol]:
                 }],
             )
 
-            text = response.content[0].text.strip()
+            # Guard against empty or non-text content blocks (e.g. tool-use blocks)
+            text_blocks = [
+                block for block in response.content
+                if hasattr(block, "text")
+            ]
+            if not text_blocks:
+                print(
+                    f"    Warning: No text block in API response for batch {batch_num}",
+                    file=sys.stderr,
+                )
+                for sym in batch:
+                    descriptions.setdefault(sym.key, f"{sym.kind} — description unavailable")
+                continue
+            text = text_blocks[0].text.strip()
 
             # Strip accidental code fences
             if text.startswith("```"):
@@ -659,9 +683,11 @@ def _symbol_to_entry(sym: Symbol) -> CatalogEntry:
 
 def _format_row(entry: CatalogEntry) -> str:
     tags_str = ", ".join(sorted(entry.tags)) if entry.tags else ""
+    # Escape any pipe characters in the description to prevent table corruption
+    safe_description = entry.description.replace("|", "\\|")
     return (
         f"| `{entry.name}` | {entry.kind} | {entry.location} "
-        f"| {entry.description} | {tags_str} |"
+        f"| {safe_description} | {tags_str} |"
     )
 
 
