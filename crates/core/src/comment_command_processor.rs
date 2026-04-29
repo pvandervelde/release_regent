@@ -532,6 +532,14 @@ impl<'a, G: GitHubOperations + Send + Sync> CommentCommandProcessor<'a, G> {
                      (`{version_display}`). To override, close the existing release PR first."
                 )
             }
+            // NoBumpNeeded cannot be returned by the orchestrator when driven
+            // from a `!set-version` command, because the caller always supplies
+            // an explicit pinned version that differs from the current one.
+            // This arm is present only for exhaustive matching.
+            OrchestratorResult::NoBumpNeeded => format!(
+                "ℹ️ **Release Regent**: `!set-version {pinned_version}` had no effect \
+                 — the requested version is already the current released version."
+            ),
         }
     }
 
