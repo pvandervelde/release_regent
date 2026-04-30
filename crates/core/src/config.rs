@@ -262,6 +262,15 @@ pub struct VersioningConfig {
     /// Whether to allow PR comment overrides
     #[serde(default = "default_allow_override")]
     pub allow_override: bool,
+    /// PR author logins to skip when posting status comments.
+    ///
+    /// PRs opened by any login in this list will not receive a Release Regent
+    /// status comment, and will be skipped during the post-merge refresh.
+    /// Useful for bot accounts (e.g. `"dependabot[bot]"`, `"renovate[bot]"`)
+    /// that open dependency-update PRs where a projected-version comment is
+    /// noise rather than signal.
+    #[serde(default)]
+    pub excluded_pr_authors: Vec<String>,
 }
 
 fn default_versioning_strategy() -> VersioningStrategy {
@@ -277,6 +286,7 @@ impl Default for VersioningConfig {
             strategy: default_versioning_strategy(),
             external: None,
             allow_override: default_allow_override(),
+            excluded_pr_authors: Vec::new(),
         }
     }
 }

@@ -352,6 +352,35 @@ pub trait GitHubOperations: GitOperations + Send + Sync {
         issue_number: u64,
     ) -> CoreResult<Vec<Label>>;
 
+    /// List all comments on an issue or pull request.
+    ///
+    /// Returns comments in creation order (oldest first).
+    ///
+    /// # Parameters
+    /// - `owner`: Repository owner name
+    /// - `repo`: Repository name
+    /// - `issue_number`: Issue or pull request number
+    ///
+    /// # Returns
+    /// All comments on the issue/PR in creation order.
+    ///
+    /// # Errors
+    /// - `CoreError::NotFound` — the issue/PR does not exist
+    /// - `CoreError::GitHub` — the API call failed for any other reason
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// let comments = github.list_issue_comments("owner", "repo", 42).await?;
+    /// let has_status = comments.iter().any(|c| c.body.contains("<!-- release-regent:pr-status -->"));
+    /// ```
+    async fn list_issue_comments(
+        &self,
+        owner: &str,
+        repo: &str,
+        issue_number: u64,
+    ) -> CoreResult<Vec<IssueComment>>;
+
     /// List pull requests in a repository
     ///
     /// Returns pull requests matching the specified filters.
@@ -501,6 +530,28 @@ pub trait GitHubOperations: GitOperations + Send + Sync {
         body: Option<String>,
         state: Option<String>,
     ) -> CoreResult<PullRequest>;
+
+    /// Update the body of an existing issue or pull request comment.
+    ///
+    /// # Parameters
+    /// - `owner`: Repository owner name
+    /// - `repo`: Repository name
+    /// - `comment_id`: Comment ID (as returned by [`list_issue_comments`])
+    /// - `body`: New comment body (Markdown)
+    ///
+    /// # Returns
+    /// `Ok(())` on success
+    ///
+    /// # Errors
+    /// - `CoreError::NotFound` — the comment does not exist
+    /// - `CoreError::GitHub` — the API call failed for any other reason
+    async fn update_issue_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        comment_id: u64,
+        body: &str,
+    ) -> CoreResult<()>;
 
     /// Update an existing release
     ///
@@ -719,6 +770,20 @@ pub struct GitUser {
     pub login: Option<String>,
     /// User name
     pub name: String,
+}
+
+/// A comment on a GitHub issue or pull request.
+///
+/// Returned by [`GitHubOperations::list_issue_comments`] for scanning for the
+/// Release Regent status marker before deciding whether to create or update.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IssueComment {
+    /// Comment body (Markdown).
+    pub body: String,
+    /// Comment ID as assigned by GitHub.
+    pub id: u64,
+    /// GitHub login of the comment author, if available.
+    pub user_login: Option<String>,
 }
 
 /// A GitHub label applied to an issue or pull request.

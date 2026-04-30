@@ -210,6 +210,7 @@ pub(crate) mod default_version_calculator;
 pub mod errors;
 pub(crate) mod github_version_calculator;
 pub mod manifest;
+pub(crate) mod pr_status_commenter;
 pub mod release_automator;
 pub mod release_orchestrator;
 pub mod traits;
@@ -271,6 +272,20 @@ pub trait MergedPullRequestHandler: Send + Sync {
     ) -> CoreResult<()> {
         Ok(())
     }
+
+    /// Process a single `PullRequestOpened` or `PullRequestUpdated` event.
+    ///
+    /// Called when the event loop receives [`EventType::PullRequestOpened`] or
+    /// [`EventType::PullRequestUpdated`].  The default implementation is a
+    /// no-op that acknowledges the event without taking any action.  Override
+    /// in the production processor to post or refresh the projected-version
+    /// status comment on the PR.
+    async fn handle_pull_request_activity(
+        &self,
+        _event: &traits::event_source::ProcessingEvent,
+    ) -> CoreResult<()> {
+        Ok(())
+    }
 }
 
 #[async_trait::async_trait]
@@ -287,6 +302,11 @@ where
         match self.handle_merged_pull_request(event).await {
             Ok(result) => {
                 tracing::info!(result = ?result, "Release orchestration completed");
+                self.try_refresh_feature_pr_status_comments(
+                    &event.repository.owner,
+                    &event.repository.name,
+                )
+                .await;
                 Ok(())
             }
             Err(e) => Err(e),
@@ -324,6 +344,8 @@ where
         {
             Ok(result) => {
                 tracing::info!(result = ?result, "Release automation completed");
+                self.try_refresh_feature_pr_status_comments(owner, repo)
+                    .await;
                 Ok(())
             }
             Err(e) => Err(e),
@@ -365,13 +387,169 @@ where
         .process(event)
         .await
     }
+
+    async fn handle_pull_request_activity(
+        &self,
+        event: &traits::event_source::ProcessingEvent,
+    ) -> CoreResult<()> {
+        use release_automator::is_release_pr_branch;
+        use traits::configuration_provider::LoadOptions;
+        use traits::version_calculator::{CalculationOptions, VersionContext, VersioningStrategy};
+
+        let owner = &event.repository.owner;
+        let repo = &event.repository.name;
+
+        let pr_number = event
+            .payload
+            .pointer("/pull_request/number")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+
+        if pr_number == 0 {
+            tracing::warn!(
+                event_id = %event.event_id,
+                "PR number missing from payload; skipping status comment"
+            );
+            return Ok(());
+        }
+
+        let pr_head_sha = event
+            .payload
+            .pointer("/pull_request/head/sha")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+
+        if pr_head_sha.is_empty() {
+            tracing::warn!(
+                event_id = %event.event_id,
+                pr = pr_number,
+                "PR head SHA missing from payload; skipping status comment"
+            );
+            return Ok(());
+        }
+
+        let pr_head_branch = event
+            .payload
+            .pointer("/pull_request/head/ref")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let pr_author_login = event
+            .payload
+            .pointer("/pull_request/user/login")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+
+        let installation_id = self.resolve_installation_id(owner, repo).await?;
+
+        let repo_config = self
+            .configuration_provider
+            .get_merged_config(owner, repo, LoadOptions::default())
+            .await?;
+
+        // Skip PRs from excluded authors.
+        if repo_config
+            .versioning
+            .excluded_pr_authors
+            .iter()
+            .any(|a| a == &pr_author_login)
+        {
+            tracing::debug!(
+                owner = %owner,
+                repo = %repo,
+                pr = pr_number,
+                author = %pr_author_login,
+                "Skipping PR status comment for excluded author"
+            );
+            return Ok(());
+        }
+
+        let branch_prefix =
+            release_orchestrator::OrchestratorConfig::DEFAULT_BRANCH_PREFIX.to_string();
+        let scoped_github = self.github_operations.scoped_to(installation_id);
+
+        let body = if is_release_pr_branch(&pr_head_branch, &branch_prefix) {
+            // Release PR path (F.3): extract version from branch name.
+            let release_version =
+                release_automator::extract_version_from_branch(&pr_head_branch, &branch_prefix)?;
+            pr_status_commenter::render_release_pr_comment(
+                &release_version,
+                repo_config.versioning.allow_override,
+            )
+        } else {
+            // Feature PR path (F.2): project the next version from commits.
+            let current_version =
+                versioning::resolve_current_version(&scoped_github, owner, repo, false).await?;
+
+            let strategy = match repo_config.versioning.strategy {
+                config::VersioningStrategy::Conventional | config::VersioningStrategy::External => {
+                    VersioningStrategy::ConventionalCommits {
+                        custom_types: std::collections::HashMap::new(),
+                        include_prerelease: false,
+                    }
+                }
+            };
+
+            let ctx = VersionContext {
+                base_ref: current_version.as_ref().map(|v| format!("v{v}")),
+                current_version: current_version.clone(),
+                head_ref: pr_head_sha,
+                owner: owner.to_string(),
+                repo: repo.to_string(),
+                target_branch: pr_head_branch,
+            };
+
+            let scoped_calc = self.version_calculator.scoped_to(installation_id);
+            let calc_result = scoped_calc
+                .calculate_version(ctx, strategy, CalculationOptions::default())
+                .await?;
+
+            let base_version = current_version.unwrap_or(versioning::SemanticVersion {
+                major: 0,
+                minor: 0,
+                patch: 0,
+                prerelease: None,
+                build: None,
+            });
+
+            // Check whether a release PR is already open with a higher version.
+            // The trailing * makes this a prefix match so all versioned release
+            // branches are captured (e.g. "is:open head:release/v*").
+            let release_search_query = format!("is:open head:{}/v*", branch_prefix);
+            let queued_release_version: Option<versioning::SemanticVersion> = scoped_github
+                .search_pull_requests(owner, repo, &release_search_query)
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::debug!(
+                        error = %e,
+                        "Failed to search for open release PRs; assuming none"
+                    );
+                    vec![]
+                })
+                .iter()
+                .filter_map(|pr| {
+                    release_automator::extract_version_from_branch(
+                        &pr.head.ref_name,
+                        &branch_prefix,
+                    )
+                    .ok()
+                })
+                .max();
+
+            pr_status_commenter::render_feature_pr_comment(
+                &calc_result.next_version,
+                &base_version,
+                queued_release_version.as_ref(),
+                repo_config.versioning.allow_override,
+            )
+        };
+
+        pr_status_commenter::upsert_pr_status_comment(&scoped_github, owner, repo, pr_number, &body)
+            .await
+    }
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// run_event_loop — public API
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Drive the event processing loop until `token` is cancelled.
 ///
 /// The loop polls `source.next_event()` continuously:
 ///
@@ -469,6 +647,14 @@ where
                                 "Pull request comment received — dispatching to comment handler"
                             );
                             handler.handle_pr_comment(&event).await
+                        }
+                        EventType::PullRequestOpened | EventType::PullRequestUpdated => {
+                            tracing::debug!(
+                                event_id = %event.event_id,
+                                event_type = %event.event_type,
+                                "Pull request activity — dispatching to activity handler"
+                            );
+                            handler.handle_pull_request_activity(&event).await
                         }
                         EventType::Unknown(raw) => {
                             tracing::debug!(
@@ -1186,6 +1372,218 @@ where
                 correlation_id = %correlation_id,
                 "Failed to post bump-floor audit comment; continuing"
             );
+        }
+    }
+
+    /// Best-effort refresh of open feature PR status comments.
+    ///
+    /// Resolves the installation ID and repository configuration before
+    /// delegating to [`Self::refresh_open_feature_pr_comments`].  All errors
+    /// are logged and swallowed so that a refresh failure never fails the
+    /// triggering merge event.
+    async fn try_refresh_feature_pr_status_comments(&self, owner: &str, repo: &str) {
+        use traits::configuration_provider::LoadOptions;
+
+        let installation_id = match self.resolve_installation_id(owner, repo).await {
+            Ok(id) => id,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    owner = %owner,
+                    repo = %repo,
+                    "Failed to resolve installation ID for PR status refresh"
+                );
+                return;
+            }
+        };
+
+        let repo_config = match self
+            .configuration_provider
+            .get_merged_config(owner, repo, LoadOptions::default())
+            .await
+        {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    owner = %owner,
+                    repo = %repo,
+                    "Failed to load config for PR status refresh"
+                );
+                return;
+            }
+        };
+
+        self.refresh_open_feature_pr_comments(owner, repo, installation_id, &repo_config)
+            .await;
+    }
+
+    /// Refresh the status comment on open feature PRs after a base-version change.
+    ///
+    /// Only refreshes PRs that already have a `<!-- release-regent:pr-status -->`
+    /// comment.  Skips release-branch PRs and PRs authored by logins in
+    /// `excluded_pr_authors`.  Caps at 25 PRs per triggering event.
+    ///
+    /// All per-PR errors (list comments, calculate version, upsert) are logged
+    /// and skipped so that one failing PR does not abort the rest.
+    async fn refresh_open_feature_pr_comments(
+        &self,
+        owner: &str,
+        repo: &str,
+        installation_id: u64,
+        repo_config: &config::ReleaseRegentConfig,
+    ) {
+        use release_automator::is_release_pr_branch;
+        use traits::version_calculator::{CalculationOptions, VersionContext, VersioningStrategy};
+
+        let branch_prefix =
+            release_orchestrator::OrchestratorConfig::DEFAULT_BRANCH_PREFIX.to_string();
+        let scoped_github = self.github_operations.scoped_to(installation_id);
+
+        let open_prs = match scoped_github
+            .search_pull_requests(owner, repo, "is:open")
+            .await
+        {
+            Ok(prs) => prs,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    owner = %owner,
+                    repo = %repo,
+                    "Failed to list open PRs for status comment refresh; skipping"
+                );
+                return;
+            }
+        };
+
+        let excluded = &repo_config.versioning.excluded_pr_authors;
+
+        // Find the highest open release PR version from the already-fetched list
+        // so we can annotate feature PR comments when a release is already queued.
+        let queued_release_version: Option<versioning::SemanticVersion> = open_prs
+            .iter()
+            .filter(|pr| is_release_pr_branch(&pr.head.ref_name, &branch_prefix))
+            .filter_map(|pr| {
+                release_automator::extract_version_from_branch(&pr.head.ref_name, &branch_prefix)
+                    .ok()
+            })
+            .max();
+
+        // Feature PRs only; skip excluded authors; cap at 25.
+        let candidates: Vec<_> = open_prs
+            .into_iter()
+            .filter(|pr| !is_release_pr_branch(&pr.head.ref_name, &branch_prefix))
+            .filter(|pr| {
+                let login = pr.user.login.as_deref().unwrap_or_default();
+                !excluded.iter().any(|a| a == login)
+            })
+            .take(25)
+            .collect();
+
+        let current_version =
+            match versioning::resolve_current_version(&scoped_github, owner, repo, false).await {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        owner = %owner,
+                        repo = %repo,
+                        "Failed to resolve current version for PR refresh"
+                    );
+                    return;
+                }
+            };
+
+        let base_version = current_version
+            .clone()
+            .unwrap_or(versioning::SemanticVersion {
+                major: 0,
+                minor: 0,
+                patch: 0,
+                prerelease: None,
+                build: None,
+            });
+
+        let strategy = match repo_config.versioning.strategy {
+            config::VersioningStrategy::Conventional | config::VersioningStrategy::External => {
+                VersioningStrategy::ConventionalCommits {
+                    custom_types: std::collections::HashMap::new(),
+                    include_prerelease: false,
+                }
+            }
+        };
+
+        for pr in candidates {
+            // Only refresh PRs that already have a status marker comment.
+            let comments = match scoped_github
+                .list_issue_comments(owner, repo, pr.number)
+                .await
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        pr = pr.number,
+                        "Failed to list comments for PR refresh; skipping PR"
+                    );
+                    continue;
+                }
+            };
+
+            if !comments
+                .iter()
+                .any(|c| c.body.contains(pr_status_commenter::PR_STATUS_MARKER))
+            {
+                continue;
+            }
+
+            let ctx = VersionContext {
+                base_ref: current_version.as_ref().map(|v| format!("v{v}")),
+                current_version: current_version.clone(),
+                head_ref: pr.head.sha.clone(),
+                owner: owner.to_string(),
+                repo: repo.to_string(),
+                target_branch: pr.head.ref_name.clone(),
+            };
+
+            let scoped_calc = self.version_calculator.scoped_to(installation_id);
+            let calc_result = match scoped_calc
+                .calculate_version(ctx, strategy.clone(), CalculationOptions::default())
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        pr = pr.number,
+                        "Failed to project version for PR refresh; skipping PR"
+                    );
+                    continue;
+                }
+            };
+
+            let body = pr_status_commenter::render_feature_pr_comment(
+                &calc_result.next_version,
+                &base_version,
+                queued_release_version.as_ref(),
+                repo_config.versioning.allow_override,
+            );
+
+            if let Err(e) = pr_status_commenter::upsert_pr_status_comment(
+                &scoped_github,
+                owner,
+                repo,
+                pr.number,
+                &body,
+            )
+            .await
+            {
+                tracing::warn!(
+                    error = %e,
+                    pr = pr.number,
+                    "Failed to refresh PR status comment; skipping PR"
+                );
+            }
         }
     }
 }

@@ -11,8 +11,8 @@ use release_regent_core::{
             GetCommitsOptions, GitCommit, GitRepository, GitTag, GitTagType, ListTagsOptions,
         },
         github_operations::{
-            CollaboratorPermission, CreatePullRequestParams, CreateReleaseParams, Label,
-            PullRequest, PullRequestBranch, Release, Repository, Tag, UpdateReleaseParams,
+            CollaboratorPermission, CreatePullRequestParams, CreateReleaseParams, IssueComment,
+            Label, PullRequest, PullRequestBranch, Release, Repository, Tag, UpdateReleaseParams,
         },
     },
     CoreError, CoreResult, GitHubOperations, GitOperations,
@@ -97,6 +97,14 @@ pub struct MockGitHubOperations {
     get_file_content_responses: GetFileContentResponses,
     /// Recorded `batch_commit_files` calls: (owner, repo, branch, file_paths, message).
     batch_commit_files_calls: BatchCommitFilesCalls,
+    /// Issue comments keyed `"owner/repo/issue_number"`. Used by
+    /// `list_issue_comments` (returns the vec) and `update_issue_comment`
+    /// (replaces the body of the matching comment by id).
+    issue_comments: Arc<RwLock<HashMap<String, Vec<IssueComment>>>>,
+    /// Recorded `list_issue_comments` calls: (owner, repo, issue_number).
+    list_issue_comments_calls: Arc<RwLock<Vec<(String, String, u64)>>>,
+    /// Recorded `update_issue_comment` calls: (owner, repo, comment_id, body).
+    update_issue_comment_calls: Arc<RwLock<Vec<(String, String, u64, String)>>>,
 }
 
 impl MockGitHubOperations {
@@ -150,6 +158,9 @@ impl MockGitHubOperations {
             get_file_content_calls: Arc::new(RwLock::new(Vec::new())),
             get_file_content_responses: Arc::new(RwLock::new(HashMap::new())),
             batch_commit_files_calls: Arc::new(RwLock::new(Vec::new())),
+            issue_comments: Arc::new(RwLock::new(HashMap::new())),
+            list_issue_comments_calls: Arc::new(RwLock::new(Vec::new())),
+            update_issue_comment_calls: Arc::new(RwLock::new(Vec::new())),
         }
     }
 
@@ -256,6 +267,9 @@ impl MockGitHubOperations {
             get_file_content_calls: Arc::new(RwLock::new(Vec::new())),
             get_file_content_responses: Arc::new(RwLock::new(HashMap::new())),
             batch_commit_files_calls: Arc::new(RwLock::new(Vec::new())),
+            issue_comments: Arc::new(RwLock::new(HashMap::new())),
+            list_issue_comments_calls: Arc::new(RwLock::new(Vec::new())),
+            update_issue_comment_calls: Arc::new(RwLock::new(Vec::new())),
         }
     }
 
@@ -433,6 +447,37 @@ impl MockGitHubOperations {
         self.method_errors
             .insert(method_name.to_string(), error_message.to_string());
         self
+    }
+
+    /// Pre-populate the mock with comments for a specific issue/PR.
+    ///
+    /// These comments are returned by `list_issue_comments`.
+    /// The key is formatted as `"{owner}/{repo}/{issue_number}"`.
+    #[must_use]
+    pub fn with_issue_comments(
+        self,
+        owner: &str,
+        repo: &str,
+        issue_number: u64,
+        comments: Vec<IssueComment>,
+    ) -> Self {
+        let key = format!("{owner}/{repo}/{issue_number}");
+        self.issue_comments.blocking_write().insert(key, comments);
+        self
+    }
+
+    /// Return all recorded `list_issue_comments` calls.
+    ///
+    /// Each element is `(owner, repo, issue_number)`.
+    pub async fn list_issue_comments_calls(&self) -> Vec<(String, String, u64)> {
+        self.list_issue_comments_calls.read().await.clone()
+    }
+
+    /// Return all recorded `update_issue_comment` calls.
+    ///
+    /// Each element is `(owner, repo, comment_id, body)`.
+    pub async fn update_issue_comment_calls(&self) -> Vec<(String, String, u64, String)> {
+        self.update_issue_comment_calls.read().await.clone()
     }
 }
 
@@ -1293,6 +1338,92 @@ impl GitHubOperations for MockGitHubOperations {
         Ok(labels)
     }
 
+    async fn list_issue_comments(
+        &self,
+        owner: &str,
+        repo: &str,
+        issue_number: u64,
+    ) -> CoreResult<Vec<IssueComment>> {
+        let method = "list_issue_comments";
+        let params_str = format!("owner={owner}, repo={repo}, issue={issue_number}");
+
+        self.check_quota().await?;
+        self.simulate_latency().await;
+
+        if self.should_simulate_failure().await {
+            let error = CoreError::network("Simulated GitHub API error");
+            self.record_call(method, &params_str, CallResult::Error(error.to_string()))
+                .await;
+            return Err(error);
+        }
+
+        if let Some(msg) = self.method_errors.get(method) {
+            let error = CoreError::network(msg.clone());
+            self.record_call(method, &params_str, CallResult::Error(error.to_string()))
+                .await;
+            return Err(error);
+        }
+
+        let key = format!("{owner}/{repo}/{issue_number}");
+        let comments = self
+            .issue_comments
+            .read()
+            .await
+            .get(&key)
+            .cloned()
+            .unwrap_or_default();
+
+        self.list_issue_comments_calls.write().await.push((
+            owner.to_string(),
+            repo.to_string(),
+            issue_number,
+        ));
+        self.record_call(method, &params_str, CallResult::Success)
+            .await;
+        Ok(comments)
+    }
+
+    async fn update_issue_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        comment_id: u64,
+        body: &str,
+    ) -> CoreResult<()> {
+        let method = "update_issue_comment";
+        let params_str = format!(
+            "owner={owner}, repo={repo}, comment_id={comment_id}, body_len={}",
+            body.len()
+        );
+
+        self.check_quota().await?;
+        self.simulate_latency().await;
+
+        if self.should_simulate_failure().await {
+            let error = CoreError::network("Simulated GitHub API error");
+            self.record_call(method, &params_str, CallResult::Error(error.to_string()))
+                .await;
+            return Err(error);
+        }
+
+        if let Some(msg) = self.method_errors.get(method) {
+            let error = CoreError::network(msg.clone());
+            self.record_call(method, &params_str, CallResult::Error(error.to_string()))
+                .await;
+            return Err(error);
+        }
+
+        self.update_issue_comment_calls.write().await.push((
+            owner.to_string(),
+            repo.to_string(),
+            comment_id,
+            body.to_string(),
+        ));
+        self.record_call(method, &params_str, CallResult::Success)
+            .await;
+        Ok(())
+    }
+
     async fn get_installation_id_for_repo(&self, _owner: &str, _repo: &str) -> CoreResult<u64> {
         Ok(0)
     }
@@ -1317,6 +1448,9 @@ impl GitHubOperations for MockGitHubOperations {
             get_file_content_calls: Arc::clone(&self.get_file_content_calls),
             get_file_content_responses: Arc::clone(&self.get_file_content_responses),
             batch_commit_files_calls: Arc::clone(&self.batch_commit_files_calls),
+            issue_comments: Arc::clone(&self.issue_comments),
+            list_issue_comments_calls: Arc::clone(&self.list_issue_comments_calls),
+            update_issue_comment_calls: Arc::clone(&self.update_issue_comment_calls),
         }
     }
 

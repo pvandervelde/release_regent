@@ -206,6 +206,14 @@ fn classify_pull_request_event(
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
 
+    // Route opened/updated actions before checking for the closed+merged path.
+    if action == "opened" {
+        return EventType::PullRequestOpened;
+    }
+    if action == "edited" || action == "synchronize" || action == "ready_for_review" {
+        return EventType::PullRequestUpdated;
+    }
+
     if !(action == "closed" && is_merged) {
         return EventType::Unknown(format!("pull_request:{action}"));
     }
