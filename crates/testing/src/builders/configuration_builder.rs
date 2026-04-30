@@ -116,6 +116,7 @@ fn create_default_config() -> ReleaseRegentConfig {
             strategy: VersioningStrategy::Conventional,
             external: None,
             allow_override: false,
+            excluded_pr_authors: Vec::new(),
         },
     }
 }
