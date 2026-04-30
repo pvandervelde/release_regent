@@ -647,6 +647,11 @@ struct TestGitHubForLib {
     removed_labels: Arc<Mutex<Vec<(u64, String)>>>,
     /// Records every `(issue_number, body)` passed to `create_issue_comment`.
     issue_comments: Arc<Mutex<Vec<(u64, String)>>>,
+    /// Pre-seeded issue comments returned by `list_issue_comments`, keyed by
+    /// PR/issue number.  Each call returns the vec for that number (or empty).
+    stored_issue_comments: HashMap<u64, Vec<crate::traits::github_operations::IssueComment>>,
+    /// Records every `(comment_id, body)` passed to `update_issue_comment`.
+    update_comment_calls: Arc<Mutex<Vec<(u64, String)>>>,
     /// When set, `search_pull_requests` returns an error if the query
     /// contains this label name.  Other searches succeed normally.
     fail_search_for_label: Option<String>,
@@ -671,6 +676,8 @@ impl TestGitHubForLib {
             create_branch_calls: Arc::new(Mutex::new(vec![])),
             removed_labels: Arc::new(Mutex::new(vec![])),
             issue_comments: Arc::new(Mutex::new(vec![])),
+            stored_issue_comments: HashMap::new(),
+            update_comment_calls: Arc::new(Mutex::new(vec![])),
             fail_search_for_label: None,
             fail_remove_label_for_pr: None,
             fail_comment_for_pr: None,
@@ -690,6 +697,16 @@ impl TestGitHubForLib {
 
     fn with_search_results(mut self, prs: Vec<PullRequest>) -> Self {
         self.search_results = prs;
+        self
+    }
+
+    /// Pre-seed `list_issue_comments` for a specific issue/PR number.
+    fn with_stored_issue_comments(
+        mut self,
+        issue_number: u64,
+        comments: Vec<crate::traits::github_operations::IssueComment>,
+    ) -> Self {
+        self.stored_issue_comments.insert(issue_number, comments);
         self
     }
 
@@ -1058,18 +1075,26 @@ impl GitHubOperations for TestGitHubForLib {
         &self,
         _owner: &str,
         _repo: &str,
-        _issue_number: u64,
+        issue_number: u64,
     ) -> CoreResult<Vec<crate::traits::github_operations::IssueComment>> {
-        Ok(vec![])
+        Ok(self
+            .stored_issue_comments
+            .get(&issue_number)
+            .cloned()
+            .unwrap_or_default())
     }
 
     async fn update_issue_comment(
         &self,
         _owner: &str,
         _repo: &str,
-        _comment_id: u64,
-        _body: &str,
+        comment_id: u64,
+        body: &str,
     ) -> CoreResult<()> {
+        self.update_comment_calls
+            .lock()
+            .await
+            .push((comment_id, body.to_string()));
         Ok(())
     }
 
@@ -1083,6 +1108,8 @@ impl GitHubOperations for TestGitHubForLib {
             create_branch_calls: Arc::clone(&self.create_branch_calls),
             removed_labels: Arc::clone(&self.removed_labels),
             issue_comments: Arc::clone(&self.issue_comments),
+            stored_issue_comments: self.stored_issue_comments.clone(),
+            update_comment_calls: Arc::clone(&self.update_comment_calls),
             fail_search_for_label: self.fail_search_for_label.clone(),
             fail_remove_label_for_pr: self.fail_remove_label_for_pr,
             fail_comment_for_pr: self.fail_comment_for_pr,
@@ -1178,6 +1205,106 @@ impl ConfigurationProvider for TestConfigForLib {
 
     async fn get_default_config(&self) -> CoreResult<config::ReleaseRegentConfig> {
         Ok(config::ReleaseRegentConfig::default())
+    }
+}
+
+/// Configurable variant of `TestConfigForLib` — returns a fixed
+/// `ReleaseRegentConfig` supplied at construction time.
+#[derive(Clone)]
+struct TestConfigWith(config::ReleaseRegentConfig);
+
+impl TestConfigWith {
+    fn new(cfg: config::ReleaseRegentConfig) -> Self {
+        Self(cfg)
+    }
+}
+
+#[async_trait]
+impl ConfigurationProvider for TestConfigWith {
+    async fn load_global_config(
+        &self,
+        _options: LoadOptions,
+    ) -> CoreResult<config::ReleaseRegentConfig> {
+        Ok(self.0.clone())
+    }
+
+    async fn load_repository_config(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _options: LoadOptions,
+    ) -> CoreResult<Option<RepositoryConfig>> {
+        Ok(None)
+    }
+
+    async fn get_merged_config(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _options: LoadOptions,
+    ) -> CoreResult<config::ReleaseRegentConfig> {
+        Ok(self.0.clone())
+    }
+
+    async fn validate_config(
+        &self,
+        _config: &config::ReleaseRegentConfig,
+    ) -> CoreResult<ValidationResult> {
+        Ok(ValidationResult {
+            is_valid: true,
+            errors: vec![],
+            warnings: vec![],
+        })
+    }
+
+    async fn save_config(
+        &self,
+        _config: &config::ReleaseRegentConfig,
+        _owner: Option<&str>,
+        _repo: Option<&str>,
+        _global: bool,
+    ) -> CoreResult<()> {
+        Ok(())
+    }
+
+    async fn list_repository_configs(
+        &self,
+        _options: LoadOptions,
+    ) -> CoreResult<Vec<RepositoryConfig>> {
+        Ok(vec![])
+    }
+
+    async fn get_config_source(
+        &self,
+        _owner: Option<&str>,
+        _repo: Option<&str>,
+    ) -> CoreResult<ConfigurationSource> {
+        Ok(ConfigurationSource {
+            format: "yaml".into(),
+            loaded_at: Utc::now(),
+            location: "default".into(),
+            source_type: "default".into(),
+        })
+    }
+
+    async fn reload_config(&self, _owner: Option<&str>, _repo: Option<&str>) -> CoreResult<()> {
+        Ok(())
+    }
+
+    async fn config_exists(
+        &self,
+        _owner: Option<&str>,
+        _repo: Option<&str>,
+    ) -> CoreResult<bool> {
+        Ok(true)
+    }
+
+    fn supported_formats(&self) -> Vec<String> {
+        vec!["yaml".into()]
+    }
+
+    async fn get_default_config(&self) -> CoreResult<config::ReleaseRegentConfig> {
+        Ok(self.0.clone())
     }
 }
 
@@ -2338,4 +2465,393 @@ async fn test_handle_merged_non_bumping_pr_with_patch_floor_creates_next_patch_r
         "release branch should reference 0.3.1, got: {}",
         created[0].0
     );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase F — PR status comment end-to-end scenarios
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn make_pr_activity_payload(
+    pr_number: u64,
+    head_sha: &str,
+    head_branch: &str,
+    author_login: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "pull_request": {
+            "number": pr_number,
+            "head": { "sha": head_sha, "ref": head_branch },
+            "user": { "login": author_login }
+        }
+    })
+}
+
+fn make_open_pr_with_author(
+    number: u64,
+    head_branch: &str,
+    head_sha: &str,
+    author_login: &str,
+) -> PullRequest {
+    let repo = make_repo();
+    PullRequest {
+        base: PullRequestBranch {
+            ref_name: "main".into(),
+            repo: repo.clone(),
+            sha: "base000000000000000000000000000000000000".into(),
+        },
+        body: None,
+        created_at: Utc::now(),
+        draft: false,
+        head: PullRequestBranch {
+            ref_name: head_branch.to_string(),
+            repo,
+            sha: head_sha.to_string(),
+        },
+        merged_at: None,
+        number,
+        state: "open".into(),
+        title: format!("PR #{number}"),
+        updated_at: Utc::now(),
+        user: GitUser {
+            email: format!("{author_login}@example.com"),
+            login: Some(author_login.to_string()),
+            name: author_login.to_string(),
+        },
+    }
+}
+
+/// (a) `PullRequestOpened` for a feature branch → status comment created with
+/// projected version; `create_issue_comment` called exactly once.
+#[tokio::test]
+async fn test_feature_pr_opened_creates_status_comment_with_projected_version() {
+    let github = TestGitHubForLib::new_empty();
+    let config = TestConfigForLib;
+    let version_calc = TestVersionCalcForLib::returning("1.2.0");
+    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc);
+
+    let event = ProcessingEvent {
+        event_id: "f4-a".into(),
+        correlation_id: "corr-f4-a".into(),
+        event_type: EventType::PullRequestOpened,
+        repository: test_repo(),
+        payload: make_pr_activity_payload(42, "abc1234", "feat/my-feature", "dev"),
+        received_at: Utc::now(),
+        source: EventSourceKind::Webhook,
+        installation_id: 0,
+    };
+
+    processor
+        .handle_pull_request_activity(&event)
+        .await
+        .expect("handle_pull_request_activity should succeed");
+
+    let comments = github.issue_comments.lock().await;
+    assert_eq!(comments.len(), 1, "expected exactly one comment");
+    assert_eq!(comments[0].0, 42, "comment must target PR #42");
+    assert!(
+        comments[0].1.contains("1.2.0"),
+        "comment body must contain projected version; got: {}",
+        comments[0].1
+    );
+    assert!(
+        comments[0]
+            .1
+            .contains(pr_status_commenter::PR_STATUS_MARKER),
+        "comment must contain the status marker"
+    );
+}
+
+/// (b) `PullRequestUpdated` for the same feature branch after a comment
+/// already exists → `update_issue_comment` called; no duplicate comment.
+#[tokio::test]
+async fn test_feature_pr_updated_updates_existing_status_comment_in_place() {
+    use crate::traits::github_operations::IssueComment;
+
+    let existing_comment = IssueComment {
+        id: 99,
+        body: format!(
+            "{}\nOld projected version: v1.1.0",
+            pr_status_commenter::PR_STATUS_MARKER
+        ),
+        user_login: Some("release-regent[bot]".into()),
+    };
+
+    let github = TestGitHubForLib::new_empty()
+        .with_stored_issue_comments(42, vec![existing_comment]);
+    let config = TestConfigForLib;
+    let version_calc = TestVersionCalcForLib::returning("1.2.0");
+    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc);
+
+    let event = ProcessingEvent {
+        event_id: "f4-b".into(),
+        correlation_id: "corr-f4-b".into(),
+        event_type: EventType::PullRequestUpdated,
+        repository: test_repo(),
+        payload: make_pr_activity_payload(42, "abc2345", "feat/my-feature", "dev"),
+        received_at: Utc::now(),
+        source: EventSourceKind::Webhook,
+        installation_id: 0,
+    };
+
+    processor
+        .handle_pull_request_activity(&event)
+        .await
+        .expect("handle_pull_request_activity should succeed");
+
+    // update_issue_comment must have been called (not create_issue_comment).
+    let updates = github.update_comment_calls.lock().await;
+    assert_eq!(updates.len(), 1, "expected one update call");
+    assert_eq!(updates[0].0, 99, "must update comment id 99");
+
+    // create_issue_comment must NOT have been called.
+    let creates = github.issue_comments.lock().await;
+    assert!(creates.is_empty(), "create_issue_comment must not be called when updating");
+}
+
+/// (c) After a feature PR merges, open PRs with an existing marker comment
+/// are refreshed (max 25).
+#[tokio::test]
+async fn test_merged_feature_pr_refreshes_open_prs_with_existing_marker() {
+    use crate::traits::github_operations::IssueComment;
+
+    // Two open feature PRs, both with an existing marker comment.
+    let pr_10 = make_open_pr_with_author(10, "feat/alpha", "sha-alpha", "alice");
+    let pr_11 = make_open_pr_with_author(11, "feat/beta", "sha-beta", "bob");
+
+    let marker_comment = IssueComment {
+        id: 1,
+        body: format!("{}\nOld version", pr_status_commenter::PR_STATUS_MARKER),
+        user_login: None,
+    };
+
+    let github = TestGitHubForLib::new_empty()
+        .with_search_results(vec![pr_10, pr_11])
+        .with_stored_issue_comments(10, vec![marker_comment.clone()])
+        .with_stored_issue_comments(11, vec![marker_comment]);
+    let config = TestConfigForLib;
+    let version_calc = TestVersionCalcForLib::returning("0.2.0");
+    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc);
+
+    // Build a merged-PR event
+    let event = ProcessingEvent {
+        event_id: "f4-c".into(),
+        correlation_id: "corr-f4-c".into(),
+        event_type: EventType::PullRequestMerged,
+        repository: test_repo(),
+        payload: serde_json::json!({
+            "pull_request": {
+                "number": 5,
+                "base": { "ref": "main" },
+                "merge_commit_sha": "a".repeat(40),
+                "head": { "sha": "a".repeat(40), "ref": "feat/update" }
+            }
+        }),
+        received_at: Utc::now(),
+        source: EventSourceKind::Webhook,
+        installation_id: 0,
+    };
+
+    MergedPullRequestHandler::handle_merged_pull_request(&processor, &event)
+        .await
+        .expect("handle_merged_pull_request should succeed");
+
+    // Both open PRs should have received a refreshed comment (via update since
+    // they already had a marker comment).
+    let updates = github.update_comment_calls.lock().await;
+    assert_eq!(
+        updates.len(),
+        2,
+        "both open PRs with marker comment must be refreshed"
+    );
+}
+
+/// (d) `PullRequestOpened` for a release branch → status comment shows the
+/// release version extracted from the branch name.
+#[tokio::test]
+async fn test_release_pr_opened_creates_status_comment_with_release_version() {
+    let github = TestGitHubForLib::new_empty();
+    let config = TestConfigForLib;
+    let version_calc = TestVersionCalcForLib::returning("2.0.0"); // should NOT be used
+    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc);
+
+    let event = ProcessingEvent {
+        event_id: "f4-d".into(),
+        correlation_id: "corr-f4-d".into(),
+        event_type: EventType::PullRequestOpened,
+        repository: test_repo(),
+        payload: make_pr_activity_payload(55, "deadbeef", "release/v1.5.0", "release-bot"),
+        received_at: Utc::now(),
+        source: EventSourceKind::Webhook,
+        installation_id: 0,
+    };
+
+    processor
+        .handle_pull_request_activity(&event)
+        .await
+        .expect("handle_pull_request_activity should succeed");
+
+    let comments = github.issue_comments.lock().await;
+    assert_eq!(comments.len(), 1, "expected exactly one comment");
+    assert_eq!(comments[0].0, 55);
+    assert!(
+        comments[0].1.contains("1.5.0"),
+        "comment must show release version 1.5.0; got: {}",
+        comments[0].1
+    );
+    assert!(
+        comments[0].1.contains("release PR"),
+        "comment must identify itself as a release PR comment"
+    );
+}
+
+/// (e) `allow_override: false` → no `### Available commands` section in
+/// either feature or release PR status comments.
+#[tokio::test]
+async fn test_pr_status_comment_omits_commands_when_allow_override_is_false() {
+    let mut cfg = config::ReleaseRegentConfig::default();
+    cfg.versioning.allow_override = false;
+
+    let github = TestGitHubForLib::new_empty();
+    let config = TestConfigWith::new(cfg);
+    let version_calc = TestVersionCalcForLib::returning("1.1.0");
+    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc);
+
+    // Feature PR
+    let feature_event = ProcessingEvent {
+        event_id: "f4-e-feat".into(),
+        correlation_id: "corr-f4-e-feat".into(),
+        event_type: EventType::PullRequestOpened,
+        repository: test_repo(),
+        payload: make_pr_activity_payload(10, "sha1", "feat/x", "user1"),
+        received_at: Utc::now(),
+        source: EventSourceKind::Webhook,
+        installation_id: 0,
+    };
+
+    processor
+        .handle_pull_request_activity(&feature_event)
+        .await
+        .expect("feature PR activity should succeed");
+
+    // Release PR
+    let release_event = ProcessingEvent {
+        event_id: "f4-e-rel".into(),
+        correlation_id: "corr-f4-e-rel".into(),
+        event_type: EventType::PullRequestOpened,
+        repository: test_repo(),
+        payload: make_pr_activity_payload(20, "sha2", "release/v1.1.0", "release-bot"),
+        received_at: Utc::now(),
+        source: EventSourceKind::Webhook,
+        installation_id: 0,
+    };
+
+    processor
+        .handle_pull_request_activity(&release_event)
+        .await
+        .expect("release PR activity should succeed");
+
+    let comments = github.issue_comments.lock().await;
+    assert_eq!(comments.len(), 2);
+    for (_, body) in comments.iter() {
+        assert!(
+            !body.contains("### Available commands"),
+            "commands section must be absent when allow_override is false; got: {body}"
+        );
+    }
+}
+
+/// (f) `PullRequestOpened` from a login in `excluded_pr_authors` → no
+/// comment posted.
+#[tokio::test]
+async fn test_feature_pr_from_excluded_author_skips_status_comment() {
+    let mut cfg = config::ReleaseRegentConfig::default();
+    cfg.versioning
+        .excluded_pr_authors
+        .push("dependabot[bot]".to_string());
+
+    let github = TestGitHubForLib::new_empty();
+    let config = TestConfigWith::new(cfg);
+    let version_calc = TestVersionCalcForLib::returning("1.0.1");
+    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc);
+
+    let event = ProcessingEvent {
+        event_id: "f4-f".into(),
+        correlation_id: "corr-f4-f".into(),
+        event_type: EventType::PullRequestOpened,
+        repository: test_repo(),
+        payload: make_pr_activity_payload(77, "sha-bot", "deps/update", "dependabot[bot]"),
+        received_at: Utc::now(),
+        source: EventSourceKind::Webhook,
+        installation_id: 0,
+    };
+
+    processor
+        .handle_pull_request_activity(&event)
+        .await
+        .expect("excluded author should be handled cleanly");
+
+    // No comment must be posted.
+    let comments = github.issue_comments.lock().await;
+    assert!(
+        comments.is_empty(),
+        "no comment must be posted for excluded author"
+    );
+}
+
+/// (g) Batch refresh after merge: excluded-author PR skipped; normal PR with
+/// marker comment is refreshed.
+#[tokio::test]
+async fn test_batch_refresh_skips_excluded_author_and_refreshes_normal_pr() {
+    use crate::traits::github_operations::IssueComment;
+
+    let mut cfg = config::ReleaseRegentConfig::default();
+    cfg.versioning
+        .excluded_pr_authors
+        .push("bot-account".to_string());
+
+    let bot_pr = make_open_pr_with_author(30, "deps/bump", "sha-bot", "bot-account");
+    let normal_pr = make_open_pr_with_author(31, "feat/real-feature", "sha-real", "alice");
+
+    let marker_comment = IssueComment {
+        id: 50,
+        body: format!("{}\nOld version", pr_status_commenter::PR_STATUS_MARKER),
+        user_login: None,
+    };
+
+    let github = TestGitHubForLib::new_empty()
+        .with_search_results(vec![bot_pr, normal_pr])
+        // Both PRs have an existing marker comment to ensure the only reason
+        // the bot PR is skipped is the excluded-author filter.
+        .with_stored_issue_comments(30, vec![marker_comment.clone()])
+        .with_stored_issue_comments(31, vec![marker_comment]);
+    let config = TestConfigWith::new(cfg);
+    let version_calc = TestVersionCalcForLib::returning("0.2.0");
+    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc);
+
+    let event = ProcessingEvent {
+        event_id: "f4-g".into(),
+        correlation_id: "corr-f4-g".into(),
+        event_type: EventType::PullRequestMerged,
+        repository: test_repo(),
+        payload: serde_json::json!({
+            "pull_request": {
+                "number": 7,
+                "base": { "ref": "main" },
+                "merge_commit_sha": "b".repeat(40),
+                "head": { "sha": "b".repeat(40), "ref": "feat/something" }
+            }
+        }),
+        received_at: Utc::now(),
+        source: EventSourceKind::Webhook,
+        installation_id: 0,
+    };
+
+    MergedPullRequestHandler::handle_merged_pull_request(&processor, &event)
+        .await
+        .expect("handle_merged_pull_request should succeed");
+
+    // Only the normal PR (id 31) should be refreshed.
+    let updates = github.update_comment_calls.lock().await;
+    assert_eq!(updates.len(), 1, "only one PR must be refreshed");
+    assert_eq!(updates[0].0, 50, "must update the normal PR's comment");
 }
