@@ -1291,11 +1291,7 @@ impl ConfigurationProvider for TestConfigWith {
         Ok(())
     }
 
-    async fn config_exists(
-        &self,
-        _owner: Option<&str>,
-        _repo: Option<&str>,
-    ) -> CoreResult<bool> {
+    async fn config_exists(&self, _owner: Option<&str>, _repo: Option<&str>) -> CoreResult<bool> {
         Ok(true)
     }
 
@@ -2576,8 +2572,8 @@ async fn test_feature_pr_updated_updates_existing_status_comment_in_place() {
         user_login: Some("release-regent[bot]".into()),
     };
 
-    let github = TestGitHubForLib::new_empty()
-        .with_stored_issue_comments(42, vec![existing_comment]);
+    let github =
+        TestGitHubForLib::new_empty().with_stored_issue_comments(42, vec![existing_comment]);
     let config = TestConfigForLib;
     let version_calc = TestVersionCalcForLib::returning("1.2.0");
     let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc);
@@ -2605,7 +2601,10 @@ async fn test_feature_pr_updated_updates_existing_status_comment_in_place() {
 
     // create_issue_comment must NOT have been called.
     let creates = github.issue_comments.lock().await;
-    assert!(creates.is_empty(), "create_issue_comment must not be called when updating");
+    assert!(
+        creates.is_empty(),
+        "create_issue_comment must not be called when updating"
+    );
 }
 
 /// (c) After a feature PR merges, open PRs with an existing marker comment
@@ -2854,4 +2853,56 @@ async fn test_batch_refresh_skips_excluded_author_and_refreshes_normal_pr() {
     let updates = github.update_comment_calls.lock().await;
     assert_eq!(updates.len(), 1, "only one PR must be refreshed");
     assert_eq!(updates[0].0, 50, "must update the normal PR's comment");
+}
+
+/// (h) When an open release PR exists, the feature PR comment includes the
+/// queued-release annotation.  This test guards the wildcard fix: the search
+/// query must use "head:release/v*" (prefix match) not "head:release/v"
+/// (exact match), otherwise no release branch would ever match the query and
+/// `queued_release_version` would always be `None`.
+#[tokio::test]
+async fn test_feature_pr_opened_with_queued_release_includes_annotation() {
+    use crate::pr_status_commenter::PR_STATUS_MARKER;
+
+    // seed an open release PR so search_pull_requests returns it
+    let release_pr = make_open_pr_with_author(99, "release/v1.3.0", "sha-release", "release-bot");
+
+    let github = TestGitHubForLib::new_empty().with_search_results(vec![release_pr]);
+    let config = TestConfigForLib;
+    // version_calc returns 1.3.0 — same as already-queued release
+    let version_calc = TestVersionCalcForLib::returning("1.3.0");
+    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc);
+
+    let event = ProcessingEvent {
+        event_id: "f4-h".into(),
+        correlation_id: "corr-f4-h".into(),
+        event_type: EventType::PullRequestOpened,
+        repository: test_repo(),
+        payload: make_pr_activity_payload(42, "abc1234", "feat/my-feature", "dev"),
+        received_at: Utc::now(),
+        source: EventSourceKind::Webhook,
+        installation_id: 0,
+    };
+
+    processor
+        .handle_pull_request_activity(&event)
+        .await
+        .expect("handle_pull_request_activity should succeed");
+
+    let comments = github.issue_comments.lock().await;
+    assert_eq!(comments.len(), 1, "expected exactly one comment");
+    let body = &comments[0].1;
+
+    assert!(
+        body.contains(PR_STATUS_MARKER),
+        "comment must contain the status marker; got: {body}"
+    );
+    assert!(
+        body.contains("1.3.0"),
+        "comment must mention the queued release version; got: {body}"
+    );
+    assert!(
+        body.contains("already open"),
+        "comment must note the queued release PR is open; got: {body}"
+    );
 }

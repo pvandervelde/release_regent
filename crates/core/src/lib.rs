@@ -210,7 +210,7 @@ pub(crate) mod default_version_calculator;
 pub mod errors;
 pub(crate) mod github_version_calculator;
 pub mod manifest;
-pub mod pr_status_commenter;
+pub(crate) mod pr_status_commenter;
 pub mod release_automator;
 pub mod release_orchestrator;
 pub mod traits;
@@ -404,12 +404,31 @@ where
             .pointer("/pull_request/number")
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(0);
+
+        if pr_number == 0 {
+            tracing::warn!(
+                event_id = %event.event_id,
+                "PR number missing from payload; skipping status comment"
+            );
+            return Ok(());
+        }
+
         let pr_head_sha = event
             .payload
             .pointer("/pull_request/head/sha")
             .and_then(serde_json::Value::as_str)
             .unwrap_or_default()
             .to_string();
+
+        if pr_head_sha.is_empty() {
+            tracing::warn!(
+                event_id = %event.event_id,
+                pr = pr_number,
+                "PR head SHA missing from payload; skipping status comment"
+            );
+            return Ok(());
+        }
+
         let pr_head_branch = event
             .payload
             .pointer("/pull_request/head/ref")
@@ -496,7 +515,9 @@ where
             });
 
             // Check whether a release PR is already open with a higher version.
-            let release_search_query = format!("is:open head:{}/v", branch_prefix);
+            // The trailing * makes this a prefix match so all versioned release
+            // branches are captured (e.g. "is:open head:release/v*").
+            let release_search_query = format!("is:open head:{}/v*", branch_prefix);
             let queued_release_version: Option<versioning::SemanticVersion> = scoped_github
                 .search_pull_requests(owner, repo, &release_search_query)
                 .await
