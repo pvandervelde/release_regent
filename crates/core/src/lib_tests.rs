@@ -2153,10 +2153,19 @@ async fn test_handle_merged_non_bumping_feature_pr_after_release_does_not_recrea
         installation_id: 0,
     };
 
-    let result = processor.handle_merged_pull_request(&event).await;
+    let result = processor
+        .handle_merged_pull_request(&event)
+        .await
+        .expect("expected Ok for non-bumping PR after release");
+    // The guard is version-equality-based: effective_version == current_version
+    // triggers NoBumpNeeded regardless of the VersionBump variant.  The
+    // VersionBump::None field on the version_calc is incidental.
     assert!(
-        result.is_ok(),
-        "expected Ok for non-bumping PR after release, got: {result:?}"
+        matches!(
+            result,
+            release_orchestrator::OrchestratorResult::NoBumpNeeded
+        ),
+        "expected NoBumpNeeded but got: {result:?}"
     );
 
     // No release branch or PR should have been created.
