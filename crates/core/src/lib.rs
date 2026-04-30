@@ -1052,6 +1052,27 @@ where
             correlation_id = %correlation_id,
             "Resolved effective release version after bump-floor check"
         );
+
+        // Guard: if the effective version equals the already-released current
+        // version it means there are no version-bumping commits since the last
+        // release and no bump-override floor was applied.  Creating a release
+        // branch for a version that already has a tag would be wrong — it is
+        // exactly the scenario that causes `release/v0.3.0` to be resurrected
+        // after the 0.3.0 release branch is merged.
+        if let Some(current) = current_version {
+            if effective_version.compare_precedence(current) == std::cmp::Ordering::Equal {
+                tracing::info!(
+                    owner = %owner,
+                    repo = %repo,
+                    version = %effective_version,
+                    correlation_id = %correlation_id,
+                    "Effective version equals current released version; \
+                     no version-bumping commits — skipping release branch creation"
+                );
+                return Ok(release_orchestrator::OrchestratorResult::NoBumpNeeded);
+            }
+        }
+
         tracing::info!(
             owner = %owner,
             repo = %repo,
@@ -1140,6 +1161,9 @@ where
             | release_orchestrator::OrchestratorResult::Updated { pr }
             | release_orchestrator::OrchestratorResult::Renamed { pr }
             | release_orchestrator::OrchestratorResult::NoOp { pr } => Some(pr.number),
+            // NoBumpNeeded is returned before the orchestrator is called, so
+            // there is no release PR to post the audit comment on.
+            release_orchestrator::OrchestratorResult::NoBumpNeeded => None,
         };
         let Some(release_pr) = release_pr_number else {
             return;

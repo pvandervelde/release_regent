@@ -147,6 +147,15 @@ pub enum OrchestratorResult {
         /// The existing pull request (unchanged).
         pr: PullRequest,
     },
+
+    /// No version-bumping commits were found since the last release and no
+    /// bump-override floor was applied, so the calculated next version is
+    /// identical to the already-released version.
+    ///
+    /// No release branch or PR was created or modified.  This is the expected
+    /// outcome when a `chore:`, `docs:`, or other non-bumping PR is merged
+    /// immediately after a release.
+    NoBumpNeeded,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

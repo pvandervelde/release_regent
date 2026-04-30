@@ -1098,6 +1098,7 @@ impl ConfigurationProvider for TestConfigForLib {
 struct TestVersionCalcForLib {
     next_version: SemanticVersion,
     changelog_entries: Vec<ChangelogEntry>,
+    version_bump: VersionBump,
 }
 
 impl TestVersionCalcForLib {
@@ -1105,11 +1106,17 @@ impl TestVersionCalcForLib {
         Self {
             next_version: versioning::VersionCalculator::parse_version(version).unwrap(),
             changelog_entries: vec![],
+            version_bump: VersionBump::Minor,
         }
     }
 
     fn with_entries(mut self, entries: Vec<ChangelogEntry>) -> Self {
         self.changelog_entries = entries;
+        self
+    }
+
+    fn with_version_bump(mut self, bump: VersionBump) -> Self {
+        self.version_bump = bump;
         self
     }
 }
@@ -1125,7 +1132,7 @@ impl VersionCalculator for TestVersionCalcForLib {
         Ok(VersionCalculationResult {
             next_version: self.next_version.clone(),
             current_version: ctx.current_version,
-            version_bump: VersionBump::Minor,
+            version_bump: self.version_bump.clone(),
             is_prerelease: false,
             build_metadata: None,
             analyzed_commits: vec![],
@@ -1213,6 +1220,7 @@ impl VersionCalculator for TestVersionCalcForLib {
         Arc::new(TestVersionCalcForLib {
             next_version: self.next_version.clone(),
             changelog_entries: self.changelog_entries.clone(),
+            version_bump: self.version_bump.clone(),
         })
     }
 }
@@ -2086,5 +2094,159 @@ async fn test_handle_merged_feature_pr_audit_comment_failure_returns_ok() {
             .iter()
             .all(|(_, b)| !b.contains("Version floor applied")),
         "no floor audit comment should be posted when it fails, got: {comments:?}"
+    );
+}
+
+/// Regression test for the bug where merging a non-version-bumping PR immediately
+/// after a release recreates the just-released release branch.
+///
+/// Scenario:
+///   1. `v0.3.0` release branch is merged → tag `v0.3.0` and GitHub release
+///      are created, branch is deleted (handled by `ReleasePrMerged` path).
+///   2. A `chore:` PR is merged — no `feat:` or `fix:`, so `VersionBump::None`
+///      and the version calculator returns `v0.3.0` (unchanged).
+///   3. Without the fix, `process_feature_pr_merged` would call the orchestrator
+///      with `v0.3.0`, which would find no open release PR and create a new
+///      `release/v0.3.0` branch — resurrecting a version that is already tagged.
+///   4. With the fix, the handler detects that `effective_version == current_version`
+///      and returns `OrchestratorResult::NoBumpNeeded` without touching GitHub.
+#[tokio::test]
+async fn test_handle_merged_non_bumping_feature_pr_after_release_does_not_recreate_release_branch()
+{
+    // Current released tag is v0.3.0.
+    let tag = GitTag {
+        name: "v0.3.0".to_string(),
+        target_sha: "a".repeat(40),
+        tag_type: GitTagType::Lightweight,
+        message: None,
+        tagger: None,
+        created_at: None,
+    };
+    // The version calculator returns v0.3.0 with VersionBump::None — the
+    // commits in the merged PR are all non-bumping (chore:, docs:, etc.).
+    let version_calc =
+        TestVersionCalcForLib::returning("0.3.0").with_version_bump(VersionBump::None);
+    let github = TestGitHubForLib::new_empty().with_tags(vec![tag]);
+    let config = TestConfigForLib;
+    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc);
+
+    let event = ProcessingEvent {
+        event_id: "evt-chore-after-release".into(),
+        correlation_id: "corr-chore-after-release".into(),
+        event_type: EventType::PullRequestMerged,
+        repository: RepositoryInfo {
+            owner: "acme".into(),
+            name: "app".into(),
+            default_branch: "main".into(),
+        },
+        payload: serde_json::json!({
+            "pull_request": {
+                // Regular feature branch — NOT a release branch.
+                "head": { "ref": "chore/update-deps", "sha": "b".repeat(40) },
+                "base": { "ref": "main" },
+                "number": 99,
+                "merge_commit_sha": "c".repeat(40)
+            }
+        }),
+        received_at: Utc::now(),
+        source: EventSourceKind::Webhook,
+        installation_id: 0,
+    };
+
+    let result = processor
+        .handle_merged_pull_request(&event)
+        .await
+        .expect("expected Ok for non-bumping PR after release");
+    // The guard is version-equality-based: effective_version == current_version
+    // triggers NoBumpNeeded regardless of the VersionBump variant.  The
+    // VersionBump::None field on the version_calc is incidental.
+    assert!(
+        matches!(
+            result,
+            release_orchestrator::OrchestratorResult::NoBumpNeeded
+        ),
+        "expected NoBumpNeeded but got: {result:?}"
+    );
+
+    // No release branch or PR should have been created.
+    let created = github.created_prs.lock().await;
+    assert!(
+        created.is_empty(),
+        "release branch must NOT be recreated for an already-released version, \
+         but found PRs: {created:?}"
+    );
+    let branches = github.create_branch_calls.lock().await;
+    assert!(
+        branches.is_empty(),
+        "release branch must NOT be recreated for an already-released version, \
+         but found branches: {branches:?}"
+    );
+}
+
+/// Variant: a non-bumping PR with a `!release patch` override AFTER a release
+/// SHOULD create a new release branch for the next patch version.
+///
+/// The bump-floor must not be suppressed by the `NoBumpNeeded` guard because
+/// the floor raises `effective_version` above `current_version`.
+#[tokio::test]
+async fn test_handle_merged_non_bumping_pr_with_patch_floor_creates_next_patch_release() {
+    let tag = GitTag {
+        name: "v0.3.0".to_string(),
+        target_sha: "a".repeat(40),
+        tag_type: GitTagType::Lightweight,
+        message: None,
+        tagger: None,
+        created_at: None,
+    };
+    // Calculator returns v0.3.0 with None — no conventional bump from commits.
+    let version_calc =
+        TestVersionCalcForLib::returning("0.3.0").with_version_bump(VersionBump::None);
+    let override_label = Label {
+        id: 1,
+        name: "rr:override-patch".to_string(),
+        color: "00ff00".to_string(),
+        description: None,
+    };
+    let github = TestGitHubForLib::new_empty()
+        .with_tags(vec![tag])
+        .with_pr_labels(99, vec![override_label]);
+    let config = TestConfigForLib;
+    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc);
+
+    let event = ProcessingEvent {
+        event_id: "evt-patch-floor-after-release".into(),
+        correlation_id: "corr-patch-floor-after-release".into(),
+        event_type: EventType::PullRequestMerged,
+        repository: RepositoryInfo {
+            owner: "acme".into(),
+            name: "app".into(),
+            default_branch: "main".into(),
+        },
+        payload: serde_json::json!({
+            "pull_request": {
+                "head": { "ref": "chore/bump-floor", "sha": "b".repeat(40) },
+                "base": { "ref": "main" },
+                "number": 99,
+                "merge_commit_sha": "c".repeat(40)
+            }
+        }),
+        received_at: Utc::now(),
+        source: EventSourceKind::Webhook,
+        installation_id: 0,
+    };
+
+    let result = processor.handle_merged_pull_request(&event).await;
+    assert!(
+        result.is_ok(),
+        "expected Ok when patch floor applied after release, got: {result:?}"
+    );
+
+    // The orchestrator must have created a release branch for v0.3.1.
+    let created = github.created_prs.lock().await;
+    assert_eq!(created.len(), 1, "expected one release PR for v0.3.1");
+    assert!(
+        created[0].0.contains("0.3.1"),
+        "release branch should reference 0.3.1, got: {}",
+        created[0].0
     );
 }

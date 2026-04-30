@@ -532,6 +532,14 @@ impl<'a, G: GitHubOperations + Send + Sync> CommentCommandProcessor<'a, G> {
                      (`{version_display}`). To override, close the existing release PR first."
                 )
             }
+            // NoBumpNeeded is never returned by the orchestrator when driven
+            // from a `!set-version` command: the caller always supplies an
+            // explicit pinned version, so the orchestrator always proceeds past
+            // the no-bump guard.  This arm exists only for exhaustive matching.
+            OrchestratorResult::NoBumpNeeded => unreachable!(
+                "NoBumpNeeded cannot be returned by orchestrate() from a \
+                 !set-version command path"
+            ),
         }
     }
 
