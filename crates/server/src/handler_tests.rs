@@ -228,16 +228,37 @@ fn test_classify_event_pull_request_not_merged_returns_unknown_with_action() {
 }
 
 #[test]
-fn test_classify_event_pull_request_opened_returns_unknown_with_action() {
+fn test_classify_event_pull_request_opened_returns_pull_request_opened() {
     let payload = json!({
         "action": "opened",
         "pull_request": { "merged": false, "head": { "ref": "feature/x" } }
     });
     let result = classify_event("pull_request", &payload, "release");
-    assert!(
-        matches!(result, EventType::Unknown(ref s) if s == "pull_request:opened"),
-        "opened PR must return Unknown with action suffix"
+    assert_eq!(
+        result,
+        EventType::PullRequestOpened,
+        "opened PR must map to PullRequestOpened"
     );
+}
+
+#[test]
+fn test_classify_event_pull_request_synchronize_returns_pull_request_updated() {
+    let payload = json!({
+        "action": "synchronize",
+        "pull_request": { "merged": false, "head": { "ref": "feature/x" } }
+    });
+    let result = classify_event("pull_request", &payload, "release");
+    assert_eq!(result, EventType::PullRequestUpdated);
+}
+
+#[test]
+fn test_classify_event_pull_request_edited_returns_pull_request_updated() {
+    let payload = json!({
+        "action": "edited",
+        "pull_request": { "merged": false, "head": { "ref": "feature/x" } }
+    });
+    let result = classify_event("pull_request", &payload, "release");
+    assert_eq!(result, EventType::PullRequestUpdated);
 }
 
 #[test]

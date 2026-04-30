@@ -210,6 +210,7 @@ pub(crate) mod default_version_calculator;
 pub mod errors;
 pub(crate) mod github_version_calculator;
 pub mod manifest;
+pub mod pr_status_commenter;
 pub mod release_automator;
 pub mod release_orchestrator;
 pub mod traits;
@@ -266,6 +267,20 @@ pub trait MergedPullRequestHandler: Send + Sync {
     /// without taking any action.  Override in the production processor to
     /// invoke [`comment_command_processor::CommentCommandProcessor`].
     async fn handle_pr_comment(
+        &self,
+        _event: &traits::event_source::ProcessingEvent,
+    ) -> CoreResult<()> {
+        Ok(())
+    }
+
+    /// Process a single `PullRequestOpened` or `PullRequestUpdated` event.
+    ///
+    /// Called when the event loop receives [`EventType::PullRequestOpened`] or
+    /// [`EventType::PullRequestUpdated`].  The default implementation is a
+    /// no-op that acknowledges the event without taking any action.  Override
+    /// in the production processor to post or refresh the projected-version
+    /// status comment on the PR.
+    async fn handle_pull_request_activity(
         &self,
         _event: &traits::event_source::ProcessingEvent,
     ) -> CoreResult<()> {
@@ -469,6 +484,14 @@ where
                                 "Pull request comment received — dispatching to comment handler"
                             );
                             handler.handle_pr_comment(&event).await
+                        }
+                        EventType::PullRequestOpened | EventType::PullRequestUpdated => {
+                            tracing::debug!(
+                                event_id = %event.event_id,
+                                event_type = %event.event_type,
+                                "Pull request activity — dispatching to activity handler"
+                            );
+                            handler.handle_pull_request_activity(&event).await
                         }
                         EventType::Unknown(raw) => {
                             tracing::debug!(

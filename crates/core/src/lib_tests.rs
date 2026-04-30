@@ -33,6 +33,7 @@ impl MergedPullRequestHandler for NoopMergedPRHandler {
 struct SpyMergedPRHandler {
     received: Arc<Mutex<Vec<String>>>,
     received_release_pr: Arc<Mutex<Vec<String>>>,
+    received_activity: Arc<Mutex<Vec<String>>>,
 }
 
 impl SpyMergedPRHandler {
@@ -47,6 +48,10 @@ impl SpyMergedPRHandler {
     async fn received_release_pr_event_ids(&self) -> Vec<String> {
         self.received_release_pr.lock().await.clone()
     }
+
+    async fn received_activity_event_ids(&self) -> Vec<String> {
+        self.received_activity.lock().await.clone()
+    }
 }
 
 #[async_trait]
@@ -58,6 +63,14 @@ impl MergedPullRequestHandler for SpyMergedPRHandler {
 
     async fn handle_release_pr_merged(&self, event: &ProcessingEvent) -> CoreResult<()> {
         self.received_release_pr
+            .lock()
+            .await
+            .push(event.event_id.clone());
+        Ok(())
+    }
+
+    async fn handle_pull_request_activity(&self, event: &ProcessingEvent) -> CoreResult<()> {
+        self.received_activity
             .lock()
             .await
             .push(event.event_id.clone());
@@ -419,6 +432,63 @@ async fn test_run_event_loop_calls_handler_for_pull_request_merged_events() {
     // The release PR merged handler should have been called for the ReleasePrMerged event.
     let release_handled = handler.received_release_pr_event_ids().await;
     assert_eq!(release_handled, vec!["evt-release"]);
+}
+
+/// `run_event_loop` dispatches `PullRequestOpened` events to
+/// `handle_pull_request_activity` and acknowledges them.
+#[tokio::test]
+async fn test_run_event_loop_dispatches_pull_request_opened_to_activity_handler() {
+    let token = CancellationToken::new();
+    let source = TestEventSource::new(vec![make_test_event(
+        "evt-opened",
+        EventType::PullRequestOpened,
+    )]);
+    let source_for_loop = source.clone();
+    let loop_token = token.clone();
+
+    let handler = SpyMergedPRHandler::new();
+    let handler_for_loop = handler.clone();
+
+    let loop_handle = tokio::spawn(async move {
+        run_event_loop(&source_for_loop, &handler_for_loop, loop_token).await
+    });
+
+    let acked = wait_for_acks(&source, 1, &token).await;
+    loop_handle.await.unwrap().unwrap();
+
+    assert_eq!(acked, vec!["evt-opened"]);
+    let activity = handler.received_activity_event_ids().await;
+    assert_eq!(activity, vec!["evt-opened"]);
+    // Ensure the merged-PR handler was NOT called.
+    assert!(handler.received_event_ids().await.is_empty());
+}
+
+/// `run_event_loop` dispatches `PullRequestUpdated` events to
+/// `handle_pull_request_activity` and acknowledges them.
+#[tokio::test]
+async fn test_run_event_loop_dispatches_pull_request_updated_to_activity_handler() {
+    let token = CancellationToken::new();
+    let source = TestEventSource::new(vec![make_test_event(
+        "evt-updated",
+        EventType::PullRequestUpdated,
+    )]);
+    let source_for_loop = source.clone();
+    let loop_token = token.clone();
+
+    let handler = SpyMergedPRHandler::new();
+    let handler_for_loop = handler.clone();
+
+    let loop_handle = tokio::spawn(async move {
+        run_event_loop(&source_for_loop, &handler_for_loop, loop_token).await
+    });
+
+    let acked = wait_for_acks(&source, 1, &token).await;
+    loop_handle.await.unwrap().unwrap();
+
+    assert_eq!(acked, vec!["evt-updated"]);
+    let activity = handler.received_activity_event_ids().await;
+    assert_eq!(activity, vec!["evt-updated"]);
+    assert!(handler.received_event_ids().await.is_empty());
 }
 
 /// A `PullRequestMerged` event whose handler returns an error is rejected.

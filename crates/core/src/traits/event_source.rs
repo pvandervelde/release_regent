@@ -87,6 +87,8 @@ pub enum EventSourceKind {
 /// - [`EventType::PullRequestMerged`]        → Release Orchestrator
 /// - [`EventType::ReleasePrMerged`]          → Release Automator
 /// - [`EventType::PullRequestCommentReceived`] → Comment command processor
+/// - [`EventType::PullRequestOpened`]        → PR status comment (feature/release preview)
+/// - [`EventType::PullRequestUpdated`]       → PR status comment refresh
 /// - [`EventType::Unknown`]                  → logged and dropped
 ///
 /// # Parsing from strings
@@ -138,6 +140,18 @@ pub enum EventType {
     /// Comments that do not match any known command are silently ignored.
     PullRequestCommentReceived,
 
+    /// A pull request was opened (action `opened`).
+    ///
+    /// Triggers the PR status comment handler to post a projected-version
+    /// preview comment on the PR.
+    PullRequestOpened,
+
+    /// A pull request was updated (action `edited` or `synchronize`).
+    ///
+    /// Triggers the PR status comment handler to refresh the projected-version
+    /// preview comment on the PR.
+    PullRequestUpdated,
+
     /// A GitHub event that this version of Release Regent does not recognise.
     ///
     /// The inner `String` preserves the raw event type for diagnostic logging.
@@ -163,6 +177,8 @@ impl From<&str> for EventType {
             "pull_request_merged" => Self::PullRequestMerged,
             "release_pr_merged" => Self::ReleasePrMerged,
             "pull_request_comment_received" => Self::PullRequestCommentReceived,
+            "pull_request_opened" => Self::PullRequestOpened,
+            "pull_request_updated" => Self::PullRequestUpdated,
             other => Self::Unknown(other.to_string()),
         }
     }
@@ -193,6 +209,8 @@ impl std::fmt::Display for EventType {
             Self::PullRequestMerged => write!(f, "pull_request_merged"),
             Self::ReleasePrMerged => write!(f, "release_pr_merged"),
             Self::PullRequestCommentReceived => write!(f, "pull_request_comment_received"),
+            Self::PullRequestOpened => write!(f, "pull_request_opened"),
+            Self::PullRequestUpdated => write!(f, "pull_request_updated"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
