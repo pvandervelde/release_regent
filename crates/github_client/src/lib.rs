@@ -23,8 +23,8 @@ use release_regent_core::{
         },
         github_operations::{
             CollaboratorPermission, CreatePullRequestParams, CreateReleaseParams, FileUpdate,
-            GitHubOperations, GitUser as GitHubUser, Label, PullRequest, PullRequestBranch,
-            Release, Repository, Tag, UpdateReleaseParams,
+            GitHubOperations, GitUser as GitHubUser, IssueComment, Label, PullRequest,
+            PullRequestBranch, Release, Repository, Tag, UpdateReleaseParams,
         },
     },
     CoreError, CoreResult,
@@ -720,6 +720,36 @@ impl GitHubOperations for GitHubClient {
         Ok(all_prs)
     }
 
+    #[instrument(skip(self, body))]
+    async fn update_issue_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        comment_id: u64,
+        body: &str,
+    ) -> CoreResult<()> {
+        info!(owner, repo, comment_id, "Updating issue comment");
+
+        let installation = self.installation().await?;
+        let path = format!("/repos/{owner}/{repo}/issues/comments/{comment_id}");
+        let request = serde_json::json!({ "body": body });
+        let resp = installation
+            .patch(&path, &request)
+            .await
+            .map_err(map_sdk_error)?;
+
+        let status = resp.status().as_u16();
+        if status != 200 {
+            let resp_body = resp.text().await.unwrap_or_default();
+            return Err(CoreError::github(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("PATCH /issues/comments failed with status {status}: {resp_body}"),
+            )));
+        }
+
+        Ok(())
+    }
+
     #[instrument(skip(self, params))]
     async fn update_release(
         &self,
@@ -960,6 +990,32 @@ impl GitHubOperations for GitHubClient {
             .collect();
 
         Ok(labels)
+    }
+
+    #[instrument(skip(self))]
+    async fn list_issue_comments(
+        &self,
+        owner: &str,
+        repo: &str,
+        issue_number: u64,
+    ) -> CoreResult<Vec<IssueComment>> {
+        info!(owner, repo, issue_number, "Listing issue comments");
+
+        let installation = self.installation().await?;
+        let path = format!("/repos/{owner}/{repo}/issues/{issue_number}/comments");
+        let response = installation.get(&path).await.map_err(map_sdk_error)?;
+        let raw: Vec<serde_json::Value> = response.json().await.map_err(CoreError::github)?;
+
+        let comments = raw
+            .into_iter()
+            .map(|v| IssueComment {
+                id: v["id"].as_u64().unwrap_or(0),
+                body: v["body"].as_str().unwrap_or("").to_string(),
+                user_login: v["user"]["login"].as_str().map(str::to_string),
+            })
+            .collect();
+
+        Ok(comments)
     }
 
     #[instrument(skip(self, content, commit_message))]

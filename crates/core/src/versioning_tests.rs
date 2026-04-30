@@ -1354,6 +1354,23 @@ mod cross_calculator_consistency {
         ) -> crate::CoreResult<()> {
             Ok(())
         }
+        async fn list_issue_comments(
+            &self,
+            _: &str,
+            _: &str,
+            _: u64,
+        ) -> crate::CoreResult<Vec<crate::traits::github_operations::IssueComment>> {
+            Ok(vec![])
+        }
+        async fn update_issue_comment(
+            &self,
+            _: &str,
+            _: &str,
+            _: u64,
+            _: &str,
+        ) -> crate::CoreResult<()> {
+            Ok(())
+        }
         fn scoped_to(&self, _: u64) -> Self {
             Self
         }
