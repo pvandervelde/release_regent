@@ -548,7 +548,7 @@ fn v110() -> SemanticVersion {
 
 #[test]
 fn test_render_feature_pr_comment_starts_with_html_marker() {
-    let body = render_feature_pr_comment(&v110(), &v100(), true);
+    let body = render_feature_pr_comment(&v110(), &v100(), None, true);
     assert!(
         body.starts_with(PR_STATUS_MARKER),
         "feature PR comment must start with the HTML marker; got: {body}"
@@ -557,7 +557,7 @@ fn test_render_feature_pr_comment_starts_with_html_marker() {
 
 #[test]
 fn test_render_feature_pr_comment_includes_projected_version() {
-    let body = render_feature_pr_comment(&v110(), &v100(), false);
+    let body = render_feature_pr_comment(&v110(), &v100(), None, false);
     assert!(
         body.contains("v1.1.0"),
         "feature PR comment must include projected version; got: {body}"
@@ -566,7 +566,7 @@ fn test_render_feature_pr_comment_includes_projected_version() {
 
 #[test]
 fn test_render_feature_pr_comment_includes_base_version_in_subtitle() {
-    let body = render_feature_pr_comment(&v110(), &v100(), false);
+    let body = render_feature_pr_comment(&v110(), &v100(), None, false);
     assert!(
         body.contains("v1.0.0"),
         "feature PR comment must include base version in subtitle; got: {body}"
@@ -575,7 +575,7 @@ fn test_render_feature_pr_comment_includes_base_version_in_subtitle() {
 
 #[test]
 fn test_render_feature_pr_comment_includes_commands_table_when_allow_override_true() {
-    let body = render_feature_pr_comment(&v110(), &v100(), true);
+    let body = render_feature_pr_comment(&v110(), &v100(), None, true);
     assert!(
         body.contains("### Available commands"),
         "commands section must be present when allow_override=true; got: {body}"
@@ -588,10 +588,80 @@ fn test_render_feature_pr_comment_includes_commands_table_when_allow_override_tr
 
 #[test]
 fn test_render_feature_pr_comment_omits_commands_table_when_allow_override_false() {
-    let body = render_feature_pr_comment(&v110(), &v100(), false);
+    let body = render_feature_pr_comment(&v110(), &v100(), None, false);
     assert!(
         !body.contains("### Available commands"),
         "commands section must be absent when allow_override=false; got: {body}"
+    );
+}
+
+#[test]
+fn test_render_feature_pr_comment_no_bump_shows_no_version_change() {
+    // projected == base means no version-bumping commits
+    let body = render_feature_pr_comment(&v100(), &v100(), None, false);
+    assert!(
+        body.starts_with(PR_STATUS_MARKER),
+        "no-bump comment must start with the HTML marker; got: {body}"
+    );
+    assert!(
+        body.contains("no version change"),
+        "no-bump comment must say 'no version change'; got: {body}"
+    );
+    assert!(
+        body.contains("v1.0.0"),
+        "no-bump comment must still reference the base version; got: {body}"
+    );
+}
+
+#[test]
+fn test_render_feature_pr_comment_no_bump_does_not_say_next_release_will_be() {
+    let body = render_feature_pr_comment(&v100(), &v100(), None, false);
+    assert!(
+        !body.contains("next release will be"),
+        "no-bump comment must not say 'next release will be'; got: {body}"
+    );
+}
+
+#[test]
+fn test_render_feature_pr_comment_queued_version_higher_than_base_includes_note() {
+    let queued = v200();
+    let body = render_feature_pr_comment(&v110(), &v100(), Some(&queued), false);
+    assert!(
+        body.contains("v2.0.0"),
+        "comment must mention queued version; got: {body}"
+    );
+    assert!(
+        body.contains("already open"),
+        "comment must note the queued release PR is open; got: {body}"
+    );
+    assert!(
+        body.contains("subsequent release"),
+        "comment must note changes land after the queued release; got: {body}"
+    );
+}
+
+#[test]
+fn test_render_feature_pr_comment_queued_version_equals_base_does_not_include_note() {
+    // queued == base_version is a degenerate case; no note should appear
+    let queued = v100();
+    let body = render_feature_pr_comment(&v110(), &v100(), Some(&queued), false);
+    assert!(
+        !body.contains("already open"),
+        "no note should appear when queued == base; got: {body}"
+    );
+}
+
+#[test]
+fn test_render_feature_pr_comment_no_bump_with_queued_version_includes_both_messages() {
+    let queued = v200();
+    let body = render_feature_pr_comment(&v100(), &v100(), Some(&queued), false);
+    assert!(
+        body.contains("no version change"),
+        "must say no version change; got: {body}"
+    );
+    assert!(
+        body.contains("v2.0.0"),
+        "must also note the queued release; got: {body}"
     );
 }
 

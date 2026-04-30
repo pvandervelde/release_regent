@@ -495,9 +495,32 @@ where
                 build: None,
             });
 
+            // Check whether a release PR is already open with a higher version.
+            let release_search_query = format!("is:open head:{}/v", branch_prefix);
+            let queued_release_version: Option<versioning::SemanticVersion> = scoped_github
+                .search_pull_requests(owner, repo, &release_search_query)
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::debug!(
+                        error = %e,
+                        "Failed to search for open release PRs; assuming none"
+                    );
+                    vec![]
+                })
+                .iter()
+                .filter_map(|pr| {
+                    release_automator::extract_version_from_branch(
+                        &pr.head.ref_name,
+                        &branch_prefix,
+                    )
+                    .ok()
+                })
+                .max();
+
             pr_status_commenter::render_feature_pr_comment(
                 &calc_result.next_version,
                 &base_version,
+                queued_release_version.as_ref(),
                 repo_config.versioning.allow_override,
             )
         };
@@ -1414,6 +1437,17 @@ where
 
         let excluded = &repo_config.versioning.excluded_pr_authors;
 
+        // Find the highest open release PR version from the already-fetched list
+        // so we can annotate feature PR comments when a release is already queued.
+        let queued_release_version: Option<versioning::SemanticVersion> = open_prs
+            .iter()
+            .filter(|pr| is_release_pr_branch(&pr.head.ref_name, &branch_prefix))
+            .filter_map(|pr| {
+                release_automator::extract_version_from_branch(&pr.head.ref_name, &branch_prefix)
+                    .ok()
+            })
+            .max();
+
         // Feature PRs only; skip excluded authors; cap at 25.
         let candidates: Vec<_> = open_prs
             .into_iter()
@@ -1510,6 +1544,7 @@ where
             let body = pr_status_commenter::render_feature_pr_comment(
                 &calc_result.next_version,
                 &base_version,
+                queued_release_version.as_ref(),
                 repo_config.versioning.allow_override,
             );
 

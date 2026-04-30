@@ -75,13 +75,20 @@ pub(crate) async fn upsert_pr_status_comment<G: GitHubOperations>(
 
 /// Render the feature-branch PR status comment body.
 ///
-/// Produces a Markdown string beginning with [`PR_STATUS_MARKER`] that shows
-/// the projected next release version and, when `allow_override` is `true`,
-/// a table of available commands.
+/// Produces a Markdown string beginning with [`PR_STATUS_MARKER`].
+///
+/// When `projected_version == base_version` the commits in this PR do not
+/// trigger any version bump; the comment says so rather than echoing back the
+/// current version as "the next release".
+///
+/// When `queued_release_version` is `Some(v)` and `v > base_version` (i.e. a
+/// release PR for a higher version is already open) a blockquote note is
+/// appended so PR authors know their changes will land after that release.
 ///
 /// # Parameters
 /// - `projected_version`: Version that would be published if this PR is merged now
 /// - `base_version`: Latest released version from which the projection starts
+/// - `queued_release_version`: Highest open release-branch PR version, if any
 /// - `allow_override`: When `true`, appends the `### Available commands` table
 ///
 /// # Returns
@@ -93,24 +100,47 @@ pub(crate) async fn upsert_pr_status_comment<G: GitHubOperations>(
 /// use release_regent_core::pr_status_commenter::render_feature_pr_comment;
 /// use release_regent_core::versioning::SemanticVersion;
 ///
-/// let body = render_feature_pr_comment(&v1_1_0, &v1_0_0, true);
+/// let body = render_feature_pr_comment(&v1_1_0, &v1_0_0, None, true);
 /// assert!(body.contains("v1.1.0"));
 /// ```
 #[must_use]
 pub(crate) fn render_feature_pr_comment(
     projected_version: &SemanticVersion,
     base_version: &SemanticVersion,
+    queued_release_version: Option<&SemanticVersion>,
     allow_override: bool,
 ) -> String {
-    let mut body = format!(
-        "{marker}\n\
-         **Release Regent \u{2014} projected release**\n\n\
-         If this PR is merged now, the next release will be **v{projected}**.\n\
-         _(Projection based on commits since `v{base}`. Updates automatically when other PRs land.)_",
-        marker = PR_STATUS_MARKER,
-        projected = projected_version,
-        base = base_version,
-    );
+    let mut body = if projected_version == base_version {
+        format!(
+            "{marker}\n\
+             **Release Regent \u{2014} no version change**\n\n\
+             This PR's commits do not affect the version number.\n\
+             It will be included in the next release.\n\
+             _(Projection based on commits since `v{base}`. Updates automatically when other PRs land.)_",
+            marker = PR_STATUS_MARKER,
+            base = base_version,
+        )
+    } else {
+        format!(
+            "{marker}\n\
+             **Release Regent \u{2014} projected release**\n\n\
+             If this PR is merged now, the next release will be **v{projected}**.\n\
+             _(Projection based on commits since `v{base}`. Updates automatically when other PRs land.)_",
+            marker = PR_STATUS_MARKER,
+            projected = projected_version,
+            base = base_version,
+        )
+    };
+
+    if let Some(queued) = queued_release_version {
+        if queued > base_version {
+            body.push_str(&format!(
+                "\n\n\
+                 > **Note:** Release PR for **v{queued}** is already open. \
+                 This PR's changes will be included in a subsequent release.",
+            ));
+        }
+    }
 
     if allow_override {
         body.push_str(
