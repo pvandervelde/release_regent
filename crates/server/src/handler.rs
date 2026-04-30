@@ -210,7 +210,7 @@ fn classify_pull_request_event(
     if action == "opened" {
         return EventType::PullRequestOpened;
     }
-    if action == "edited" || action == "synchronize" {
+    if action == "edited" || action == "synchronize" || action == "ready_for_review" {
         return EventType::PullRequestUpdated;
     }
 

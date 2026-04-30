@@ -252,6 +252,16 @@ fn test_classify_event_pull_request_synchronize_returns_pull_request_updated() {
 }
 
 #[test]
+fn test_classify_event_pull_request_ready_for_review_returns_pull_request_updated() {
+    let payload = json!({
+        "action": "ready_for_review",
+        "pull_request": { "merged": false, "head": { "ref": "feature/x" } }
+    });
+    let result = classify_event("pull_request", &payload, "release");
+    assert_eq!(result, EventType::PullRequestUpdated);
+}
+
+#[test]
 fn test_classify_event_pull_request_edited_returns_pull_request_updated() {
     let payload = json!({
         "action": "edited",
