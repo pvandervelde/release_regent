@@ -1133,7 +1133,7 @@ mod cross_calculator_consistency {
         GitUser, Label, PullRequest, Release, Repository, Tag, UpdateReleaseParams,
     };
     use crate::traits::version_calculator::{
-        VersionBump as TraitVersionBump, VersionCalculator as VersionCalculatorTrait,
+        VersionBump, VersionCalculator as VersionCalculatorTrait,
     };
     use async_trait::async_trait;
 
@@ -1395,14 +1395,14 @@ mod cross_calculator_consistency {
         // Path 2: DefaultVersionCalculator
         let calc2 = DefaultVersionCalculator::new();
         let v2 = calc2
-            .apply_version_bump(base.clone(), TraitVersionBump::Major, None, None)
+            .apply_version_bump(base.clone(), VersionBump::Major, None, None)
             .expect("DefaultVersionCalculator::apply_version_bump should not fail");
         assert_eq!(v2.to_string(), "0.2.0", "DefaultVersionCalculator path");
 
         // Path 3: GitHubVersionCalculator (via apply_version_bump trait method)
         let calc3 = GitHubVersionCalculator::new(StubGitHub);
         let v3 = calc3
-            .apply_version_bump(base.clone(), TraitVersionBump::Major, None, None)
+            .apply_version_bump(base.clone(), VersionBump::Major, None, None)
             .expect("GitHubVersionCalculator::apply_version_bump should not fail");
         assert_eq!(v3.to_string(), "0.2.0", "GitHubVersionCalculator path");
 

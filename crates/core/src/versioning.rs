@@ -327,17 +327,11 @@ impl SemanticVersion {
 }
 
 /// Version bump types based on conventional commits
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum VersionBump {
-    /// Major version bump (breaking changes)
-    Major,
-    /// Minor version bump (new features)
-    Minor,
-    /// Patch version bump (bug fixes)
-    Patch,
-    /// No version bump needed
-    None,
-}
+///
+/// This is a re-export of [`crate::traits::version_calculator::VersionBump`],
+/// which is the single canonical definition. Importing from this path preserves
+/// backwards compatibility for code that previously referenced `versioning::VersionBump`.
+pub use crate::traits::version_calculator::VersionBump;
 
 /// Version calculation engine
 pub struct VersionCalculator {

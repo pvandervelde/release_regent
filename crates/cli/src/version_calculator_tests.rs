@@ -1,6 +1,6 @@
 use super::*;
 use release_regent_core::{
-    traits::version_calculator::{VersionBump as TraitVersionBump, VersioningStrategy},
+    traits::version_calculator::{VersionBump, VersioningStrategy},
     VersionCalculator,
 };
 

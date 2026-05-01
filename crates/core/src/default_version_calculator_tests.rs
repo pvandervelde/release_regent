@@ -1,8 +1,7 @@
 use super::*;
 use crate::{
     traits::version_calculator::{
-        CalculationOptions, CommitAnalysis, VersionBump as TraitVersionBump, VersionContext,
-        VersioningStrategy,
+        CalculationOptions, CommitAnalysis, VersionBump, VersionContext, VersioningStrategy,
     },
     versioning::SemanticVersion,
 };
@@ -27,7 +26,7 @@ fn test_context() -> VersionContext {
 }
 
 /// Build a minimal `CommitAnalysis` with the given bump and breaking flag.
-fn make_analysis(bump: TraitVersionBump, is_breaking: bool) -> CommitAnalysis {
+fn make_analysis(bump: VersionBump, is_breaking: bool) -> CommitAnalysis {
     CommitAnalysis {
         author: "author".to_string(),
         commit_type: Some("feat".to_string()),
@@ -77,79 +76,43 @@ fn default_strategy_is_conventional_commits() {
 }
 
 // ──────────────────────────────────────────────────────────────
-// local_to_trait_bump / trait_to_local_bump round-trip
-// ──────────────────────────────────────────────────────────────
-
-#[test]
-fn bump_mapping_round_trips_major() {
-    use crate::versioning::VersionBump as LocalBump;
-    let trait_bump = DefaultVersionCalculator::local_to_trait_bump(&LocalBump::Major);
-    let local_back = DefaultVersionCalculator::trait_to_local_bump(&trait_bump);
-    assert_eq!(local_back, LocalBump::Major);
-}
-
-#[test]
-fn bump_mapping_round_trips_minor() {
-    use crate::versioning::VersionBump as LocalBump;
-    let trait_bump = DefaultVersionCalculator::local_to_trait_bump(&LocalBump::Minor);
-    let local_back = DefaultVersionCalculator::trait_to_local_bump(&trait_bump);
-    assert_eq!(local_back, LocalBump::Minor);
-}
-
-#[test]
-fn bump_mapping_round_trips_patch() {
-    use crate::versioning::VersionBump as LocalBump;
-    let trait_bump = DefaultVersionCalculator::local_to_trait_bump(&LocalBump::Patch);
-    let local_back = DefaultVersionCalculator::trait_to_local_bump(&trait_bump);
-    assert_eq!(local_back, LocalBump::Patch);
-}
-
-#[test]
-fn bump_mapping_round_trips_none() {
-    use crate::versioning::VersionBump as LocalBump;
-    let trait_bump = DefaultVersionCalculator::local_to_trait_bump(&LocalBump::None);
-    let local_back = DefaultVersionCalculator::trait_to_local_bump(&trait_bump);
-    assert_eq!(local_back, LocalBump::None);
-}
-
-// ──────────────────────────────────────────────────────────────
 // highest_bump
 // ──────────────────────────────────────────────────────────────
 
 #[test]
 fn highest_bump_returns_none_for_empty_list() {
     let result = DefaultVersionCalculator::highest_bump(&[]);
-    assert_eq!(result, TraitVersionBump::None);
+    assert_eq!(result, VersionBump::None);
 }
 
 #[test]
 fn highest_bump_returns_minor_when_only_features() {
     let analyses = vec![
-        make_analysis(TraitVersionBump::Minor, false),
-        make_analysis(TraitVersionBump::Patch, false),
+        make_analysis(VersionBump::Minor, false),
+        make_analysis(VersionBump::Patch, false),
     ];
     let result = DefaultVersionCalculator::highest_bump(&analyses);
-    assert_eq!(result, TraitVersionBump::Minor);
+    assert_eq!(result, VersionBump::Minor);
 }
 
 #[test]
 fn highest_bump_returns_major_when_breaking_change_present() {
     let analyses = vec![
-        make_analysis(TraitVersionBump::Minor, false),
-        make_analysis(TraitVersionBump::Major, true),
+        make_analysis(VersionBump::Minor, false),
+        make_analysis(VersionBump::Major, true),
     ];
     let result = DefaultVersionCalculator::highest_bump(&analyses);
-    assert_eq!(result, TraitVersionBump::Major);
+    assert_eq!(result, VersionBump::Major);
 }
 
 #[test]
 fn highest_bump_returns_patch_for_only_fixes() {
     let analyses = vec![
-        make_analysis(TraitVersionBump::Patch, false),
-        make_analysis(TraitVersionBump::None, false),
+        make_analysis(VersionBump::Patch, false),
+        make_analysis(VersionBump::None, false),
     ];
     let result = DefaultVersionCalculator::highest_bump(&analyses);
-    assert_eq!(result, TraitVersionBump::Patch);
+    assert_eq!(result, VersionBump::Patch);
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -168,7 +131,7 @@ fn to_commit_analysis_maps_feat_to_minor_bump() {
         sha: "deadbeef".to_string(),
     };
     let analysis = DefaultVersionCalculator::to_commit_analysis(commit);
-    assert_eq!(analysis.version_bump, TraitVersionBump::Minor);
+    assert_eq!(analysis.version_bump, VersionBump::Minor);
     assert!(!analysis.is_breaking);
     assert_eq!(analysis.scope, Some("auth".to_string()));
 }
@@ -185,7 +148,7 @@ fn to_commit_analysis_maps_breaking_change_to_major_bump() {
         sha: "cafebabe".to_string(),
     };
     let analysis = DefaultVersionCalculator::to_commit_analysis(commit);
-    assert_eq!(analysis.version_bump, TraitVersionBump::Major);
+    assert_eq!(analysis.version_bump, VersionBump::Major);
     assert!(analysis.is_breaking);
 }
 
@@ -201,7 +164,7 @@ fn to_commit_analysis_maps_fix_to_patch_bump() {
         sha: "1234567".to_string(),
     };
     let analysis = DefaultVersionCalculator::to_commit_analysis(commit);
-    assert_eq!(analysis.version_bump, TraitVersionBump::Patch);
+    assert_eq!(analysis.version_bump, VersionBump::Patch);
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -244,18 +207,13 @@ fn build_result_excludes_none_bump_commits_from_changelog() {
         build: None,
     };
 
-    let result = DefaultVersionCalculator::build_result(
-        &ctx,
-        strategy,
-        analyses,
-        next,
-        TraitVersionBump::Minor,
-    );
+    let result =
+        DefaultVersionCalculator::build_result(&ctx, strategy, analyses, next, VersionBump::Minor);
 
     // Only the feat commit should appear in the changelog.
     assert_eq!(result.changelog_entries.len(), 1);
     assert_eq!(result.changelog_entries[0].commit_sha, "aaa");
-    assert_eq!(result.version_bump, TraitVersionBump::Minor);
+    assert_eq!(result.version_bump, VersionBump::Minor);
     assert_eq!(result.next_version.minor, 1);
 }
 
@@ -273,7 +231,7 @@ fn apply_version_bump_increments_minor_version() {
         prerelease: None,
         build: None,
     };
-    let result = calc.apply_version_bump(base, TraitVersionBump::Minor, None, None);
+    let result = calc.apply_version_bump(base, VersionBump::Minor, None, None);
     assert!(result.is_ok());
     let next = result.unwrap();
     assert_eq!(next.major, 1);
@@ -291,7 +249,7 @@ fn apply_version_bump_increments_major_and_resets_minor_patch() {
         prerelease: None,
         build: None,
     };
-    let result = calc.apply_version_bump(base, TraitVersionBump::Major, None, None);
+    let result = calc.apply_version_bump(base, VersionBump::Major, None, None);
     assert!(result.is_ok());
     let next = result.unwrap();
     assert_eq!(next.major, 2);
@@ -310,7 +268,7 @@ fn apply_version_bump_major_on_pre_one_zero_bumps_minor_not_major() {
         prerelease: None,
         build: None,
     };
-    let result = calc.apply_version_bump(base, TraitVersionBump::Major, None, None);
+    let result = calc.apply_version_bump(base, VersionBump::Major, None, None);
     assert!(result.is_ok());
     let next = result.unwrap();
     assert_eq!(next.major, 0, "major must stay 0 in pre-1.0 mode");
@@ -328,7 +286,7 @@ fn apply_version_bump_with_none_leaves_version_unchanged() {
         prerelease: None,
         build: None,
     };
-    let result = calc.apply_version_bump(base.clone(), TraitVersionBump::None, None, None);
+    let result = calc.apply_version_bump(base.clone(), VersionBump::None, None, None);
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), base);
 }
@@ -345,7 +303,7 @@ fn apply_version_bump_sets_prerelease_and_build() {
     };
     let result = calc.apply_version_bump(
         base,
-        TraitVersionBump::Patch,
+        VersionBump::Patch,
         Some("alpha.1".to_string()),
         Some("build.42".to_string()),
     );
@@ -368,7 +326,7 @@ fn parse_conventional_commit_returns_analysis_for_feat_commit() {
     let opt = result.unwrap();
     assert!(opt.is_some(), "Expected Some for conventional commit");
     let analysis = opt.unwrap();
-    assert_eq!(analysis.version_bump, TraitVersionBump::Minor);
+    assert_eq!(analysis.version_bump, VersionBump::Minor);
     assert!(!analysis.is_breaking);
 }
 
@@ -391,6 +349,6 @@ fn parse_conventional_commit_identifies_breaking_change() {
     let opt = result.unwrap();
     assert!(opt.is_some());
     let analysis = opt.unwrap();
-    assert_eq!(analysis.version_bump, TraitVersionBump::Major);
+    assert_eq!(analysis.version_bump, VersionBump::Major);
     assert!(analysis.is_breaking);
 }
