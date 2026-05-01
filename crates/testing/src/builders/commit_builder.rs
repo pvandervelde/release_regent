@@ -90,7 +90,7 @@ impl TestDataBuilder<GitCommit> for CommitBuilder {
             sha: self.sha,
             author: GitUser {
                 email: self.author_email.clone(),
-                username: Some(
+                login: Some(
                     self.author_name
                         .split('@')
                         .next()
@@ -101,7 +101,7 @@ impl TestDataBuilder<GitCommit> for CommitBuilder {
             },
             committer: GitUser {
                 email: self.committer_email.clone(),
-                username: Some(
+                login: Some(
                     self.committer_name
                         .split('@')
                         .next()

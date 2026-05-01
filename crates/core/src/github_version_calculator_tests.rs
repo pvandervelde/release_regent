@@ -60,12 +60,12 @@ fn make_commit(sha: &str, message: &str) -> GitCommit {
         author: GitUser {
             name: "Dev".to_string(),
             email: "dev@example.com".to_string(),
-            username: None,
+            login: None,
         },
         committer: GitUser {
             name: "Dev".to_string(),
             email: "dev@example.com".to_string(),
-            username: None,
+            login: None,
         },
         author_date: Utc::now(),
         commit_date: Utc::now(),

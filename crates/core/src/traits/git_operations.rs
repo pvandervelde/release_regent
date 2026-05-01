@@ -307,8 +307,8 @@ pub struct GitUser {
     pub name: String,
     /// User email address
     pub email: String,
-    /// Platform-specific username (e.g., GitHub login)
-    pub username: Option<String>,
+    /// Platform-specific login (e.g., GitHub login)
+    pub login: Option<String>,
 }
 
 /// Git repository information
