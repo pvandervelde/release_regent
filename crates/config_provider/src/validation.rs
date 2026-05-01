@@ -160,11 +160,11 @@ impl ConfigValidator {
         let versioning = &config.versioning;
 
         // Validate versioning specific settings based on strategy
-        match versioning.strategy {
-            VersioningStrategy::External => {
-                if versioning.external.is_none() {
+        match &versioning.strategy {
+            VersioningStrategy::External { command, .. } => {
+                if command.is_empty() {
                     errors.push(
-                        "External versioning strategy requires external configuration".to_string(),
+                        "External versioning strategy requires a non-empty command".to_string(),
                     );
                 }
             }

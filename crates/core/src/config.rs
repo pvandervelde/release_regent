@@ -87,15 +87,6 @@ impl Default for ErrorHandlingConfig {
     }
 }
 
-/// External versioning configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ExternalVersioningConfig {
-    /// Command to execute for version calculation
-    pub command: String,
-    /// Timeout in milliseconds
-    pub timeout_ms: u64,
-}
-
 /// GitHub issue notification configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitHubIssueConfig {
@@ -256,9 +247,6 @@ pub struct VersioningConfig {
     /// Versioning strategy
     #[serde(default = "default_versioning_strategy")]
     pub strategy: VersioningStrategy,
-    /// External versioning settings
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub external: Option<ExternalVersioningConfig>,
     /// Whether to allow PR comment overrides
     #[serde(default = "default_allow_override")]
     pub allow_override: bool,
@@ -284,7 +272,6 @@ impl Default for VersioningConfig {
     fn default() -> Self {
         Self {
             strategy: default_versioning_strategy(),
-            external: None,
             allow_override: default_allow_override(),
             excluded_pr_authors: Vec::new(),
         }
@@ -323,7 +310,32 @@ pub enum VersioningStrategy {
     /// Use conventional commits
     Conventional,
     /// Use external script/command
-    External,
+    External {
+        /// Command to execute for version calculation
+        command: String,
+        /// Environment variables to pass to the command
+        env_vars: HashMap<String, String>,
+    },
+}
+
+impl From<VersioningStrategy> for crate::traits::version_calculator::VersioningStrategy {
+    fn from(strategy: VersioningStrategy) -> Self {
+        match strategy {
+            VersioningStrategy::Conventional => {
+                crate::traits::version_calculator::VersioningStrategy::ConventionalCommits {
+                    custom_types: HashMap::default(),
+                    include_prerelease: false,
+                }
+            }
+            VersioningStrategy::External { command, env_vars } => {
+                crate::traits::version_calculator::VersioningStrategy::External {
+                    command,
+                    env_vars,
+                    timeout_ms: 30_000,
+                }
+            }
+        }
+    }
 }
 
 impl ReleaseRegentConfig {
@@ -385,15 +397,6 @@ impl ReleaseRegentConfig {
                 }
             }
             _ => {} // No additional validation needed
-        }
-
-        // Validate versioning configuration
-        if matches!(self.versioning.strategy, VersioningStrategy::External)
-            && self.versioning.external.is_none()
-        {
-            return Err(CoreError::config(
-                "External versioning configuration required when strategy is 'external'",
-            ));
         }
 
         debug!("Configuration validation passed");
