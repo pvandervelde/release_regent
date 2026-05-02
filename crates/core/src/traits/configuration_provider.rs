@@ -18,7 +18,22 @@ pub struct RepositoryConfig {
     pub owner: String,
 }
 
-/// Configuration validation result
+/// Minimal configuration validation result — **core layer only**.
+///
+/// This type is used exclusively at the trait boundary defined by
+/// [`ConfigurationProvider::validate_config`]. It carries only the essential
+/// validation outcome (valid/invalid, errors, warnings) and intentionally has
+/// **no `metadata` field** — metadata is an implementation detail that belongs
+/// in the config-provider layer, not in the core trait contract.
+///
+/// If you need the richer result type (with `metadata` and factory methods), use
+/// [`release_regent_config_provider::ConfigValidationResult`] instead. That type
+/// is defined in `crates/config_provider/src/validation.rs` and is re-exported as
+/// `ConfigValidationResult` to avoid ambiguity.
+///
+/// Two types exist intentionally: merging them would either pollute the core trait
+/// with config-provider concerns, or force the config-provider to discard metadata
+/// before returning across the trait boundary.
 #[derive(Debug, Clone)]
 pub struct ValidationResult {
     /// Validation errors (if any)

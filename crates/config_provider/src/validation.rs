@@ -4,7 +4,26 @@ use crate::errors::ConfigProviderResult;
 use release_regent_core::config::{ReleaseRegentConfig, VersioningStrategy};
 use std::collections::HashMap;
 
-/// Result of configuration validation
+/// Rich configuration validation result — **config-provider layer only**.
+///
+/// This type is the implementation-level counterpart of
+/// [`release_regent_core::traits::configuration_provider::ValidationResult`].
+/// It extends the minimal core result with:
+///
+/// - A `metadata` map for attaching diagnostic key/value pairs (e.g., which rule
+///   triggered a warning, schema version used, etc.).
+/// - Builder-style factory methods (`valid()`, `invalid()`, `with_warning()`,
+///   `with_metadata()`) that parallel how validation rules construct results
+///   inside [`ConfigValidator`].
+///
+/// This type is re-exported from `release_regent_config_provider` as
+/// [`ConfigValidationResult`](crate::ConfigValidationResult) to avoid
+/// name collisions with the core `ValidationResult` at call sites that import both.
+///
+/// Two types exist intentionally: the core trait only needs the minimal outcome;
+/// the config-provider layer needs the richer type for its internal rule pipeline.
+/// `FileConfigProvider::validate_config` converts from this type to the core
+/// `ValidationResult` when crossing the trait boundary.
 #[derive(Debug, Clone)]
 pub struct ValidationResult {
     /// Whether the configuration is valid
