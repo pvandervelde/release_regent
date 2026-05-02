@@ -23,7 +23,9 @@ fn test_changelog_generation_basic() {
         },
     ];
 
-    let changelog = generator.generate_changelog(&commits);
+    let changelog = generator
+        .generate_changelog(&commits)
+        .expect("changelog generation failed");
 
     assert!(changelog.contains("### Features"));
     assert!(changelog.contains("add user authentication"));
@@ -55,7 +57,9 @@ fn test_changelog_generation_with_scope() {
         },
     ];
 
-    let changelog = generator.generate_changelog(&commits);
+    let changelog = generator
+        .generate_changelog(&commits)
+        .expect("changelog generation failed");
 
     assert!(changelog.contains("**auth**: add OAuth support"));
     assert!(changelog.contains("**ui**: button alignment"));
@@ -84,7 +88,9 @@ fn test_changelog_generation_breaking_changes() {
         },
     ];
 
-    let changelog = generator.generate_changelog(&commits);
+    let changelog = generator
+        .generate_changelog(&commits)
+        .expect("changelog generation failed");
 
     assert!(changelog.contains("⚠️ BREAKING: remove deprecated API"));
     assert!(changelog.contains("⚠️ BREAKING: **auth**: change login flow"));
@@ -95,7 +101,9 @@ fn test_changelog_generation_empty_commits() {
     let generator = ChangelogGenerator::new();
     let commits = vec![];
 
-    let changelog = generator.generate_changelog(&commits);
+    let changelog = generator
+        .generate_changelog(&commits)
+        .expect("changelog generation failed");
 
     assert_eq!(changelog, "No changes in this release.");
 }
@@ -130,7 +138,9 @@ fn test_changelog_generation_section_ordering() {
         },
     ];
 
-    let changelog = generator.generate_changelog(&commits);
+    let changelog = generator
+        .generate_changelog(&commits)
+        .expect("changelog generation failed");
 
     // Features should come before Bug Fixes, which should come before Chores
     let feat_pos = changelog.find("### Features").unwrap();
@@ -144,10 +154,14 @@ fn test_changelog_generation_section_ordering() {
 #[test]
 fn test_changelog_generation_custom_config() {
     let config = ChangelogConfig {
+        use_git_cliff: false,
         include_authors: false,
         include_shas: false,
+        include_links: false,
         section_template: "## {title}\n\n{entries}\n".to_string(),
         commit_template: "* {description}".to_string(),
+        repository_path: None,
+        remote_url: None,
     };
 
     let generator = ChangelogGenerator::with_config(config);
@@ -160,7 +174,9 @@ fn test_changelog_generation_custom_config() {
         sha: "abc123456789".to_string(),
     }];
 
-    let changelog = generator.generate_changelog(&commits);
+    let changelog = generator
+        .generate_changelog(&commits)
+        .expect("changelog generation failed");
 
     assert!(changelog.contains("## Features"));
     assert!(changelog.contains("* add feature"));
@@ -197,7 +213,9 @@ fn test_changelog_generation_scope_sorting() {
         },
     ];
 
-    let changelog = generator.generate_changelog(&commits);
+    let changelog = generator
+        .generate_changelog(&commits)
+        .expect("changelog generation failed");
 
     // Should be sorted: scoped items first (auth, ui), then unscoped items
     let auth_pos = changelog.find("**auth**: add login").unwrap();
@@ -209,12 +227,13 @@ fn test_changelog_generation_scope_sorting() {
 }
 
 #[test]
-fn test_enhanced_changelog_generation_basic() {
-    let config = EnhancedChangelogConfig {
-        use_git_cliff: false, // Use fallback for this test
+fn test_changelog_generation_template_path_basic() {
+    // Previously "test_enhanced_changelog_generation_basic": uses template renderer
+    let config = ChangelogConfig {
+        use_git_cliff: false,
         ..Default::default()
     };
-    let generator = EnhancedChangelogGenerator::with_config(config);
+    let generator = ChangelogGenerator::with_config(config);
     let commits = vec![
         ConventionalCommit {
             commit_type: "feat".to_string(),
@@ -247,9 +266,9 @@ fn test_enhanced_changelog_generation_basic() {
 }
 
 #[test]
-fn test_enhanced_changelog_config_defaults() {
-    let config = EnhancedChangelogConfig::default();
-    assert!(config.use_git_cliff);
+fn test_changelog_config_defaults() {
+    let config = ChangelogConfig::default();
+    assert!(!config.use_git_cliff); // template renderer is the default
     assert!(config.include_authors);
     assert!(config.include_shas);
     assert!(config.include_links);
@@ -258,23 +277,23 @@ fn test_enhanced_changelog_config_defaults() {
 }
 
 #[test]
-fn test_enhanced_changelog_generator_creation() {
-    let generator = EnhancedChangelogGenerator::new();
-    assert!(generator.config.use_git_cliff);
+fn test_changelog_generator_creation() {
+    let generator = ChangelogGenerator::new();
+    assert!(!generator.config.use_git_cliff); // default is template renderer
 
-    let custom_config = EnhancedChangelogConfig {
-        use_git_cliff: false,
+    let custom_config = ChangelogConfig {
+        use_git_cliff: true,
         include_authors: false,
         ..Default::default()
     };
-    let custom_generator = EnhancedChangelogGenerator::with_config(custom_config);
-    assert!(!custom_generator.config.use_git_cliff);
+    let custom_generator = ChangelogGenerator::with_config(custom_config);
+    assert!(custom_generator.config.use_git_cliff);
     assert!(!custom_generator.config.include_authors);
 }
 
 #[test]
-fn test_enhanced_changelog_empty_commits() {
-    let generator = EnhancedChangelogGenerator::new();
+fn test_changelog_empty_commits() {
+    let generator = ChangelogGenerator::new();
     let result = generator.generate_changelog(&[]);
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), "No changes in this release.");
@@ -282,15 +301,15 @@ fn test_enhanced_changelog_empty_commits() {
 
 #[test]
 #[ignore] // Temporarily disabled while git-cliff configuration is being finalized
-fn test_enhanced_changelog_with_git_cliff_enabled() {
-    let config = EnhancedChangelogConfig {
+fn test_changelog_with_git_cliff_enabled() {
+    let config = ChangelogConfig {
         use_git_cliff: true,
         include_authors: true,
         include_shas: true,
         include_links: false, // Disable links to avoid remote dependency issues in tests
         ..Default::default()
     };
-    let generator = EnhancedChangelogGenerator::with_config(config);
+    let generator = ChangelogGenerator::with_config(config);
     let commits = vec![
         ConventionalCommit {
             commit_type: "feat".to_string(),
@@ -314,14 +333,13 @@ fn test_enhanced_changelog_with_git_cliff_enabled() {
     assert!(result.is_ok());
 
     let changelog = result.unwrap();
-    // git-cliff should generate structured output
-    assert!(changelog.len() > 0);
+    assert!(!changelog.is_empty());
     assert!(!changelog.contains("No changes in this release."));
 }
 
 #[test]
-fn test_enhanced_changelog_error_handling() {
-    let generator = EnhancedChangelogGenerator::new();
+fn test_changelog_error_handling() {
+    let generator = ChangelogGenerator::new();
     let commits = vec![ConventionalCommit {
         commit_type: "feat".to_string(),
         scope: None,

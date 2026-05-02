@@ -347,7 +347,10 @@ async fn execute_test(args: TestArgs) -> CliResult<()> {
     let changelog = generator.generate_changelog(&parsed_commits);
 
     println!("=== Generated Changelog ===");
-    println!("{changelog}");
+    match changelog {
+        Ok(text) => println!("{text}"),
+        Err(e) => println!("Changelog generation failed: {e}"),
+    }
 
     Ok(())
 }
