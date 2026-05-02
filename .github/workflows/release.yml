@@ -1,14 +1,14 @@
 name: Release
 
-# Triggered by a push of a semantic-version tag (e.g. v0.1.0, v1.2.3-beta.1).
+# Triggered by a push of a semantic-version tag (e.g. 0.1.0, 1.2.3-beta.1).
 #
 # Versioning strategy (pre-self-hosting)
 # ---------------------------------------
 # Until Release Regent processes its own repository, versions are managed via
 # manually pushed git tags on the master branch:
 #
-#   git tag -a v0.1.0 -m "Release v0.1.0"
-#   git push origin v0.1.0
+#   git tag -a 0.1.0 -m "Release 0.1.0"
+#   git push origin 0.1.0
 #
 # Once self-hosted, the release PR workflow will create these tags automatically.
 #
@@ -26,10 +26,10 @@ name: Release
 on:
     push:
         tags:
-            # Stable releases: v0.1.0, v1.2.3
-            - "v[0-9]+.[0-9]+.[0-9]+"
-            # Pre-releases: v0.1.0-beta.1, v1.0.0-rc.2
-            - "v[0-9]+.[0-9]+.[0-9]+-*"
+            # Stable releases: 0.1.0, 1.2.3
+            - "[0-9]+.[0-9]+.[0-9]+"
+            # Pre-releases: 0.1.0-beta.1, 1.0.0-rc.2
+            - "[0-9]+.[0-9]+.[0-9]+-*"
 
 permissions:
     contents: read
@@ -61,7 +61,7 @@ jobs:
                   password: ${{ secrets.GITHUB_TOKEN }}
 
             # Extract OCI-compatible tags and labels from the Git context.
-            # For a tag push of v0.1.0 this produces:
+            # For a tag push of 0.1.0 this produces:
             #   ghcr.io/pvandervelde/release-regent:0.1.0
             #   ghcr.io/pvandervelde/release-regent:0.1
             #   ghcr.io/pvandervelde/release-regent:0
