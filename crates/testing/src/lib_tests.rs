@@ -227,15 +227,34 @@ mod builder_tests {
 
     #[test]
     fn test_webhook_builder_creates_valid_payload() {
-        // Test that WebhookBuilder can create a valid webhook payload
+        // Test that WebhookBuilder produces a structurally valid GitHub webhook payload
         let payload = WebhookBuilder::new()
             .with_event_type("push")
             .with_repository("test", "repo")
             .build();
 
-        assert_eq!(payload["event"], "push");
+        // GitHub push payloads carry the event type in the HTTP header, not the body.
+        // The body always contains these standard fields:
         assert_eq!(payload["repository"]["owner"]["login"], "test");
         assert_eq!(payload["repository"]["name"], "repo");
+        assert_eq!(
+            payload["repository"]["full_name"], "test/repo",
+            "full_name should be owner/repo"
+        );
+        assert!(
+            payload["repository"]["html_url"].is_string(),
+            "html_url should be present"
+        );
+        assert!(
+            payload["sender"]["login"].is_string(),
+            "sender should be present"
+        );
+        // Push-specific fields
+        assert_eq!(payload["ref"], "refs/heads/main");
+        assert!(
+            payload["commits"].is_array(),
+            "commits array should be present"
+        );
     }
 
     #[test]

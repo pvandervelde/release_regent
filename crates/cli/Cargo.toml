@@ -24,6 +24,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
+uuid = { workspace = true }
 
 # CLI dependencies
 clap = { workspace = true }

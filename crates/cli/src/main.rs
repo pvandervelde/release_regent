@@ -3,8 +3,12 @@
 //! This application provides local testing and configuration tools for Release Regent.
 
 use clap::{Args, Parser, Subcommand};
+use release_regent_core::{
+    traits::event_source::{EventSourceKind, EventType, ProcessingEvent, RepositoryInfo},
+    MergedPullRequestHandler,
+};
 use std::path::PathBuf;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod errors;
@@ -207,8 +211,10 @@ async fn execute_run(args: RunArgs) -> CliResult<()> {
     let event_json = tokio::fs::read_to_string(&args.event_file).await?;
     info!("Loaded webhook event from: {}", args.event_file.display());
 
-    let _payload: serde_json::Value = serde_json::from_str(&event_json)
+    let payload: serde_json::Value = serde_json::from_str(&event_json)
         .map_err(|e| CliError::invalid_argument("--event-file", format!("Invalid JSON: {e}")))?;
+
+    let event_type = args.event_type.clone();
 
     info!(
         "Parsed webhook event: type={}, dry_run={}, mock={}",
@@ -223,16 +229,106 @@ async fn execute_run(args: RunArgs) -> CliResult<()> {
 
     if args.mock {
         info!("Mock mode: using in-process mocks (no GitHub credentials required)");
-        let _processor = create_mock_processor();
-        // TODO: dispatch event to processor once CLI event routing is implemented
-        println!("Mock processing complete (event routing not yet implemented)");
+        let processor = create_mock_processor();
+        dispatch_event(processor, &event_type, payload).await?;
         return Ok(());
     }
 
     // Production mode: requires GitHub App credentials in environment
-    let _processor = create_production_processor().await?;
-    // TODO: dispatch event to processor once CLI event routing is implemented
-    println!("Production processing complete (event routing not yet implemented)");
+    let processor = create_production_processor().await?;
+    dispatch_event(processor, &event_type, payload).await?;
+    Ok(())
+}
+
+/// Construct a [`ProcessingEvent`] from parsed webhook JSON and dispatch it to
+/// the appropriate handler method on `processor`.
+///
+/// Repository metadata (`owner`, `name`, `default_branch`) is extracted from the
+/// standard GitHub `repository` object embedded in the webhook payload.
+/// The `installation.id` field is extracted when present; missing installation
+/// context defaults to `0`.
+async fn dispatch_event<H: MergedPullRequestHandler>(
+    processor: H,
+    raw_event_type: &str,
+    payload: serde_json::Value,
+) -> CliResult<()> {
+    // Extract repository info from the GitHub-standard `repository` object.
+    let owner = payload["repository"]["owner"]["login"]
+        .as_str()
+        .unwrap_or("unknown")
+        .to_string();
+    let repo_name = payload["repository"]["name"]
+        .as_str()
+        .unwrap_or("unknown")
+        .to_string();
+    let default_branch = payload["repository"]["default_branch"]
+        .as_str()
+        .unwrap_or("main")
+        .to_string();
+
+    if owner == "unknown" || repo_name == "unknown" {
+        warn!(
+            "Could not extract owner/repo from webhook payload — \
+             ensure the file contains a GitHub-format 'repository' object"
+        );
+    }
+
+    let installation_id = payload["installation"]["id"].as_u64().unwrap_or(0);
+
+    let event = ProcessingEvent {
+        event_id: uuid::Uuid::new_v4().to_string(),
+        correlation_id: uuid::Uuid::new_v4().to_string(),
+        event_type: EventType::from(raw_event_type),
+        repository: RepositoryInfo {
+            owner: owner.clone(),
+            name: repo_name.clone(),
+            default_branch,
+        },
+        payload,
+        received_at: chrono::Utc::now(),
+        source: EventSourceKind::Webhook,
+        installation_id,
+    };
+
+    info!(
+        owner = %owner,
+        repo = %repo_name,
+        event_type = %event.event_type,
+        installation_id,
+        "Dispatching event to processor"
+    );
+
+    match &event.event_type {
+        EventType::PullRequestMerged => {
+            processor
+                .handle_merged_pull_request(&event)
+                .await
+                .map_err(CliError::from)?;
+        }
+        EventType::ReleasePrMerged => {
+            processor
+                .handle_release_pr_merged(&event)
+                .await
+                .map_err(CliError::from)?;
+        }
+        EventType::PullRequestCommentReceived => {
+            processor
+                .handle_pr_comment(&event)
+                .await
+                .map_err(CliError::from)?;
+        }
+        EventType::PullRequestOpened | EventType::PullRequestUpdated => {
+            processor
+                .handle_pull_request_activity(&event)
+                .await
+                .map_err(CliError::from)?;
+        }
+        EventType::Unknown(raw) => {
+            warn!(event_type = %raw, "Unrecognised event type — dropping");
+        }
+    }
+
+    println!("✅ Event processed successfully");
     Ok(())
 }
 

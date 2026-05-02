@@ -59,7 +59,7 @@
 //! ```
 
 use crate::{
-    assertions::{BehaviorVerifier, ComplianceChecker, SpecAssertion},
+    assertions::{BehaviorVerifier, ComplianceChecker},
     builders::{
         CommitBuilder, ConfigurationBuilder, PullRequestBuilder, ReleaseBuilder, RepositoryBuilder,
         VersionBuilder, VersionContextBuilder, WebhookBuilder,
@@ -372,12 +372,11 @@ impl TestingApi {
     /// use release_regent_testing::TestingApi;
     ///
     /// let input_data = serde_json::json!({"version": "1.0.0"});
-    /// TestingApi::verify_spec("version_calculator")
+    /// let builder = TestingApi::verify_spec("version_calculator")
     ///     .with_specification("semantic_versioning_v2")
     ///     .with_input(&input_data)
-    ///     .with_expected_behavior("increments_minor_for_feat")
-    ///     .assert_compliance()
-    ///     .unwrap();
+    ///     .with_expected_behavior("increments_minor_for_feat");
+    /// // assert_compliance() is not yet implemented and will panic if called.
     /// ```
     #[must_use]
     pub fn verify_spec(subject: &str) -> SpecVerificationBuilder {
@@ -532,19 +531,15 @@ impl SpecVerificationBuilder {
     /// # Errors
     /// Returns error if specification is not met or verification fails
     pub fn assert_compliance(self) -> Result<(), String> {
-        let specification = self.specification.ok_or("Specification not specified")?;
-        let expected_behavior = self
+        let _specification = self.specification.ok_or("Specification not specified")?;
+        let _expected_behavior = self
             .expected_behavior
             .ok_or("Expected behavior not specified")?;
 
-        let mut assertion = SpecAssertion::new(&self.subject, &specification, &expected_behavior);
-        assertion.metadata = self.metadata;
-
-        // TODO: Implement actual verification logic based on the specification
-        // This would integrate with the spec_runner and behavior_verifier modules
-
-        // For now, return success to allow the API to be used
-        Ok(())
+        // Actual spec verification is not yet implemented.
+        // Using todo!() rather than silently returning Ok(()) so that callers
+        // are never misled into thinking compliance has been checked.
+        todo!("SpecVerificationBuilder::assert_compliance is not yet implemented")
     }
 }
 
