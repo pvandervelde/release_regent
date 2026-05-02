@@ -247,6 +247,16 @@ commit_parsers = [
     { message = "^ci", group = "Continuous Integration" },
     { message = "^chore", group = "Chores" },
 ]
+link_parsers = []
+protect_breaking_commits = false
+filter_commits = false
+fail_on_unmatched_commit = false
+topo_order = false
+topo_order_commits = false
+sort_commits = "newest"
+use_branch_tags = false
+include_paths = []
+exclude_paths = []
 "#;
 
         let config: GitCliffConfig = toml::from_str(config_toml).map_err(|e| {

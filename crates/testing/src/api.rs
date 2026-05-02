@@ -376,7 +376,6 @@ impl TestingApi {
     ///     .with_specification("semantic_versioning_v2")
     ///     .with_input(&input_data)
     ///     .with_expected_behavior("increments_minor_for_feat");
-    /// // assert_compliance() is not yet implemented and will panic if called.
     /// ```
     #[must_use]
     pub fn verify_spec(subject: &str) -> SpecVerificationBuilder {
@@ -446,7 +445,6 @@ impl TestingApi {
 
 /// Builder for spec verification
 pub struct SpecVerificationBuilder {
-    subject: String,
     specification: Option<String>,
     expected_behavior: Option<String>,
     input_data: Option<serde_json::Value>,
@@ -455,9 +453,8 @@ pub struct SpecVerificationBuilder {
 
 impl SpecVerificationBuilder {
     /// Create a new spec verification builder
-    fn new(subject: &str) -> Self {
+    fn new(_subject: &str) -> Self {
         Self {
-            subject: subject.to_string(),
             specification: None,
             expected_behavior: None,
             input_data: None,
@@ -521,25 +518,6 @@ impl SpecVerificationBuilder {
     pub fn with_metadata(mut self, key: &str, value: &str) -> Self {
         self.metadata.insert(key.to_string(), value.to_string());
         self
-    }
-
-    /// Execute the spec verification and assert compliance
-    ///
-    /// # Returns
-    /// Result indicating success or failure with details
-    ///
-    /// # Errors
-    /// Returns error if specification is not met or verification fails
-    pub fn assert_compliance(self) -> Result<(), String> {
-        let _specification = self.specification.ok_or("Specification not specified")?;
-        let _expected_behavior = self
-            .expected_behavior
-            .ok_or("Expected behavior not specified")?;
-
-        // Actual spec verification is not yet implemented.
-        // Using todo!() rather than silently returning Ok(()) so that callers
-        // are never misled into thinking compliance has been checked.
-        todo!("SpecVerificationBuilder::assert_compliance is not yet implemented")
     }
 }
 

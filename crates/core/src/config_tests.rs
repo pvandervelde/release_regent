@@ -19,6 +19,7 @@ fn test_configuration_validation_external_versioning_success() {
     config.versioning.strategy = VersioningStrategy::External {
         command: "/usr/local/bin/version-tool".to_string(),
         env_vars: std::collections::HashMap::new(),
+        timeout_ms: 30_000,
     };
 
     let result = config.validate();
@@ -127,6 +128,7 @@ fn test_versioning_strategy_serialization() {
     let external = VersioningStrategy::External {
         command: "/usr/bin/version".to_string(),
         env_vars: std::collections::HashMap::new(),
+        timeout_ms: 30_000,
     };
     let serialized = serde_yaml::to_string(&external).unwrap();
     let deserialized: VersioningStrategy = serde_yaml::from_str(&serialized).unwrap();
@@ -164,6 +166,7 @@ fn test_from_versioning_strategy_external() {
     let config_strategy = VersioningStrategy::External {
         command: "/usr/bin/versioner".to_string(),
         env_vars: env_vars.clone(),
+        timeout_ms: 30_000,
     };
     let trait_strategy = TraitVersioningStrategy::from(config_strategy);
 

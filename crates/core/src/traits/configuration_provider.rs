@@ -310,4 +310,3 @@ pub trait ConfigurationProvider: Send + Sync {
     /// - `CoreError::Config` - Failed to generate default configuration
     async fn get_default_config(&self) -> CoreResult<ReleaseRegentConfig>;
 }
-

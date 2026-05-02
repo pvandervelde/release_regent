@@ -535,4 +535,3 @@ impl VersionCalculator for Arc<dyn VersionCalculator + Send + Sync> {
         (**self).scoped_to(installation_id)
     }
 }
-

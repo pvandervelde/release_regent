@@ -80,8 +80,12 @@ struct RunArgs {
     #[arg(short, long)]
     event_file: PathBuf,
 
-    /// GitHub event type (e.g. `pull_request`, push).  Defaults to `pull_request`.
-    #[arg(long, default_value = "pull_request")]
+    /// Internal Release Regent event type. Valid values: `pull_request_merged`,
+    /// `release_pr_merged`, `pull_request_comment_received`, `pull_request_opened`,
+    /// `pull_request_updated`.  GitHub native event names (e.g. `pull_request`,
+    /// `push`) are NOT accepted here — use the mapping documented in the README.
+    /// Tip: inspect `action` in the JSON payload to determine the correct value.
+    #[arg(long, default_value = "pull_request_merged")]
     event_type: String,
 
     /// Dry run mode (no actual operations)
@@ -218,7 +222,7 @@ async fn execute_run(args: RunArgs) -> CliResult<()> {
 
     info!(
         "Parsed webhook event: type={}, dry_run={}, mock={}",
-        args.event_type, args.dry_run, args.mock
+        event_type, args.dry_run, args.mock
     );
 
     if args.dry_run {
@@ -243,10 +247,29 @@ async fn execute_run(args: RunArgs) -> CliResult<()> {
 /// Construct a [`ProcessingEvent`] from parsed webhook JSON and dispatch it to
 /// the appropriate handler method on `processor`.
 ///
+/// # Event type format
+///
+/// `raw_event_type` must be one of Release Regent's **internal** event type
+/// strings, **not** the GitHub `X-GitHub-Event` header value:
+///
+/// | Internal string                   | Triggered by                                     |
+/// |-----------------------------------|--------------------------------------------------|
+/// | `pull_request_merged`             | PR merged into a non-release branch              |
+/// | `release_pr_merged`               | Release PR (branch `release/vX.Y.Z`) merged     |
+/// | `pull_request_comment_received`   | Comment posted on any PR                         |
+/// | `pull_request_opened`             | PR opened (action `opened`)                      |
+/// | `pull_request_updated`            | PR updated (action `edited` / `synchronize`)     |
+///
+/// Any other string routes to the `Unknown` arm and is silently dropped.
+///
+/// # Repository and installation metadata
+///
 /// Repository metadata (`owner`, `name`, `default_branch`) is extracted from the
 /// standard GitHub `repository` object embedded in the webhook payload.
 /// The `installation.id` field is extracted when present; missing installation
-/// context defaults to `0`.
+/// context defaults to `0`.  A warning is emitted when `installation_id == 0`
+/// and the processor is in production mode, because GitHub App authentication
+/// requires a non-zero installation ID.
 async fn dispatch_event<H: MergedPullRequestHandler>(
     processor: H,
     raw_event_type: &str,
@@ -274,6 +297,17 @@ async fn dispatch_event<H: MergedPullRequestHandler>(
     }
 
     let installation_id = payload["installation"]["id"].as_u64().unwrap_or(0);
+    if installation_id == 0 {
+        // Non-zero installation ID is required for GitHub App authentication.
+        // In mock mode this is harmless; in production it will cause an auth
+        // failure when attempting to acquire an installation access token.
+        warn!(
+            "installation_id is 0: the webhook payload is missing \
+             'installation.id'. In production mode this will cause a \
+             GitHub App authentication error. Add an \"installation\" object \
+             to the webhook JSON or use --mock."
+        );
+    }
 
     let event = ProcessingEvent {
         event_id: uuid::Uuid::new_v4().to_string(),
@@ -451,7 +485,12 @@ async fn execute_test(args: TestArgs) -> CliResult<()> {
     Ok(())
 }
 
-/// Generate a sample webhook payload for testing
+/// Generate a sample webhook payload for testing.
+///
+/// The payload represents a pull request merged event and is structured to pass
+/// `rr run --event-type pull_request_merged --event-file <file>` without errors.
+/// It includes the `installation` object so that production mode does not fail
+/// with an authentication error due to a missing installation ID.
 fn generate_sample_webhook() -> String {
     serde_json::to_string_pretty(&serde_json::json!({
         "action": "closed",
@@ -479,9 +518,25 @@ fn generate_sample_webhook() -> String {
             "full_name": "owner/test-repo",
             "owner": {
                 "login": "owner",
+                "id": 1_000_000,
                 "type": "User"
             },
-            "default_branch": "main"
+            "default_branch": "main",
+            "private": false,
+            "html_url": "https://github.com/owner/test-repo",
+            "clone_url": "https://github.com/owner/test-repo.git",
+            "ssh_url": "git@github.com:owner/test-repo.git"
+        },
+        // GitHub App installation context — required for production-mode authentication.
+        // Replace 12345678 with the real installation ID from your GitHub App settings.
+        "installation": {
+            "id": 12_345_678,
+            "node_id": "MDIzOkludGVncmF0aW9uSW5zdGFsbGF0aW9uMTIzNDU2Nzg="
+        },
+        "sender": {
+            "login": "owner",
+            "id": 1_000_000,
+            "type": "User"
         }
     })).unwrap_or_else(|_| "{}".to_string())
 }

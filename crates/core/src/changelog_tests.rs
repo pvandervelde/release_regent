@@ -300,13 +300,12 @@ fn test_changelog_empty_commits() {
 }
 
 #[test]
-#[ignore] // Temporarily disabled while git-cliff configuration is being finalized
 fn test_changelog_with_git_cliff_enabled() {
     let config = ChangelogConfig {
         use_git_cliff: true,
         include_authors: true,
         include_shas: true,
-        include_links: false, // Disable links to avoid remote dependency issues in tests
+        include_links: false, // Disable links to avoid remote dependency in tests
         ..Default::default()
     };
     let generator = ChangelogGenerator::with_config(config);
@@ -363,4 +362,106 @@ fn test_changelog_error_handling() {
             );
         }
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// git-cliff path coverage
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Verify that `generate_with_git_cliff` returns a non-empty UTF-8 string for
+/// a typical set of conventional commits when `include_links = false` (no
+/// remote-context call, which would require network access in tests).
+#[test]
+fn test_generate_with_git_cliff_happy_path() {
+    let config = ChangelogConfig {
+        use_git_cliff: true,
+        include_links: false,
+        ..Default::default()
+    };
+    let generator = ChangelogGenerator::with_config(config);
+    let commits = vec![
+        ConventionalCommit {
+            commit_type: "feat".to_string(),
+            scope: None,
+            description: "add new capability".to_string(),
+            breaking_change: false,
+            message: "feat: add new capability".to_string(),
+            sha: "abc123456789abcd".to_string(),
+        },
+        ConventionalCommit {
+            commit_type: "fix".to_string(),
+            scope: Some("core".to_string()),
+            description: "resolve off-by-one error".to_string(),
+            breaking_change: false,
+            message: "fix(core): resolve off-by-one error".to_string(),
+            sha: "def456789012abcd".to_string(),
+        },
+    ];
+
+    let result = generator.generate_changelog(&commits);
+    assert!(
+        result.is_ok(),
+        "git-cliff path should not error: {result:?}"
+    );
+    let text = result.unwrap();
+    assert!(
+        !text.is_empty(),
+        "git-cliff should produce non-empty output for non-empty commit list"
+    );
+}
+
+/// Verify that `generate_with_git_cliff` returns `Ok` for a single commit,
+/// exercising the boundary where `commits.len() == 1`.
+#[test]
+fn test_generate_with_git_cliff_single_commit() {
+    let config = ChangelogConfig {
+        use_git_cliff: true,
+        include_links: false,
+        ..Default::default()
+    };
+    let generator = ChangelogGenerator::with_config(config);
+    let commits = vec![ConventionalCommit {
+        commit_type: "chore".to_string(),
+        scope: None,
+        description: "update Cargo.lock".to_string(),
+        breaking_change: false,
+        message: "chore: update Cargo.lock".to_string(),
+        sha: "aabbccddeeff0011".to_string(),
+    }];
+
+    let result = generator.generate_changelog(&commits);
+    assert!(
+        result.is_ok(),
+        "git-cliff path should handle a single commit: {result:?}"
+    );
+}
+
+/// Verify that `generate_with_git_cliff` returns `Ok` when `include_links = true`
+/// but the `remote_url` is `None`.  The code calls `add_remote_context()` only
+/// when `include_links` is set; when that call fails it logs and continues rather
+/// than propagating the error, so the overall result should still be `Ok`.
+#[test]
+fn test_generate_with_git_cliff_links_without_remote_url() {
+    let config = ChangelogConfig {
+        use_git_cliff: true,
+        include_links: true,
+        remote_url: None,
+        ..Default::default()
+    };
+    let generator = ChangelogGenerator::with_config(config);
+    let commits = vec![ConventionalCommit {
+        commit_type: "feat".to_string(),
+        scope: None,
+        description: "add widget".to_string(),
+        breaking_change: false,
+        message: "feat: add widget".to_string(),
+        sha: "1122334455667788".to_string(),
+    }];
+
+    // add_remote_context failure is swallowed; result should still be Ok.
+    let result = generator.generate_changelog(&commits);
+    assert!(
+        result.is_ok(),
+        "git-cliff path should not propagate remote-context errors: {result:?}"
+    );
 }

@@ -309,13 +309,34 @@ pub enum NotificationStrategy {
 pub enum VersioningStrategy {
     /// Use conventional commits
     Conventional,
-    /// Use external script/command
+    /// Use external script/command for version calculation.
+    ///
+    /// Field layout note: this variant uses inline fields, not a nested struct.
+    /// Serialised TOML/YAML must use top-level keys `command`, `env_vars`, and
+    /// `timeout_ms` rather than a nested `external` object.
+    ///
+    /// Example YAML:
+    /// ```yaml
+    /// versioning_strategy: !external
+    ///   command: ./scripts/calculate-version.sh
+    ///   env_vars: {}
+    ///   timeout_ms: 30000
+    /// ```
     External {
         /// Command to execute for version calculation
         command: String,
         /// Environment variables to pass to the command
         env_vars: HashMap<String, String>,
+        /// Maximum time in milliseconds to wait for the command to complete.
+        /// Defaults to 30 000 ms (30 seconds).
+        #[serde(default = "default_external_timeout_ms")]
+        timeout_ms: u64,
     },
+}
+
+/// Default timeout for external versioning commands (30 seconds).
+fn default_external_timeout_ms() -> u64 {
+    30_000
 }
 
 impl From<VersioningStrategy> for crate::traits::version_calculator::VersioningStrategy {
@@ -327,13 +348,15 @@ impl From<VersioningStrategy> for crate::traits::version_calculator::VersioningS
                     include_prerelease: false,
                 }
             }
-            VersioningStrategy::External { command, env_vars } => {
-                crate::traits::version_calculator::VersioningStrategy::External {
-                    command,
-                    env_vars,
-                    timeout_ms: 30_000,
-                }
-            }
+            VersioningStrategy::External {
+                command,
+                env_vars,
+                timeout_ms,
+            } => crate::traits::version_calculator::VersioningStrategy::External {
+                command,
+                env_vars,
+                timeout_ms,
+            },
         }
     }
 }
