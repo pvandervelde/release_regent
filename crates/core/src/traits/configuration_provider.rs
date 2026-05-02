@@ -18,7 +18,22 @@ pub struct RepositoryConfig {
     pub owner: String,
 }
 
-/// Configuration validation result
+/// Minimal configuration validation result — **core layer only**.
+///
+/// This type is used exclusively at the trait boundary defined by
+/// [`ConfigurationProvider::validate_config`]. It carries only the essential
+/// validation outcome (valid/invalid, errors, warnings) and intentionally has
+/// **no `metadata` field** — metadata is an implementation detail that belongs
+/// in the config-provider layer, not in the core trait contract.
+///
+/// If you need the richer result type (with `metadata` and factory methods), use
+/// [`release_regent_config_provider::ConfigValidationResult`] instead. That type
+/// is defined in `crates/config_provider/src/validation.rs` and is re-exported as
+/// `ConfigValidationResult` to avoid ambiguity.
+///
+/// Two types exist intentionally: merging them would either pollute the core trait
+/// with config-provider concerns, or force the config-provider to discard metadata
+/// before returning across the trait boundary.
 #[derive(Debug, Clone)]
 pub struct ValidationResult {
     /// Validation errors (if any)
@@ -294,118 +309,4 @@ pub trait ConfigurationProvider: Send + Sync {
     /// # Errors
     /// - `CoreError::Config` - Failed to generate default configuration
     async fn get_default_config(&self) -> CoreResult<ReleaseRegentConfig>;
-}
-
-// TODO: implement - placeholder for compilation
-pub struct MockConfigurationProvider;
-
-#[async_trait]
-impl ConfigurationProvider for MockConfigurationProvider {
-    async fn load_global_config(&self, _options: LoadOptions) -> CoreResult<ReleaseRegentConfig> {
-        // TODO: implement
-        Err(crate::CoreError::not_supported(
-            "MockConfigurationProvider",
-            "not yet implemented",
-        ))
-    }
-
-    async fn load_repository_config(
-        &self,
-        _owner: &str,
-        _repo: &str,
-        _options: LoadOptions,
-    ) -> CoreResult<Option<RepositoryConfig>> {
-        // TODO: implement
-        Err(crate::CoreError::not_supported(
-            "MockConfigurationProvider",
-            "not yet implemented",
-        ))
-    }
-
-    async fn get_merged_config(
-        &self,
-        _owner: &str,
-        _repo: &str,
-        _options: LoadOptions,
-    ) -> CoreResult<ReleaseRegentConfig> {
-        // TODO: implement
-        Err(crate::CoreError::not_supported(
-            "MockConfigurationProvider",
-            "not yet implemented",
-        ))
-    }
-
-    async fn validate_config(&self, _config: &ReleaseRegentConfig) -> CoreResult<ValidationResult> {
-        // TODO: implement
-        Err(crate::CoreError::not_supported(
-            "MockConfigurationProvider",
-            "not yet implemented",
-        ))
-    }
-
-    async fn save_config(
-        &self,
-        _config: &ReleaseRegentConfig,
-        _owner: Option<&str>,
-        _repo: Option<&str>,
-        _global: bool,
-    ) -> CoreResult<()> {
-        // TODO: implement
-        Err(crate::CoreError::not_supported(
-            "MockConfigurationProvider",
-            "not yet implemented",
-        ))
-    }
-
-    async fn list_repository_configs(
-        &self,
-        _options: LoadOptions,
-    ) -> CoreResult<Vec<RepositoryConfig>> {
-        // TODO: implement
-        Err(crate::CoreError::not_supported(
-            "MockConfigurationProvider",
-            "not yet implemented",
-        ))
-    }
-
-    async fn get_config_source(
-        &self,
-        _owner: Option<&str>,
-        _repo: Option<&str>,
-    ) -> CoreResult<ConfigurationSource> {
-        // TODO: implement
-        Err(crate::CoreError::not_supported(
-            "MockConfigurationProvider",
-            "not yet implemented",
-        ))
-    }
-
-    async fn reload_config(&self, _owner: Option<&str>, _repo: Option<&str>) -> CoreResult<()> {
-        // TODO: implement
-        Err(crate::CoreError::not_supported(
-            "MockConfigurationProvider",
-            "not yet implemented",
-        ))
-    }
-
-    async fn config_exists(&self, _owner: Option<&str>, _repo: Option<&str>) -> CoreResult<bool> {
-        // TODO: implement
-        Err(crate::CoreError::not_supported(
-            "MockConfigurationProvider",
-            "not yet implemented",
-        ))
-    }
-
-    fn supported_formats(&self) -> Vec<String> {
-        // TODO: implement
-        vec!["yaml".to_string(), "toml".to_string()]
-    }
-
-    async fn get_default_config(&self) -> CoreResult<ReleaseRegentConfig> {
-        // TODO: implement
-        Err(crate::CoreError::not_supported(
-            "MockConfigurationProvider",
-            "not yet implemented",
-        ))
-    }
 }

@@ -524,7 +524,7 @@ fn github_tag_to_git_tag(tag: &Tag) -> GitTag {
             .map(|t| release_regent_core::traits::git_operations::GitUser {
                 name: t.name.clone(),
                 email: t.email.clone(),
-                username: t.login.clone(),
+                login: t.login.clone(),
             }),
         created_at: tag.created_at,
     }

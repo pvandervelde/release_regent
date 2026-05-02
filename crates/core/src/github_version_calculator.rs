@@ -11,15 +11,12 @@ use crate::{
         git_operations::GetCommitsOptions,
         github_operations::GitHubOperations,
         version_calculator::{
-            CalculationOptions, ChangelogEntry, CommitAnalysis, ValidationRules,
-            VersionBump as TraitVersionBump, VersionCalculationResult,
-            VersionCalculator as VersionCalculatorTrait, VersionContext, VersioningStrategy,
+            CalculationOptions, ChangelogEntry, CommitAnalysis, ValidationRules, VersionBump,
+            VersionCalculationResult, VersionCalculator as VersionCalculatorTrait, VersionContext,
+            VersioningStrategy,
         },
     },
-    versioning::{
-        apply_semver_bump, SemanticVersion, VersionBump as LocalVersionBump,
-        VersionCalculator as ConventionalCalculator,
-    },
+    versioning::{apply_semver_bump, SemanticVersion, VersionCalculator as ConventionalCalculator},
     CoreError, CoreResult,
 };
 use async_trait::async_trait;
@@ -60,17 +57,17 @@ impl<G: GitHubOperations> GitHubVersionCalculator<G> {
         Self { github_operations }
     }
 
-    /// Derive the highest `TraitVersionBump` from a slice of analyses.
-    fn highest_bump(analyses: &[CommitAnalysis]) -> TraitVersionBump {
-        let mut result = TraitVersionBump::None;
+    /// Derive the highest `VersionBump` from a slice of analyses.
+    fn highest_bump(analyses: &[CommitAnalysis]) -> VersionBump {
+        let mut result = VersionBump::None;
         for analysis in analyses {
             match analysis.version_bump {
-                TraitVersionBump::Major => return TraitVersionBump::Major,
-                TraitVersionBump::Minor if result != TraitVersionBump::Minor => {
-                    result = TraitVersionBump::Minor;
+                VersionBump::Major => return VersionBump::Major,
+                VersionBump::Minor if result != VersionBump::Minor => {
+                    result = VersionBump::Minor;
                 }
-                TraitVersionBump::Patch if result == TraitVersionBump::None => {
-                    result = TraitVersionBump::Patch;
+                VersionBump::Patch if result == VersionBump::None => {
+                    result = VersionBump::Patch;
                 }
                 _ => {}
             }
@@ -90,13 +87,13 @@ impl<G: GitHubOperations> GitHubVersionCalculator<G> {
         author: String,
     ) -> CommitAnalysis {
         let version_bump = if commit.breaking_change {
-            TraitVersionBump::Major
+            VersionBump::Major
         } else if commit.commit_type == "feat" {
-            TraitVersionBump::Minor
+            VersionBump::Minor
         } else if commit.commit_type == "fix" {
-            TraitVersionBump::Patch
+            VersionBump::Patch
         } else {
-            TraitVersionBump::None
+            VersionBump::None
         };
 
         CommitAnalysis {
@@ -118,11 +115,11 @@ impl<G: GitHubOperations> GitHubVersionCalculator<G> {
         strategy: VersioningStrategy,
         analyses: Vec<CommitAnalysis>,
         next_version: SemanticVersion,
-        bump: TraitVersionBump,
+        bump: VersionBump,
     ) -> VersionCalculationResult {
         let changelog_entries: Vec<ChangelogEntry> = analyses
             .iter()
-            .filter(|a| a.version_bump != TraitVersionBump::None || a.is_breaking)
+            .filter(|a| a.version_bump != VersionBump::None || a.is_breaking)
             .map(|a| ChangelogEntry {
                 commit_sha: a.sha.clone(),
                 description: a.message.clone(),
@@ -159,17 +156,11 @@ impl<G: GitHubOperations> GitHubVersionCalculator<G> {
     #[allow(clippy::result_large_err)] // CoreError is intentionally large; established pattern
     fn bump_version(
         current: SemanticVersion,
-        bump: &TraitVersionBump,
+        bump: &VersionBump,
         prerelease: Option<String>,
         build: Option<String>,
     ) -> CoreResult<SemanticVersion> {
-        let local_bump = match bump {
-            TraitVersionBump::Major => LocalVersionBump::Major,
-            TraitVersionBump::Minor => LocalVersionBump::Minor,
-            TraitVersionBump::Patch => LocalVersionBump::Patch,
-            TraitVersionBump::None => LocalVersionBump::None,
-        };
-        let mut next = apply_semver_bump(&current, local_bump);
+        let mut next = apply_semver_bump(&current, bump.clone());
         next.prerelease = prerelease;
         next.build = build;
         Ok(next)
@@ -315,7 +306,7 @@ impl<G: GitHubOperations + 'static> VersionCalculatorTrait for GitHubVersionCalc
         _context: VersionContext,
         _strategy: VersioningStrategy,
         commit_analyses: Vec<CommitAnalysis>,
-    ) -> CoreResult<TraitVersionBump> {
+    ) -> CoreResult<VersionBump> {
         Ok(Self::highest_bump(&commit_analyses))
     }
 
@@ -329,7 +320,7 @@ impl<G: GitHubOperations + 'static> VersionCalculatorTrait for GitHubVersionCalc
     ) -> CoreResult<Vec<ChangelogEntry>> {
         let entries = commit_analyses
             .into_iter()
-            .filter(|a| a.version_bump != TraitVersionBump::None || a.is_breaking)
+            .filter(|a| a.version_bump != VersionBump::None || a.is_breaking)
             .map(|a| ChangelogEntry {
                 commit_sha: a.sha.clone(),
                 description: a.message.clone(),
@@ -403,7 +394,7 @@ impl<G: GitHubOperations + 'static> VersionCalculatorTrait for GitHubVersionCalc
     fn apply_version_bump(
         &self,
         current_version: SemanticVersion,
-        bump_type: TraitVersionBump,
+        bump_type: VersionBump,
         prerelease: Option<String>,
         build: Option<String>,
     ) -> CoreResult<SemanticVersion> {

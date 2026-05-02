@@ -59,7 +59,7 @@
 //! ```
 
 use crate::{
-    assertions::{BehaviorVerifier, ComplianceChecker, SpecAssertion},
+    assertions::{BehaviorVerifier, ComplianceChecker},
     builders::{
         CommitBuilder, ConfigurationBuilder, PullRequestBuilder, ReleaseBuilder, RepositoryBuilder,
         VersionBuilder, VersionContextBuilder, WebhookBuilder,
@@ -372,12 +372,10 @@ impl TestingApi {
     /// use release_regent_testing::TestingApi;
     ///
     /// let input_data = serde_json::json!({"version": "1.0.0"});
-    /// TestingApi::verify_spec("version_calculator")
+    /// let builder = TestingApi::verify_spec("version_calculator")
     ///     .with_specification("semantic_versioning_v2")
     ///     .with_input(&input_data)
-    ///     .with_expected_behavior("increments_minor_for_feat")
-    ///     .assert_compliance()
-    ///     .unwrap();
+    ///     .with_expected_behavior("increments_minor_for_feat");
     /// ```
     #[must_use]
     pub fn verify_spec(subject: &str) -> SpecVerificationBuilder {
@@ -447,7 +445,6 @@ impl TestingApi {
 
 /// Builder for spec verification
 pub struct SpecVerificationBuilder {
-    subject: String,
     specification: Option<String>,
     expected_behavior: Option<String>,
     input_data: Option<serde_json::Value>,
@@ -456,9 +453,8 @@ pub struct SpecVerificationBuilder {
 
 impl SpecVerificationBuilder {
     /// Create a new spec verification builder
-    fn new(subject: &str) -> Self {
+    fn new(_subject: &str) -> Self {
         Self {
-            subject: subject.to_string(),
             specification: None,
             expected_behavior: None,
             input_data: None,
@@ -522,29 +518,6 @@ impl SpecVerificationBuilder {
     pub fn with_metadata(mut self, key: &str, value: &str) -> Self {
         self.metadata.insert(key.to_string(), value.to_string());
         self
-    }
-
-    /// Execute the spec verification and assert compliance
-    ///
-    /// # Returns
-    /// Result indicating success or failure with details
-    ///
-    /// # Errors
-    /// Returns error if specification is not met or verification fails
-    pub fn assert_compliance(self) -> Result<(), String> {
-        let specification = self.specification.ok_or("Specification not specified")?;
-        let expected_behavior = self
-            .expected_behavior
-            .ok_or("Expected behavior not specified")?;
-
-        let mut assertion = SpecAssertion::new(&self.subject, &specification, &expected_behavior);
-        assertion.metadata = self.metadata;
-
-        // TODO: Implement actual verification logic based on the specification
-        // This would integrate with the spec_runner and behavior_verifier modules
-
-        // For now, return success to allow the API to be used
-        Ok(())
     }
 }
 

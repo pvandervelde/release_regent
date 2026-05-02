@@ -87,15 +87,6 @@ impl Default for ErrorHandlingConfig {
     }
 }
 
-/// External versioning configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ExternalVersioningConfig {
-    /// Command to execute for version calculation
-    pub command: String,
-    /// Timeout in milliseconds
-    pub timeout_ms: u64,
-}
-
 /// GitHub issue notification configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitHubIssueConfig {
@@ -256,9 +247,6 @@ pub struct VersioningConfig {
     /// Versioning strategy
     #[serde(default = "default_versioning_strategy")]
     pub strategy: VersioningStrategy,
-    /// External versioning settings
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub external: Option<ExternalVersioningConfig>,
     /// Whether to allow PR comment overrides
     #[serde(default = "default_allow_override")]
     pub allow_override: bool,
@@ -284,7 +272,6 @@ impl Default for VersioningConfig {
     fn default() -> Self {
         Self {
             strategy: default_versioning_strategy(),
-            external: None,
             allow_override: default_allow_override(),
             excluded_pr_authors: Vec::new(),
         }
@@ -322,8 +309,56 @@ pub enum NotificationStrategy {
 pub enum VersioningStrategy {
     /// Use conventional commits
     Conventional,
-    /// Use external script/command
-    External,
+    /// Use external script/command for version calculation.
+    ///
+    /// Field layout note: this variant uses inline fields, not a nested struct.
+    /// Serialised TOML/YAML must use top-level keys `command`, `env_vars`, and
+    /// `timeout_ms` rather than a nested `external` object.
+    ///
+    /// Example YAML:
+    /// ```yaml
+    /// versioning_strategy: !external
+    ///   command: ./scripts/calculate-version.sh
+    ///   env_vars: {}
+    ///   timeout_ms: 30000
+    /// ```
+    External {
+        /// Command to execute for version calculation
+        command: String,
+        /// Environment variables to pass to the command
+        env_vars: HashMap<String, String>,
+        /// Maximum time in milliseconds to wait for the command to complete.
+        /// Defaults to 30 000 ms (30 seconds).
+        #[serde(default = "default_external_timeout_ms")]
+        timeout_ms: u64,
+    },
+}
+
+/// Default timeout for external versioning commands (30 seconds).
+fn default_external_timeout_ms() -> u64 {
+    30_000
+}
+
+impl From<VersioningStrategy> for crate::traits::version_calculator::VersioningStrategy {
+    fn from(strategy: VersioningStrategy) -> Self {
+        match strategy {
+            VersioningStrategy::Conventional => {
+                crate::traits::version_calculator::VersioningStrategy::ConventionalCommits {
+                    custom_types: HashMap::default(),
+                    include_prerelease: false,
+                }
+            }
+            VersioningStrategy::External {
+                command,
+                env_vars,
+                timeout_ms,
+            } => crate::traits::version_calculator::VersioningStrategy::External {
+                command,
+                env_vars,
+                timeout_ms,
+            },
+        }
+    }
 }
 
 impl ReleaseRegentConfig {
@@ -385,15 +420,6 @@ impl ReleaseRegentConfig {
                 }
             }
             _ => {} // No additional validation needed
-        }
-
-        // Validate versioning configuration
-        if matches!(self.versioning.strategy, VersioningStrategy::External)
-            && self.versioning.external.is_none()
-        {
-            return Err(CoreError::config(
-                "External versioning configuration required when strategy is 'external'",
-            ));
         }
 
         debug!("Configuration validation passed");

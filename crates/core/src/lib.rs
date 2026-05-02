@@ -484,7 +484,8 @@ where
                 versioning::resolve_current_version(&scoped_github, owner, repo, false).await?;
 
             let strategy = match repo_config.versioning.strategy {
-                config::VersioningStrategy::Conventional | config::VersioningStrategy::External => {
+                config::VersioningStrategy::Conventional
+                | config::VersioningStrategy::External { .. } => {
                     VersioningStrategy::ConventionalCommits {
                         custom_types: std::collections::HashMap::new(),
                         include_prerelease: false,
@@ -1025,7 +1026,8 @@ where
         };
 
         let strategy = match repo_config.versioning.strategy {
-            config::VersioningStrategy::Conventional | config::VersioningStrategy::External => {
+            config::VersioningStrategy::Conventional
+            | config::VersioningStrategy::External { .. } => {
                 VersioningStrategy::ConventionalCommits {
                     custom_types: std::collections::HashMap::new(),
                     include_prerelease: false,
@@ -1505,7 +1507,8 @@ where
             });
 
         let strategy = match repo_config.versioning.strategy {
-            config::VersioningStrategy::Conventional | config::VersioningStrategy::External => {
+            config::VersioningStrategy::Conventional
+            | config::VersioningStrategy::External { .. } => {
                 VersioningStrategy::ConventionalCommits {
                     custom_types: std::collections::HashMap::new(),
                     include_prerelease: false,

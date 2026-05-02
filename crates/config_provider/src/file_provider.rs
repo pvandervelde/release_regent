@@ -277,11 +277,24 @@ impl FileConfigurationProvider {
             match key.as_str() {
                 "versioning.strategy" => {
                     // Convert string to VersioningStrategy enum
-                    config.versioning.strategy = match value.as_str() {
-                        "conventional" => VersioningStrategy::Conventional,
-                        "external" => VersioningStrategy::External,
-                        _ => continue, // Keep existing if unknown
-                    };
+                    match value.as_str() {
+                        "conventional" => {
+                            config.versioning.strategy = VersioningStrategy::Conventional;
+                        }
+                        "external" => {
+                            // Cannot set external strategy via simple string override;
+                            // full configuration (command, env_vars) must be provided in
+                            // the config file itself.
+                            warn!(
+                                "Override 'versioning.strategy=external' ignored: \
+                                 external strategy requires a command field and \
+                                 must be configured in the config file"
+                            );
+                        }
+                        _ => {
+                            // Keep existing if unknown
+                        }
+                    }
                 }
                 "branches.main_branch" => {
                     config.core.branches.main.clone_from(value);

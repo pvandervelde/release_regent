@@ -8,8 +8,9 @@
 //!
 //! The [`DefaultVersionCalculator`] bridges the concrete [`ConventionalCalculator`]
 //! engine with the generic [`VersionCalculatorTrait`] interface consumed by
-//! [`ReleaseRegentProcessor`].  It translates between the two `VersionBump` enums
-//! and handles local git subprocess calls.
+//! [`ReleaseRegentProcessor`]. Both the calculator and the trait share the same
+//! [`VersionBump`] type (defined in `traits::version_calculator`), so no translation
+//! is needed between layers.
 //!
 //! [`VersionCalculatorTrait`]: crate::traits::version_calculator::VersionCalculator
 //! [`ConventionalCalculator`]: crate::versioning::VersionCalculator
@@ -17,12 +18,12 @@
 
 use crate::{
     traits::version_calculator::{
-        CalculationOptions, ChangelogEntry, CommitAnalysis, ValidationRules,
-        VersionBump as TraitVersionBump, VersionCalculationResult,
-        VersionCalculator as VersionCalculatorTrait, VersionContext, VersioningStrategy,
+        CalculationOptions, ChangelogEntry, CommitAnalysis, ValidationRules, VersionBump,
+        VersionCalculationResult, VersionCalculator as VersionCalculatorTrait, VersionContext,
+        VersioningStrategy,
     },
     versioning::{
-        apply_semver_bump, ConventionalCommit, SemanticVersion, VersionBump as LocalVersionBump,
+        apply_semver_bump, ConventionalCommit, SemanticVersion,
         VersionCalculator as ConventionalCalculator,
     },
     CoreError, CoreResult,
@@ -58,27 +59,6 @@ impl DefaultVersionCalculator {
     #[must_use]
     pub fn new() -> Self {
         Self
-    }
-
-    /// Map from core `versioning::VersionBump` to the trait-layer `VersionBump`.
-    #[allow(dead_code)] // used in tests; kept for symmetry with trait_to_local_bump
-    fn local_to_trait_bump(bump: &LocalVersionBump) -> TraitVersionBump {
-        match bump {
-            LocalVersionBump::Major => TraitVersionBump::Major,
-            LocalVersionBump::Minor => TraitVersionBump::Minor,
-            LocalVersionBump::Patch => TraitVersionBump::Patch,
-            LocalVersionBump::None => TraitVersionBump::None,
-        }
-    }
-
-    /// Map from the trait-layer `VersionBump` to core `versioning::VersionBump`.
-    fn trait_to_local_bump(bump: &TraitVersionBump) -> LocalVersionBump {
-        match bump {
-            TraitVersionBump::Major => LocalVersionBump::Major,
-            TraitVersionBump::Minor => LocalVersionBump::Minor,
-            TraitVersionBump::Patch => LocalVersionBump::Patch,
-            TraitVersionBump::None => LocalVersionBump::None,
-        }
     }
 
     /// Fetch commit history from local git between two refs.
@@ -134,13 +114,13 @@ impl DefaultVersionCalculator {
     /// Convert a parsed [`ConventionalCommit`] into a trait-layer [`CommitAnalysis`].
     fn to_commit_analysis(commit: ConventionalCommit) -> CommitAnalysis {
         let version_bump = if commit.breaking_change {
-            TraitVersionBump::Major
+            VersionBump::Major
         } else if commit.commit_type == "feat" {
-            TraitVersionBump::Minor
+            VersionBump::Minor
         } else if commit.commit_type == "fix" {
-            TraitVersionBump::Patch
+            VersionBump::Patch
         } else {
-            TraitVersionBump::None
+            VersionBump::None
         };
 
         CommitAnalysis {
@@ -156,20 +136,20 @@ impl DefaultVersionCalculator {
         }
     }
 
-    /// Derive the highest `TraitVersionBump` from a slice of analyses.
-    fn highest_bump(analyses: &[CommitAnalysis]) -> TraitVersionBump {
-        let mut result = TraitVersionBump::None;
+    /// Derive the highest `VersionBump` from a slice of analyses.
+    fn highest_bump(analyses: &[CommitAnalysis]) -> VersionBump {
+        let mut result = VersionBump::None;
         for analysis in analyses {
             match analysis.version_bump {
-                TraitVersionBump::Major => return TraitVersionBump::Major,
-                TraitVersionBump::Minor if result != TraitVersionBump::Minor => {
+                VersionBump::Major => return VersionBump::Major,
+                VersionBump::Minor if result != VersionBump::Minor => {
                     // Guard prevents redundant re-assignment: once `result` is already
                     // `Minor` we don't want to overwrite it ("promote only" semantics —
                     // we never downgrade from a higher level back to Minor).
-                    result = TraitVersionBump::Minor;
+                    result = VersionBump::Minor;
                 }
-                TraitVersionBump::Patch if result == TraitVersionBump::None => {
-                    result = TraitVersionBump::Patch;
+                VersionBump::Patch if result == VersionBump::None => {
+                    result = VersionBump::Patch;
                 }
                 _ => {}
             }
@@ -183,11 +163,11 @@ impl DefaultVersionCalculator {
         strategy: VersioningStrategy,
         analyses: Vec<CommitAnalysis>,
         next_version: SemanticVersion,
-        bump: TraitVersionBump,
+        bump: VersionBump,
     ) -> VersionCalculationResult {
         let changelog_entries: Vec<ChangelogEntry> = analyses
             .iter()
-            .filter(|a| a.version_bump != TraitVersionBump::None || a.is_breaking)
+            .filter(|a| a.version_bump != VersionBump::None || a.is_breaking)
             .map(|a| ChangelogEntry {
                 commit_sha: a.sha.clone(),
                 description: a.message.clone(),
@@ -322,7 +302,7 @@ impl VersionCalculatorTrait for DefaultVersionCalculator {
         _context: VersionContext,
         _strategy: VersioningStrategy,
         commit_analyses: Vec<CommitAnalysis>,
-    ) -> CoreResult<TraitVersionBump> {
+    ) -> CoreResult<VersionBump> {
         Ok(Self::highest_bump(&commit_analyses))
     }
 
@@ -336,7 +316,7 @@ impl VersionCalculatorTrait for DefaultVersionCalculator {
     ) -> CoreResult<Vec<ChangelogEntry>> {
         let entries = commit_analyses
             .into_iter()
-            .filter(|a| a.version_bump != TraitVersionBump::None || a.is_breaking)
+            .filter(|a| a.version_bump != VersionBump::None || a.is_breaking)
             .map(|a| ChangelogEntry {
                 commit_sha: a.sha.clone(),
                 description: a.message.clone(),
@@ -418,12 +398,11 @@ impl VersionCalculatorTrait for DefaultVersionCalculator {
     fn apply_version_bump(
         &self,
         current_version: SemanticVersion,
-        bump_type: TraitVersionBump,
+        bump_type: VersionBump,
         prerelease: Option<String>,
         build: Option<String>,
     ) -> CoreResult<SemanticVersion> {
-        let local_bump = Self::trait_to_local_bump(&bump_type);
-        let mut next = apply_semver_bump(&current_version, local_bump);
+        let mut next = apply_semver_bump(&current_version, bump_type);
         next.prerelease = prerelease;
         next.build = build;
         Ok(next)

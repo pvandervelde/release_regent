@@ -762,15 +762,10 @@ pub struct CreateReleaseParams {
 }
 
 /// Git user information (author/committer)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GitUser {
-    /// User email
-    pub email: String,
-    /// User login (GitHub username)
-    pub login: Option<String>,
-    /// User name
-    pub name: String,
-}
+///
+/// This is a re-export of [`git_operations::GitUser`], unified so that both
+/// the git-operations and GitHub-operations layers share a single type.
+pub use crate::traits::git_operations::GitUser;
 
 /// A comment on a GitHub issue or pull request.
 ///

@@ -613,12 +613,12 @@ fn make_git_commit(sha: &str) -> GitCommit {
         author: GitOpsUser {
             name: "Dev".into(),
             email: "dev@example.com".into(),
-            username: None,
+            login: None,
         },
         committer: GitOpsUser {
             name: "Dev".into(),
             email: "dev@example.com".into(),
-            username: None,
+            login: None,
         },
         author_date: Utc::now(),
         commit_date: Utc::now(),

@@ -1610,12 +1610,12 @@ fn compare_envelope_to_git_commit(commit: CompareCommitEnvelope) -> GitCommit {
         author: GitOpsUser {
             name: commit.commit.author.name,
             email: commit.commit.author.email,
-            username: commit.author.map(|u| u.login),
+            login: commit.author.map(|u| u.login),
         },
         committer: GitOpsUser {
             name: commit.commit.committer.name,
             email: commit.commit.committer.email,
-            username: commit.committer.map(|u| u.login),
+            login: commit.committer.map(|u| u.login),
         },
         author_date: commit.commit.author.date,
         commit_date: commit.commit.committer.date,
@@ -1646,12 +1646,12 @@ fn convert_sdk_commit_to_git_commit(commit: github_bot_sdk::client::FullCommit) 
         author: GitOpsUser {
             name: commit.commit.author.name,
             email: commit.commit.author.email,
-            username: commit.author.map(|u| u.login),
+            login: commit.author.map(|u| u.login),
         },
         committer: GitOpsUser {
             name: commit.commit.committer.name,
             email: commit.commit.committer.email,
-            username: commit.committer.map(|u| u.login),
+            login: commit.committer.map(|u| u.login),
         },
         author_date: commit.commit.author.date,
         commit_date: commit.commit.committer.date,
