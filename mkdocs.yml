@@ -1,0 +1,108 @@
+site_name: Release Regent
+site_description: Automated GitHub release management with semantic versioning
+  and changelog generation
+site_url: https://pvandervelde.github.io/release_regent/
+repo_url: https://github.com/pvandervelde/release_regent
+repo_name: pvandervelde/release_regent
+edit_uri: edit/main/docs/user/
+
+docs_dir: docs/user
+site_dir: site
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.expand
+    - navigation.indexes
+    - navigation.top
+    - search.highlight
+    - search.share
+    - content.code.copy
+    - content.code.annotate
+    - toc.follow
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format ""
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Tutorials:
+      - tutorials/index.md
+      - Your first automated release: tutorials/01-first-release.md
+      - Customise your changelog: tutorials/02-customise-changelog.md
+  - How-to guides:
+      - how-to/index.md
+      - Set up:
+          - Install the CLI: how-to/setup/install-cli.md
+          - Deploy the server: how-to/setup/install-server.md
+          - Set up the GitHub App: how-to/setup/github-app-setup.md
+          - Configure multiple repositories: how-to/setup/configure-multiple-repos.md
+      - Manage releases:
+          - Override the version: how-to/releases/override-version.md
+          - Trigger a release manually: how-to/releases/trigger-release-manually.md
+          - Recover from a failed release: how-to/releases/recover-failed-release.md
+      - Configure:
+          - Update manifest files: how-to/configuration/update-manifest-files.md
+          - Use pre-release versions: how-to/configuration/pre-release-versions.md
+          - Customise changelog templates: how-to/configuration/custom-changelog-template.md
+      - Troubleshooting: how-to/troubleshooting.md
+  - Reference:
+      - reference/index.md
+      - CLI: reference/cli.md
+      - Configuration file: reference/configuration.md
+      - Environment variables: reference/environment-variables.md
+      - PR comment commands: reference/pr-commands.md
+      - Conventional commits: reference/conventional-commits.md
+      - Webhook events: reference/webhook-events.md
+      - Server API: reference/api.md
+  - Explanation:
+      - explanation/index.md
+      - The release workflow: explanation/release-workflow.md
+      - How versions are calculated: explanation/version-calculation.md
+      - GitHub App authentication: explanation/github-app-model.md
+      - Release branch ownership: explanation/release-branch-ownership.md
+      - Architecture: explanation/architecture.md
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/pvandervelde/release_regent
