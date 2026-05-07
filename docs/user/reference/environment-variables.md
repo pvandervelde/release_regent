@@ -62,7 +62,9 @@ GITHUB_WEBHOOK_SECRET=a3f9e2c1d8b74e6f
 **Type**: path
 **Default**: current working directory
 
-Directory the server searches for `.release-regent.toml` files.
+Directory the server searches for repository configuration files
+(`.release-regent.yml`, `.release-regent.yaml`, `.release-regent.toml`, and their
+`release-regent.*` variants).
 
 ```bash
 CONFIG_DIR=/etc/release-regent/configs
@@ -122,7 +124,7 @@ PORT=9090
 | `GITHUB_APP_ID` | ✅ | — | Numeric GitHub App ID |
 | `GITHUB_PRIVATE_KEY` | ✅ | — | PEM-encoded GitHub App private key |
 | `GITHUB_WEBHOOK_SECRET` | ✅ | — | HMAC-SHA256 webhook secret |
-| `CONFIG_DIR` | | `.` | Directory containing `.release-regent.toml` files |
+| `CONFIG_DIR` | | `.` | Directory containing `.release-regent.yml` / `.release-regent.toml` files |
 | `ALLOWED_REPOS` | | `*` | Comma-separated `owner/repo` allowlist |
 | `EVENT_CHANNEL_CAPACITY` | | `1024` | In-memory event buffer depth |
 | `PORT` | | `8080` | TCP listen port |
