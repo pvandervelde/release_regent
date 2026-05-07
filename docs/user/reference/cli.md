@@ -111,7 +111,7 @@ rr run --event-file <FILE> [OPTIONS]
 | :--- | :--- | :--- |
 | `-e, --event-file <FILE>` | (required) | Path to a JSON webhook payload file |
 | `--event-type <TYPE>` | `pull_request_merged` | Internal event type (see table below) |
-| `-d, --dry-run` | false | Parse and calculate but do not call the GitHub API |
+| `-d, --dry-run` | false | Exit immediately without processing the event or calling the GitHub API |
 | `--mock` | false | Use in-process mocks instead of real GitHub credentials |
 | `-c, --config-path <PATH>` | (uses global `-c`) | Configuration file path |
 
@@ -131,7 +131,7 @@ rr run --event-file <FILE> [OPTIONS]
 # Process a sample event with mocks (no credentials required)
 rr run --event-file sample-webhook.json --mock
 
-# Dry run against the real GitHub API
+# Exit without processing (confirms the event file is readable)
 rr run --event-file sample-webhook.json --dry-run
 
 # Replay a release PR merge event
@@ -216,7 +216,7 @@ rr generate [OPTIONS]
 | Kind | Files created |
 | :--- | :--- |
 | `webhook` | `sample-webhook.json` |
-| `config` | `.release-regent.yml` |
+| `config` | `sample-config.yml` |
 | `all` | Both of the above |
 
 ### Examples

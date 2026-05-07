@@ -204,8 +204,9 @@ docker secret create rr_private_key /path/to/private-key.pem
 
 **Kubernetes secret from file** (shown above) — the `--from-file` flag preserves line breaks.
 
-**Environment variable with newlines** — embed literal `\n` characters and set
-`GITHUB_PRIVATE_KEY_FORMAT=escaped` (supported by the server) so it unescapes them on startup.
+**Environment variable with escaped newlines** — embed literal `\n` characters in the value,
+then unescape them in your deployment script or secrets manager before passing the variable to
+the server. The server reads the key as-is and does not perform any unescaping itself.
 
 !!! danger "Never commit private keys"
     Do not store the `.pem` file in version control. Use a secrets manager (AWS Secrets

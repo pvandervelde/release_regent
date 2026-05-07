@@ -4,7 +4,7 @@ site_description: Automated GitHub release management with semantic versioning
 site_url: https://pvandervelde.github.io/release_regent/
 repo_url: https://github.com/pvandervelde/release_regent
 repo_name: pvandervelde/release_regent
-edit_uri: edit/main/docs/user/
+edit_uri: edit/master/docs/user/
 
 docs_dir: docs/user
 site_dir: site

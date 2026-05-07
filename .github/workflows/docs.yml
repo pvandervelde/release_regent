@@ -60,10 +60,7 @@ jobs:
       - uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2
 
       - name: Build API documentation
-        uses: actions-rs/cargo@844f36862e911db73fe0815f00a4a2602c279505 # v1
-        with:
-          command: doc
-          args: --verbose --no-deps --all-features
+        run: cargo doc --verbose --no-deps --all-features
 
       - name: Finalize API documentation
         run: |
@@ -72,6 +69,8 @@ jobs:
           touch target/doc/.nojekyll
 
       - name: Upload API docs as artifact
+        # API docs are retained as a build artifact for download but are not deployed to
+        # GitHub Pages. Only the MkDocs user-facing site is published via the deploy job.
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: api-documentation

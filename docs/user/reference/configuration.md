@@ -1,29 +1,67 @@
 ---
 title: Configuration file reference
-description: Complete reference for all options in .release-regent.toml
+description: Complete reference for all options in the Release Regent configuration file (YAML or TOML)
 ---
 
 # Configuration file reference
 
-Release Regent is configured through a `.release-regent.toml` file at the root of each
-repository. All settings are optional — the tool works with sensible defaults if the file is
-absent.
+Release Regent is configured through a file at the root of each repository. All settings are
+optional — the tool works with sensible defaults if the file is absent.
+
+## Supported file names and formats
+
+Both YAML and TOML are supported. Release Regent searches for configuration files in the
+following order:
+
+| File name | Format |
+| :--- | :--- |
+| `.release-regent.yml` | YAML |
+| `.release-regent.yaml` | YAML |
+| `release-regent.yml` | YAML |
+| `release-regent.yaml` | YAML |
+| `.release-regent.toml` | TOML |
+| `release-regent.toml` | TOML |
+
+**`rr init` creates `.release-regent.yml` (YAML) by default.** You can rename it or convert it
+to TOML at any time — the format is determined by the file extension.
 
 ## File structure
 
-```toml
-[versioning]
-# How versions are calculated and formatted
+=== "YAML"
 
-[release_pr]
-# How release PRs are created and what they contain
+    ```yaml
+    versioning:
+      # How versions are calculated and formatted
 
-[changelog]
-# How changelogs are generated
+    release_pr:
+      # How release PRs are created and what they contain
 
-[[changelog.commit_parsers]]
-# Rules for commit classification (repeatable)
-```
+    changelog:
+      # How changelogs are generated
+      commit_parsers:
+        # Rules for commit classification (repeatable)
+    ```
+
+=== "TOML"
+
+    ```toml
+    [versioning]
+    # How versions are calculated and formatted
+
+    [release_pr]
+    # How release PRs are created and what they contain
+
+    [changelog]
+    # How changelogs are generated
+
+    [[changelog.commit_parsers]]
+    # Rules for commit classification (repeatable)
+    ```
+
+!!! note "Examples in this document"
+    All option examples below are shown in YAML, which `rr init` produces by default.
+    TOML equivalents use the same key names; YAML maps (`key: value`) become `[section]`
+    headers and YAML sequences become `[[section]]` arrays.
 
 ---
 
@@ -36,11 +74,11 @@ absent.
 
 Prefix added to Git tags and version displays.
 
-```toml
-[versioning]
-prefix = "v"           # Tags like v1.2.3
-# prefix = ""          # Tags like 1.2.3
-# prefix = "release-"  # Tags like release-1.2.3
+```yaml
+versioning:
+  prefix: "v"           # Tags like v1.2.3
+  # prefix: ""          # Tags like 1.2.3
+  # prefix: "release-"  # Tags like release-1.2.3
 ```
 
 ### `versioning.allow_prerelease`
@@ -50,10 +88,10 @@ prefix = "v"           # Tags like v1.2.3
 
 Whether to allow pre-release version identifiers (`-alpha.1`, `-beta.2`, `-rc.1`).
 
-```toml
-[versioning]
-allow_prerelease = true   # Supports v1.2.3-beta.1
-# allow_prerelease = false # Only stable versions
+```yaml
+versioning:
+  allow_prerelease: true   # Supports v1.2.3-beta.1
+  # allow_prerelease: false  # Only stable versions
 ```
 
 ### `versioning.initial_version`
@@ -63,9 +101,9 @@ allow_prerelease = true   # Supports v1.2.3-beta.1
 
 Version to use when the repository has no previous releases.
 
-```toml
-[versioning]
-initial_version = "0.1.0"
+```yaml
+versioning:
+  initial_version: "0.1.0"
 ```
 
 ### `versioning.allow_override`
@@ -77,9 +115,9 @@ Whether to allow
 [PR comment commands](pr-commands.md) (`!set-version`, `!release`) to override the calculated
 version.
 
-```toml
-[versioning]
-allow_override = true
+```yaml
+versioning:
+  allow_override: true
 ```
 
 ---
@@ -97,11 +135,11 @@ Template for the release PR title.
 
 Both `{variable}` and `${variable}` syntax are supported.
 
-```toml
-[release_pr]
-title_template = "chore(release): prepare version {version}"
-# title_template = "Release {version_tag}"
-# title_template = "Prepare release {version} ({date})"
+```yaml
+release_pr:
+  title_template: "chore(release): prepare version {version}"
+  # title_template: "Release {version_tag}"
+  # title_template: "Prepare release {version} ({date})"
 ```
 
 ### `release_pr.body_template`
@@ -121,16 +159,15 @@ Template for the release PR body.
 | `{commit_count}` | Commits since last release |
 | `{date}` | Current date in ISO 8601 format |
 
-```toml
-[release_pr]
-body_template = """
-## Release {version}
+```yaml
+release_pr:
+  body_template: |
+    ## Release {version}
 
-{changelog}
+    {changelog}
 
----
-{commit_count} commits · {date}
-"""
+    ---
+    {commit_count} commits · {date}
 ```
 
 ### `release_pr.draft`
@@ -140,10 +177,10 @@ body_template = """
 
 Whether to create release PRs as GitHub draft PRs.
 
-```toml
-[release_pr]
-draft = false
-# draft = true  # Require manual "Ready for review" before merging
+```yaml
+release_pr:
+  draft: false
+  # draft: true  # Require manual "Ready for review" before merging
 ```
 
 ### `release_pr.auto_merge`
@@ -154,9 +191,9 @@ draft = false
 Whether to enable GitHub auto-merge on release PRs. Requires the repository to have auto-merge
 enabled and the required status checks to pass.
 
-```toml
-[release_pr]
-auto_merge = false
+```yaml
+release_pr:
+  auto_merge: false
 ```
 
 ### `release_pr.auto_detect_manifests`
@@ -169,9 +206,9 @@ When `true`, Release Regent automatically detects and updates version fields in
 
 Files listed in `manifest_files` are always processed regardless of this setting.
 
-```toml
-[release_pr]
-auto_detect_manifests = true
+```yaml
+release_pr:
+  auto_detect_manifests: true
 ```
 
 ### `release_pr.manifest_files`
@@ -187,13 +224,18 @@ Explicit list of manifest files to update. Each entry has three fields:
 | `format` | File format: `"toml"`, `"json"`, or `"plain_text"` |
 | `version_key` | Where to find the version: dot-separated TOML path, JSON key, or a regex |
 
-```toml
-[release_pr]
-manifest_files = [
-  { path = "Cargo.toml",        format = "toml",       version_key = "package.version"    },
-  { path = "package.json",      format = "json",       version_key = "version"            },
-  { path = "pyproject.toml",    format = "toml",       version_key = "project.version"    },
-]
+```yaml
+release_pr:
+  manifest_files:
+    - path: "Cargo.toml"
+      format: "toml"
+      version_key: "package.version"
+    - path: "package.json"
+      format: "json"
+      version_key: "version"
+    - path: "pyproject.toml"
+      format: "toml"
+      version_key: "project.version"
 ```
 
 See [Update manifest files](../how-to/configuration/update-manifest-files.md) for format
@@ -232,9 +274,9 @@ Include linked PR numbers in changelog entries when detectable.
 
 How to group commits in the changelog body.
 
-```toml
-[changelog]
-group_by = "type"
+```yaml
+changelog:
+  group_by: "type"
 ```
 
 ### `changelog.sort_commits`
@@ -252,14 +294,15 @@ How to sort commits within each group.
 
 Maps commit type identifiers to display labels.
 
-```toml
-[changelog.commit_types]
-feat     = "Features"
-fix      = "Bug Fixes"
-docs     = "Documentation"
-perf     = "Performance Improvements"
-refactor = "Code Refactoring"
-chore    = "Maintenance"
+```yaml
+changelog:
+  commit_types:
+    feat: "Features"
+    fix: "Bug Fixes"
+    docs: "Documentation"
+    perf: "Performance Improvements"
+    refactor: "Code Refactoring"
+    chore: "Maintenance"
 ```
 
 ### `changelog.header`
@@ -308,9 +351,9 @@ When `true`, breaking change commits are never filtered even if a matcher has `s
 
 ---
 
-## `[[changelog.commit_parsers]]`
+## `changelog.commit_parsers`
 
-Repeatable table that controls how commits are classified and grouped. Rules are evaluated
+Repeatable list that controls how commits are classified and grouped. Rules are evaluated
 in order; the first matching rule wins.
 
 Each entry can have:
@@ -321,30 +364,21 @@ Each entry can have:
 | `group` | Group label to assign to matching commits |
 | `skip` | When `true`, matching commits are excluded from the changelog |
 
-```toml
-[[changelog.commit_parsers]]
-message = "^chore\\(release\\): prepare"
-skip = true
-
-[[changelog.commit_parsers]]
-message = "^feat"
-group = "🚀 Features"
-
-[[changelog.commit_parsers]]
-message = "^fix"
-group = "🐛 Bug Fixes"
-
-[[changelog.commit_parsers]]
-message = "^docs"
-group = "📚 Documentation"
-
-[[changelog.commit_parsers]]
-message = "^perf"
-group = "⚡ Performance"
-
-[[changelog.commit_parsers]]
-message = "^chore"
-group = "🔧 Maintenance"
+```yaml
+changelog:
+  commit_parsers:
+    - message: "^chore\\(release\\): prepare"
+      skip: true
+    - message: "^feat"
+      group: "🚀 Features"
+    - message: "^fix"
+      group: "🐛 Bug Fixes"
+    - message: "^docs"
+      group: "📚 Documentation"
+    - message: "^perf"
+      group: "⚡ Performance"
+    - message: "^chore"
+      group: "🔧 Maintenance"
 ```
 
 ---

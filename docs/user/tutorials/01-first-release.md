@@ -130,7 +130,8 @@ This creates two files:
 - `.release-regent.yml` — your configuration file
 - `sample-webhook.json` — a sample webhook payload for local testing
 
-Open `.release-regent.yml`. You will see something like this:
+Open `.release-regent.yml`. You will see something like this (abbreviated — the actual file
+contains all available fields with their defaults):
 
 ```yaml
 versioning:

@@ -7,7 +7,7 @@ description: Complete reference for rr-server environment variables
 
 `rr-server` is configured entirely through environment variables. No configuration file is
 required for the server itself — repository-level settings come from each repository's
-`.release-regent.toml` file.
+`.release-regent.yml` (or `.release-regent.toml`) file.
 
 ## Required variables
 
