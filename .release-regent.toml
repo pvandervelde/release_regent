@@ -1,0 +1,87 @@
+# =============================================================================
+# Release Regent — repository configuration
+# =============================================================================
+#
+# This file configures Release Regent for the release_regent repository itself.
+# See docs/user/reference/configuration.md for the full option reference.
+#
+# =============================================================================
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Versioning
+# ─────────────────────────────────────────────────────────────────────────────
+
+[versioning]
+# No version prefix — tags are plain semver (e.g. 1.2.3, not v1.2.3).
+prefix = ""
+
+# Version to use when no previous release tag exists in the repository.
+initial_version = "0.1.0"
+
+# Allow contributors to override the calculated bump via PR comment commands
+# (e.g. !set-version 1.0.0 or !release).
+allow_override = true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Release pull request
+# ─────────────────────────────────────────────────────────────────────────────
+
+[release_pr]
+# Title follows conventional commit format so merge-warden's title policy passes.
+title_template = "chore(release): prepare version {version}"
+
+# Disable automatic manifest detection: the root Cargo.toml is a workspace
+# manifest and the version lives under [workspace.package], not [package],
+# so auto-detection would pick up the wrong key.
+auto_detect_manifests = false
+
+[[release_pr.manifest_files]]
+path = "Cargo.toml"
+format = "toml"
+version_key = "workspace.package.version"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Changelog
+# ─────────────────────────────────────────────────────────────────────────────
+
+[changelog]
+include_authors = true
+include_commit_links = true
+include_pr_links = true
+group_by = "type"
+
+# Exclude commits that do not follow the conventional commit format.
+filter_unconventional = true
+
+# Exclude the release-prep commits themselves from the changelog.
+[[changelog.commit_parsers]]
+message = "^chore\\(release\\): prepare"
+skip = true
+
+[[changelog.commit_parsers]]
+message = "^feat"
+group = "🚀 Features"
+
+[[changelog.commit_parsers]]
+message = "^fix"
+group = "🐛 Bug Fixes"
+
+[[changelog.commit_parsers]]
+message = "^docs"
+group = "📚 Documentation"
+
+[[changelog.commit_parsers]]
+message = "^perf"
+group = "⚡ Performance"
+
+[[changelog.commit_parsers]]
+message = "^refactor"
+group = "🔨 Refactoring"
+
+[[changelog.commit_parsers]]
+message = "^test"
+group = "🧪 Tests"
+
+[[changelog.commit_parsers]]
+message = "^ci|^chore|^build"
+group = "🔧 Maintenance"
