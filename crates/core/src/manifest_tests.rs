@@ -187,10 +187,19 @@ fn detect_standard_manifests_empty_list_returns_empty() {
 #[test]
 fn detect_standard_manifests_cargo_toml_detected() {
     let result = detect_standard_manifests(&["Cargo.toml"]);
-    assert_eq!(result.len(), 1);
+    assert_eq!(
+        result.len(),
+        2,
+        "root Cargo.toml should produce two entries (workspace + package)"
+    );
+    // First entry: workspace root key
     assert_eq!(result[0].path, "Cargo.toml");
     assert_eq!(result[0].format, ManifestFormat::Toml);
-    assert_eq!(result[0].version_key, "package.version");
+    assert_eq!(result[0].version_key, "workspace.package.version");
+    // Second entry: plain package key
+    assert_eq!(result[1].path, "Cargo.toml");
+    assert_eq!(result[1].format, ManifestFormat::Toml);
+    assert_eq!(result[1].version_key, "package.version");
 }
 
 #[test]
@@ -234,10 +243,90 @@ fn detect_standard_manifests_unknown_file_not_detected() {
 }
 
 #[test]
+fn detect_standard_manifests_member_cargo_toml_detected() {
+    let result = detect_standard_manifests(&["crates/my-crate/Cargo.toml"]);
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].path, "crates/my-crate/Cargo.toml");
+    assert_eq!(result[0].format, ManifestFormat::Toml);
+    assert_eq!(result[0].version_key, "package.version");
+}
+
+#[test]
+fn detect_standard_manifests_root_and_member_cargo_tomls() {
+    let result = detect_standard_manifests(&[
+        "Cargo.toml",
+        "crates/foo/Cargo.toml",
+        "crates/bar/Cargo.toml",
+    ]);
+    // root → 2, foo → 1, bar → 1 = 4 total
+    assert_eq!(result.len(), 4);
+    let root: Vec<&ManifestFileConfig> = result.iter().filter(|m| m.path == "Cargo.toml").collect();
+    assert_eq!(root.len(), 2);
+    let root_keys: Vec<&str> = root.iter().map(|m| m.version_key.as_str()).collect();
+    assert!(
+        root_keys.contains(&"workspace.package.version"),
+        "workspace key must be present for root"
+    );
+    assert!(
+        root_keys.contains(&"package.version"),
+        "package key must be present for root"
+    );
+    let members: Vec<&ManifestFileConfig> =
+        result.iter().filter(|m| m.path != "Cargo.toml").collect();
+    assert_eq!(members.len(), 2);
+    assert!(members.iter().all(|m| m.version_key == "package.version"));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// update_manifest_content — TOML workspace support
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn update_manifest_content_toml_replaces_workspace_package_version() {
+    let content = "[workspace.package]\nversion = \"0.1.0\"\n";
+    let result = update_manifest_content(
+        content,
+        &ManifestFormat::Toml,
+        "workspace.package.version",
+        "2.0.0",
+    );
+    assert!(
+        result.is_ok(),
+        "workspace.package.version update should succeed: {:?}",
+        result
+    );
+    let updated = result.unwrap();
+    assert!(
+        updated.contains("2.0.0"),
+        "updated content should contain the new version"
+    );
+    assert!(
+        !updated.contains("0.1.0"),
+        "updated content should not contain the old version"
+    );
+}
+
+#[test]
+fn update_manifest_content_toml_workspace_inherited_returns_error() {
+    let content = "[package]\nname = \"my-crate\"\nversion.workspace = true\n";
+    let result =
+        update_manifest_content(content, &ManifestFormat::Toml, "package.version", "1.0.0");
+    assert!(
+        result.is_err(),
+        "workspace-inherited version should return an error"
+    );
+    let msg = format!("{:?}", result.unwrap_err());
+    assert!(
+        msg.contains("workspace inheritance"),
+        "error message should mention workspace inheritance, got: {msg}"
+    );
+}
+
+#[test]
 fn detect_standard_manifests_multiple_files_all_detected() {
     let result = detect_standard_manifests(&["Cargo.toml", "package.json", "composer.json"]);
-    // Cargo.toml → 1, package.json → 1, composer.json → 1 = 3 total
-    assert_eq!(result.len(), 3);
+    // Cargo.toml → 2 (workspace + package), package.json → 1, composer.json → 1 = 4 total
+    assert_eq!(result.len(), 4);
     let paths: Vec<&str> = result.iter().map(|m| m.path.as_str()).collect();
     assert!(paths.contains(&"Cargo.toml"));
     assert!(paths.contains(&"package.json"));

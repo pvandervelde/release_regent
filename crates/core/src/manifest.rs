@@ -14,13 +14,26 @@
 //!
 //! Auto-detection recognises the following files out of the box:
 //!
-//! | Language       | File              | Format      | Key                     |
-//! |----------------|-------------------|-------------|-------------------------|
-//! | Rust           | `Cargo.toml`      | TOML        | `package.version`       |
-//! | Node.js / npm  | `package.json`    | JSON        | `version`               |
-//! | Python PEP 517 | `pyproject.toml`  | TOML        | `project.version`       |
-//! | Python / Poetry| `pyproject.toml`  | TOML        | `tool.poetry.version`   |
-//! | PHP / Composer | `composer.json`   | JSON        | `version`               |
+//! | Language       | File                      | Format      | Key                              |
+//! |----------------|---------------------------|-------------|----------------------------------|
+//! | Rust workspace | `Cargo.toml` (root)       | TOML        | `workspace.package.version`      |
+//! | Rust package   | `Cargo.toml` (root)       | TOML        | `package.version`                |
+//! | Rust member    | `<member>/Cargo.toml`     | TOML        | `package.version`                |
+//! | Node.js / npm  | `package.json`            | JSON        | `version`                        |
+//! | Python PEP 517 | `pyproject.toml`          | TOML        | `project.version`                |
+//! | Python / Poetry| `pyproject.toml`          | TOML        | `tool.poetry.version`            |
+//! | PHP / Composer | `composer.json`           | JSON        | `version`                        |
+//!
+//! For the root `Cargo.toml`, **two** entries are returned — one for the
+//! workspace key (`workspace.package.version`) and one for the plain-package
+//! key (`package.version`).  The orchestrator tries both; the one whose key
+//! is absent fails with [`CoreError::InvalidInput`] and is skipped.
+//!
+//! When a member-crate `Cargo.toml` uses `version.workspace = true` (inheriting
+//! the version from the workspace root), `update_manifest_content` returns
+//! [`CoreError::InvalidInput`] with a message that explains the situation.
+//! The version for that crate is already set by updating `workspace.package.version`
+//! in the root `Cargo.toml`.
 //!
 //! The [`ManifestFormat::PlainText`] variant serves as an escape hatch for any
 //! other language (e.g. .NET `.csproj`, Ruby gemspec) via a user-supplied regex
@@ -175,13 +188,37 @@ pub fn detect_standard_manifests(existing_paths: &[&str]) -> Vec<ManifestFileCon
     let path_set: std::collections::HashSet<&str> = existing_paths.iter().copied().collect();
     let mut result = Vec::new();
 
-    // Rust
+    // Rust — root Cargo.toml.  Both a workspace root (`workspace.package.version`)
+    // and a plain package (`package.version`) are tried; the one whose key is
+    // absent produces a `CoreError::InvalidInput` that the orchestrator skips.
     if path_set.contains("Cargo.toml") {
+        result.push(ManifestFileConfig {
+            path: "Cargo.toml".to_string(),
+            format: ManifestFormat::Toml,
+            version_key: "workspace.package.version".to_string(),
+        });
         result.push(ManifestFileConfig {
             path: "Cargo.toml".to_string(),
             format: ManifestFormat::Toml,
             version_key: "package.version".to_string(),
         });
+    }
+
+    // Rust — workspace member crates.  Any path that ends with `/Cargo.toml`
+    // (or `\Cargo.toml` on Windows) and is not the repository root is treated
+    // as a member crate.  If the member uses `version.workspace = true` the
+    // update will fail with a clear error that the orchestrator logs and skips;
+    // the workspace root entry above is the single source of truth for those crates.
+    for &path in existing_paths {
+        if path != "Cargo.toml"
+            && (path.ends_with("/Cargo.toml") || path.ends_with("\\Cargo.toml"))
+        {
+            result.push(ManifestFileConfig {
+                path: path.to_string(),
+                format: ManifestFormat::Toml,
+                version_key: "package.version".to_string(),
+            });
+        }
     }
 
     // Node.js / npm
@@ -285,6 +322,25 @@ fn update_toml(content: &str, key: &str, version: &str) -> CoreResult<String> {
     })?;
 
     if !item.is_str() {
+        // Detect Cargo workspace version inheritance: `version.workspace = true`.
+        // When present, the version is controlled by `workspace.package.version`
+        // in the root Cargo.toml, so updating this field individually is wrong.
+        let is_workspace_inherited = item
+            .as_table()
+            .and_then(|t| t.get("workspace"))
+            .and_then(|v| v.as_value())
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if is_workspace_inherited {
+            return Err(CoreError::invalid_input(
+                "manifest",
+                format!(
+                    "TOML key '{key}' uses workspace inheritance \
+                     (version.workspace = true); update \
+                     workspace.package.version in the root Cargo.toml instead"
+                ),
+            ));
+        }
         return Err(CoreError::invalid_input(
             "manifest",
             format!("TOML key '{key}' is not a string value"),
