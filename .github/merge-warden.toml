@@ -55,7 +55,7 @@ xl = 700
 # ---------------------------------------------------------------------------
 [policies.pullRequests.wip]
 enforce_wip_blocking = true
-wip_label = "status: wip"
+wip_label = "status:wip"
 wip_title_patterns = ["WIP", "wip:", "[wip]", "draft:", "Draft:"]
 wip_description_patterns = []
 
