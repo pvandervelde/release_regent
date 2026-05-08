@@ -7,7 +7,7 @@
 # The server looks for a file named release-regent.toml (or .yaml) in
 # the CONFIG_DIR directory (default: /config inside the container).
 #
-# Full reference: docs/configuration-reference.md
+# Full reference: docs/user/reference/configuration.md
 # =============================================================================
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -134,17 +134,18 @@ Open `.release-regent.yml`. You will see something like this (abbreviated — th
 contains all available fields with their defaults):
 
 ```yaml
+core:
+  version_prefix: "v"
+  branches:
+    main: "main"
+
 versioning:
-  prefix: "v"
-  initial_version: "0.1.0"
+  strategy: "conventional"
+  allow_override: true
 
 release_pr:
-  title_template: "chore(release): prepare version {version}"
+  title_template: "chore(release): ${version}"
   draft: false
-
-changelog:
-  include_authors: true
-  group_by: "type"
 ```
 
 The defaults work for most repositories. You can leave the file as-is for now.
