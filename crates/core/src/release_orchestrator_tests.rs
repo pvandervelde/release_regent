@@ -1279,3 +1279,76 @@ fn test_extract_changelog_from_pr_body_empty_body_returns_empty() {
     let result = extract_changelog_from_pr_body("", "## Changelog");
     assert_eq!(result, "");
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// cargo_workspace_member_cargo_tomls — private helper unit tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Verify that malformed TOML input returns an empty vec without panicking.
+#[test]
+fn test_cargo_workspace_member_cargo_tomls_malformed_toml_returns_empty() {
+    let result = cargo_workspace_member_cargo_tomls("this is not toml @@@ {{{");
+    assert!(
+        result.is_empty(),
+        "malformed TOML should return empty vec, got {result:?}"
+    );
+}
+
+/// Verify that a `Cargo.toml` with no `[workspace]` table returns an empty vec.
+#[test]
+fn test_cargo_workspace_member_cargo_tomls_no_workspace_table_returns_empty() {
+    let content = "[package]\nname = \"myapp\"\nversion = \"0.1.0\"\n";
+    let result = cargo_workspace_member_cargo_tomls(content);
+    assert!(
+        result.is_empty(),
+        "no [workspace] table should return empty vec, got {result:?}"
+    );
+}
+
+/// Verify that a workspace without a `members` array returns an empty vec.
+#[test]
+fn test_cargo_workspace_member_cargo_tomls_no_members_returns_empty() {
+    let content = "[workspace]\nresolver = \"2\"\n";
+    let result = cargo_workspace_member_cargo_tomls(content);
+    assert!(
+        result.is_empty(),
+        "workspace without members should return empty vec, got {result:?}"
+    );
+}
+
+/// Verify that glob patterns in the workspace `members` array are filtered out.
+///
+/// Glob characters `*`, `?`, `[`, and `{` all disqualify an entry from being
+/// returned because filesystem enumeration is not available here.
+#[test]
+fn test_cargo_workspace_member_cargo_tomls_globs_are_filtered() {
+    let content =
+        "[workspace]\nmembers = [\"crates/*\", \"tools/?\", \"lib/[a-z]*\", \"ext/{a,b}\"]\n";
+    let result = cargo_workspace_member_cargo_tomls(content);
+    assert!(
+        result.is_empty(),
+        "all glob patterns should be filtered, got {result:?}"
+    );
+}
+
+/// Verify that explicit (non-glob) workspace member paths are returned as
+/// `<member>/Cargo.toml` strings, while glob entries in the same list are
+/// silently skipped.
+#[test]
+fn test_cargo_workspace_member_cargo_tomls_explicit_paths_returned() {
+    let content = "[workspace]\nmembers = [\"crates/foo\", \"crates/bar\", \"crates/*\"]\n";
+    let result = cargo_workspace_member_cargo_tomls(content);
+    assert_eq!(
+        result.len(),
+        2,
+        "should return exactly two explicit members (glob skipped), got {result:?}"
+    );
+    assert!(
+        result.contains(&"crates/foo/Cargo.toml".to_string()),
+        "missing crates/foo/Cargo.toml in {result:?}"
+    );
+    assert!(
+        result.contains(&"crates/bar/Cargo.toml".to_string()),
+        "missing crates/bar/Cargo.toml in {result:?}"
+    );
+}

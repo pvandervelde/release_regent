@@ -889,9 +889,6 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
 // Private helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Deduplicate a [`FileUpdate`] list by path, keeping the **last** entry for
-/// each unique path.
-///
 /// Parse a root `Cargo.toml` and return a `Cargo.toml` path for each
 /// workspace member that is listed as an **explicit path** (no glob characters).
 ///
@@ -927,19 +924,43 @@ fn cargo_workspace_member_cargo_tomls(workspace_cargo_toml: &str) -> Vec<String>
         .collect()
 }
 
+/// Deduplicate a [`FileUpdate`] list by path, keeping the **last** entry for
+/// each unique path.
+///
 /// `detect_standard_manifests` may produce two configs for the same file (e.g.
 /// both `project.version` and `tool.poetry.version` for `pyproject.toml`).
 /// Passing duplicate paths to the Git Trees API results in silent data loss — the
 /// last blob silently wins.  This helper makes the last-writer-wins semantics
 /// explicit and predictable.
+///
+/// Emits a `warn!` log when duplicates are detected, because a mixed
+/// workspace+package root `Cargo.toml` (containing both `[workspace.package]`
+/// and `[package]`) will produce two entries for the same path; the warning
+/// helps operators distinguish an expected deduplication from an accidental one.
 fn dedup_file_updates_by_path(updates: Vec<FileUpdate>) -> Vec<FileUpdate> {
     let mut seen = std::collections::HashSet::new();
+    let mut duplicates: Vec<String> = Vec::new();
     let mut deduped: Vec<FileUpdate> = updates
         .into_iter()
         .rev()
-        .filter(|u| seen.insert(u.path.clone()))
+        .filter(|u| {
+            if seen.insert(u.path.clone()) {
+                true
+            } else {
+                duplicates.push(u.path.clone());
+                false
+            }
+        })
         .collect();
     deduped.reverse();
+    if !duplicates.is_empty() {
+        warn!(
+            paths = ?duplicates,
+            "Duplicate manifest paths detected; keeping last entry for each. \
+             For a mixed workspace+package root Cargo.toml, \
+             workspace.package.version takes precedence over package.version"
+        );
+    }
     deduped
 }
 

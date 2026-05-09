@@ -210,8 +210,7 @@ pub fn detect_standard_manifests(existing_paths: &[&str]) -> Vec<ManifestFileCon
     // update will fail with a clear error that the orchestrator logs and skips;
     // the workspace root entry above is the single source of truth for those crates.
     for &path in existing_paths {
-        if path != "Cargo.toml"
-            && (path.ends_with("/Cargo.toml") || path.ends_with("\\Cargo.toml"))
+        if path != "Cargo.toml" && (path.ends_with("/Cargo.toml") || path.ends_with("\\Cargo.toml"))
         {
             result.push(ManifestFileConfig {
                 path: path.to_string(),
@@ -322,7 +321,9 @@ fn update_toml(content: &str, key: &str, version: &str) -> CoreResult<String> {
     })?;
 
     if !item.is_str() {
-        // Detect Cargo workspace version inheritance: `version.workspace = true`.
+        // Detect Cargo workspace version inheritance in two syntactic forms:
+        // - dotted-key:   `version.workspace = true`           (Item::Table)
+        // - inline-table: `version = { workspace = true }`     (Item::Value::InlineTable)
         // When present, the version is controlled by `workspace.package.version`
         // in the root Cargo.toml, so updating this field individually is wrong.
         let is_workspace_inherited = item
@@ -330,13 +331,20 @@ fn update_toml(content: &str, key: &str, version: &str) -> CoreResult<String> {
             .and_then(|t| t.get("workspace"))
             .and_then(|v| v.as_value())
             .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+            .unwrap_or(false)
+            || item
+                .as_value()
+                .and_then(|v| v.as_inline_table())
+                .and_then(|t| t.get("workspace"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
         if is_workspace_inherited {
             return Err(CoreError::invalid_input(
                 "manifest",
                 format!(
                     "TOML key '{key}' uses workspace inheritance \
-                     (version.workspace = true); update \
+                     (`version.workspace = true` or \
+                     `version = {{ workspace = true }}`); update \
                      workspace.package.version in the root Cargo.toml instead"
                 ),
             ));
