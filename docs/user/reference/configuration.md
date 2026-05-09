@@ -15,14 +15,17 @@ following order:
 
 | File name | Format |
 | :--- | :--- |
-| `.release-regent.yml` | YAML |
-| `.release-regent.yaml` | YAML |
-| `release-regent.yml` | YAML |
 | `release-regent.yaml` | YAML |
-| `.release-regent.toml` | TOML |
+| `release-regent.yml` | YAML |
+| `release_regent.yaml` | YAML |
+| `release_regent.yml` | YAML |
 | `release-regent.toml` | TOML |
+| `release_regent.toml` | TOML |
+| `config.yaml` | YAML |
+| `config.yml` | YAML |
+| `config.toml` | TOML |
 
-**`rr init` creates `.release-regent.yml` (YAML) by default.** You can rename it or convert it
+**`rr init` creates `release-regent.yaml` (YAML) by default.** You can rename it or convert it
 to TOML at any time — the format is determined by the file extension.
 
 ## File structure
@@ -123,7 +126,7 @@ How the next version is calculated.
 | Value | Behaviour |
 | :--- | :--- |
 | `"conventional"` | Analyse commit messages using the [Conventional Commits](conventional-commits.md) standard |
-| `!external` | Delegate to an external command (see below) |
+| `external` (object — see below) | Delegate to an external command |
 
 ```yaml
 versioning:
@@ -132,15 +135,30 @@ versioning:
 
 #### External strategy
 
-When `strategy` is `!external`, the following fields are required or optional:
+`external` is a structured value, not a plain string. The format differs between YAML and TOML.
 
-```yaml
-versioning:
-  strategy: !external
-    command: "./scripts/calculate-version.sh"
-    env_vars: {}          # Optional: extra environment variables passed to the command
-    timeout_ms: 30000     # Optional: max execution time in milliseconds (default 30 000)
-```
+=== "YAML"
+
+    In YAML, use the `!external` tag on a mapping:
+
+    ```yaml
+    versioning:
+      strategy: !external
+        command: "./scripts/calculate-version.sh"
+        env_vars: {}          # Optional: extra environment variables passed to the command
+        timeout_ms: 30000     # Optional: max execution time in milliseconds (default 30 000)
+    ```
+
+=== "TOML"
+
+    In TOML, use a sub-table or inline table under `versioning.strategy.external`:
+
+    ```toml
+    [versioning.strategy.external]
+    command = "./scripts/calculate-version.sh"
+    env_vars = {}           # Optional: extra environment variables passed to the command
+    timeout_ms = 30000      # Optional: max execution time in milliseconds (default 30 000)
+    ```
 
 ### `versioning.allow_override`
 

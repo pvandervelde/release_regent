@@ -27,9 +27,14 @@ main = "main"
 # ─────────────────────────────────────────────────────────────────────────────
 
 [versioning]
-# How to calculate the next version.
-# Options: "conventional" (conventional commits) | "external" (custom command)
+# How to calculate the next version using conventional commits (default).
 strategy = "conventional"
+
+# To use an external command instead, replace the line above with a sub-table:
+# [versioning.strategy.external]
+# command = "./scripts/calculate-version.sh"
+# env_vars = {}
+# timeout_ms = 30000
 
 # Allow contributors to override the calculated bump via PR comments
 # (e.g. /override-bump minor).

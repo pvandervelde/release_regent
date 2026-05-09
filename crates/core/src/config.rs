@@ -91,9 +91,15 @@ impl Default for ErrorHandlingConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitHubIssueConfig {
     /// Labels to apply to issues
+    #[serde(default = "default_github_issue_labels")]
     pub labels: Vec<String>,
     /// Users to assign to issues
+    #[serde(default)]
     pub assignees: Vec<String>,
+}
+
+fn default_github_issue_labels() -> Vec<String> {
+    vec!["release-regent".to_string(), "bug".to_string()]
 }
 
 /// Notification configuration
@@ -284,7 +290,7 @@ pub struct WebhookConfig {
     /// Webhook URL
     pub url: String,
     /// Additional headers
-    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub headers: HashMap<String, String>,
 }
 

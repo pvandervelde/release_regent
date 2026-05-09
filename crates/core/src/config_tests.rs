@@ -183,3 +183,89 @@ fn test_from_versioning_strategy_external() {
         panic!("expected External variant");
     }
 }
+
+#[test]
+fn test_github_issue_config_partial_labels_only() {
+    // When a user provides `github_issue:` with only `labels`, `assignees` must
+    // default to `[]` rather than causing a deserialization error.
+    let yaml = r#"
+notifications:
+  strategy: "github_issue"
+  github_issue:
+    labels:
+      - "my-label"
+"#;
+
+    let config: ReleaseRegentConfig =
+        serde_yaml::from_str(yaml).expect("should deserialize with only labels");
+    let gh = config
+        .notifications
+        .github_issue
+        .expect("github_issue should be present");
+    assert_eq!(gh.labels, vec!["my-label"]);
+    assert!(gh.assignees.is_empty());
+}
+
+#[test]
+fn test_github_issue_config_partial_assignees_only() {
+    // When a user provides `github_issue:` with only `assignees`, `labels` must
+    // default to `["release-regent", "bug"]` rather than causing a deserialization error.
+    let yaml = r#"
+notifications:
+  strategy: "github_issue"
+  github_issue:
+    assignees:
+      - "alice"
+"#;
+
+    let config: ReleaseRegentConfig =
+        serde_yaml::from_str(yaml).expect("should deserialize with only assignees");
+    let gh = config
+        .notifications
+        .github_issue
+        .expect("github_issue should be present");
+    assert_eq!(gh.labels, vec!["release-regent", "bug"]);
+    assert_eq!(gh.assignees, vec!["alice"]);
+}
+
+#[test]
+fn test_webhook_config_without_headers() {
+    // When a user provides `webhook:` with only `url`, `headers` must default to
+    // an empty map rather than causing a deserialization error.
+    let yaml = r#"
+notifications:
+  strategy: "webhook"
+  webhook:
+    url: "https://hooks.example.com/release-regent"
+"#;
+
+    let config: ReleaseRegentConfig =
+        serde_yaml::from_str(yaml).expect("should deserialize without headers");
+    let webhook = config
+        .notifications
+        .webhook
+        .expect("webhook should be present");
+    assert_eq!(webhook.url, "https://hooks.example.com/release-regent");
+    assert!(webhook.headers.is_empty());
+}
+
+#[test]
+fn test_webhook_config_headers_round_trip() {
+    // headers must survive a serialize → deserialize round-trip.
+    // skip_serializing_if suppresses empty maps on serialisation, but adding
+    // #[serde(default)] ensures an absent key deserialises to an empty map.
+    let yaml = r#"
+notifications:
+  strategy: "webhook"
+  webhook:
+    url: "https://hooks.example.com/release-regent"
+"#;
+
+    let config: ReleaseRegentConfig = serde_yaml::from_str(yaml).unwrap();
+    let serialized = serde_yaml::to_string(&config).unwrap();
+    // `headers` is omitted when empty (skip_serializing_if)
+    assert!(!serialized.contains("headers"));
+    // Re-loading must not fail even though `headers` is absent in the YAML
+    let reloaded: ReleaseRegentConfig = serde_yaml::from_str(&serialized).unwrap();
+    assert!(reloaded.notifications.webhook.unwrap().headers.is_empty());
+}
