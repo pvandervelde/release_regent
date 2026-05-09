@@ -516,3 +516,360 @@ the testing crate) covering at minimum:
 | Search with `label:rr:override-major` | `search_pull_requests` | Filtered by label |
 | Search `is:open label:rr:override-minor` | `search_pull_requests` | Filtered by state AND label |
 | Failure simulation | all new methods | `CoreError::Network` |
+
+---
+
+# Interface Additions: `GitHubConfigurationProvider` — ADR-007 enterprise config hierarchy
+
+**Status**: Ready for implementation
+**ADR**: [ADR-007](../../adr/ADR-007-enterprise-config-hierarchy.md)
+**Layer**: Config-provider crate — `crates/config_provider/src/github_provider.rs`
+
+---
+
+## Overview
+
+`GitHubConfigurationProvider` resolves configuration across five levels in order:
+
+1. Built-in defaults (`ReleaseRegentConfig::default()`)
+2. App-level — local `CONFIG_DIR/release-regent.yml` (via `FileConfigurationProvider`)
+3. Global policy — `{org}/.release-regent/global.toml` (metadata repo, GitHub API)
+4. Group policy — `{org}/.release-regent/groups/{group}.toml` (metadata repo, conditional)
+5. Repository config — `.release-regent.yml` in target repo root (GitHub API)
+
+Each level can lock specific policy fields, preventing lower levels from overriding them.
+
+---
+
+## 1. `ReleaseRegentConfig` additions
+
+**File**: `crates/core/src/config.rs`
+
+```rust
+/// Repository group name declared by the repository itself.
+///
+/// When set in a repository dotfile, the provider fetches the corresponding
+/// group policy from `{org}/.release-regent/groups/{group}.toml`.
+///
+/// Ignored (with `warn!`) if present in global or group policy files.
+#[serde(default)]
+pub group: Option<String>,
+
+/// Field paths that cannot be overridden at lower configuration levels.
+///
+/// Only valid in global policy and group policy files. Silently ignored
+/// (with `warn!`) if present in repository dotfiles.
+///
+/// Each entry is a dotted field path such as `"versioning.strategy"`.
+/// Only policy fields are lockable; see ADR-007 for the complete list.
+/// Non-lockable paths are silently dropped with `warn!`.
+#[serde(default)]
+pub locked_fields: Vec<String>,
+```
+
+---
+
+## 2. `ConfigLocks` internal type
+
+**File**: `crates/config_provider/src/github_provider.rs` (internal, not exported)
+
+```rust
+/// Accumulated set of locked field paths through the config merge pipeline.
+///
+/// Built up as each level (global, then group) is processed.
+/// Once a field is added it cannot be removed by a lower level.
+#[derive(Debug, Default)]
+struct ConfigLocks {
+    locked: std::collections::HashSet<String>,
+}
+
+/// Field paths of all lockable policy fields.
+/// Non-policy paths are filtered out of `locked_fields` with `warn!`.
+const LOCKABLE_FIELDS: &[&str] = &[
+    "versioning.strategy",
+    "versioning.allow_override",
+    "releases.draft",
+    "releases.prerelease",
+    "releases.generate_notes",
+    "core.branches.main",
+    "core.version_prefix",
+    "error_handling.max_retries",
+    "error_handling.backoff_multiplier",
+    "error_handling.initial_delay_ms",
+];
+
+impl ConfigLocks {
+    /// Add entries from a `locked_fields` list, filtering non-lockable paths.
+    /// Emits `warn!` for non-lockable paths and for already-locked paths.
+    fn extend_from(&mut self, locked_fields: &[String], source_level: &str) {
+        for path in locked_fields {
+            if !LOCKABLE_FIELDS.contains(&path.as_str()) {
+                tracing::warn!(
+                    path = %path, level = %source_level,
+                    "locked_fields entry is not a lockable policy field; ignoring"
+                );
+                continue;
+            }
+            self.locked.insert(path.clone());
+        }
+    }
+
+    fn is_locked(&self, path: &str) -> bool {
+        self.locked.contains(path)
+    }
+}
+```
+
+---
+
+## 3. `LoadOptions` extensions
+
+**File**: `crates/core/src/traits/configuration_provider.rs`
+
+Two new fields: `installation_id: Option<u64>` and `default_branch: Option<String>`.
+Callers in `crates/core/src/lib.rs` are unchanged.
+
+---
+
+## 4. `GitHubConfigurationProvider` struct
+
+**File**: `crates/config_provider/src/github_provider.rs`
+
+```rust
+pub struct GitHubConfigurationProvider<G>
+where
+    G: GitHubOperations + Clone + Send + Sync,
+{
+    /// App-level baseline; also used as CLI fallback for all levels.
+    inner: FileConfigurationProvider,
+    /// Unscoped GitHub client; scoped per call via `scoped_to`.
+    github: G,
+    /// org → installation_id. Never expires (stable for process lifetime).
+    metadata_installation_cache: tokio::sync::RwLock<HashMap<String, u64>>,
+    /// org → (config, cached_at). TTL: 600 s.
+    global_cache: tokio::sync::RwLock<HashMap<String, (ReleaseRegentConfig, Instant)>>,
+    /// "{org}/{group}" → (config, cached_at). TTL: 300 s.
+    group_cache: tokio::sync::RwLock<HashMap<String, (ReleaseRegentConfig, Instant)>>,
+    /// "{owner}/{repo}" → (config, cached_at). TTL: 300 s.
+    repo_cache: tokio::sync::RwLock<HashMap<String, (ReleaseRegentConfig, Instant)>>,
+    validator: ConfigValidator,
+}
+
+impl<G: GitHubOperations + Clone + Send + Sync> GitHubConfigurationProvider<G> {
+    pub fn new(inner: FileConfigurationProvider, github: G) -> Self {
+        Self {
+            inner, github,
+            metadata_installation_cache: Default::default(),
+            global_cache: Default::default(),
+            group_cache: Default::default(),
+            repo_cache: Default::default(),
+            validator: ConfigValidator::new(),
+        }
+    }
+}
+```
+
+---
+
+## 5. `get_merged_config` implementation (primary entry point)
+
+```rust
+async fn get_merged_config(
+    &self, owner: &str, repo: &str, options: LoadOptions,
+) -> CoreResult<ReleaseRegentConfig> {
+    // CLI / no-GitHub fallback
+    if options.installation_id.is_none() {
+        return self.inner.get_merged_config(owner, repo, options).await;
+    }
+    let installation_id = options.installation_id.unwrap();
+    let default_branch = options.default_branch.as_deref().unwrap_or("main");
+
+    let mut result = ReleaseRegentConfig::default();
+    let mut locks = ConfigLocks::default();
+
+    // Level 2: App-level (local disk)
+    result = merge_config(result, self.inner.load_global_config(options.clone()).await?);
+
+    // Levels 3 & 4: Metadata repo
+    match self.resolve_metadata_installation(owner).await {
+        Some(meta_id) => {
+            let meta = self.github.scoped_to(meta_id);
+
+            // Level 3: Global policy
+            match self.load_global_policy(owner, &meta).await {
+                Ok(Some(g)) => {
+                    locks.extend_from(&g.locked_fields, "global");
+                    result = merge_config_with_locks(result, g, &locks);
+                }
+                Ok(None) => {}
+                Err(e) if e.is_config_error() => return Err(e),
+                Err(e) => tracing::warn!(org=%owner, error=%e,
+                    "Metadata repo unreachable; skipping global+group levels"),
+            }
+
+            // Peek repo dotfile to discover group name (fetched once, applied at level 5)
+            let repo_result = self.fetch_repo_dotfile(owner, repo, default_branch, &meta).await;
+
+            // Level 4: Group policy
+            let group = repo_result.as_ref().ok()
+                .and_then(Option::as_ref)
+                .and_then(|c: &ReleaseRegentConfig| c.group.clone());
+
+            if let Some(ref g) = group {
+                match self.load_group_policy(owner, g, &meta).await {
+                    Ok(Some(gc)) => {
+                        locks.extend_from(&gc.locked_fields, &format!("group:{g}"));
+                        result = merge_config_with_locks(result, gc, &locks);
+                    }
+                    Ok(None) => tracing::warn!(org=%owner, group=%g,
+                        "Group '{g}' declared in {owner}/{repo} but no group config found; skipping"),
+                    Err(e) if e.is_config_error() => return Err(e),
+                    Err(e) => tracing::warn!(group=%g, error=%e,
+                        "Failed to load group policy; skipping group level"),
+                }
+            }
+
+            // Level 5: Repo dotfile (using already-fetched result)
+            match repo_result? {
+                Some(mut rc) => {
+                    if !rc.locked_fields.is_empty() {
+                        tracing::warn!(repo=%format!("{owner}/{repo}"),
+                            "locked_fields in repository dotfile is ignored");
+                        rc.locked_fields.clear();
+                    }
+                    result = merge_config_with_locks(result, rc, &locks);
+                }
+                None => {}
+            }
+        }
+        None => {
+            tracing::warn!(org=%owner,
+                "Metadata repo {owner}/.release-regent not accessible; \
+                 using app-level as baseline");
+            let scoped = self.github.scoped_to(installation_id);
+            if let Some(rc) = self.fetch_repo_dotfile(owner, repo, default_branch, &scoped).await? {
+                result = merge_config_with_locks(result, rc, &locks);
+            }
+        }
+    }
+
+    Ok(result)
+}
+```
+
+---
+
+## 6. Internal helpers summary
+
+| Method | Fetches from | Probe paths | Cache | TTL |
+|---|---|---|---|---|
+| `resolve_metadata_installation(org)` | GitHub App API | N/A (installation lookup) | `metadata_installation_cache` | ∞ |
+| `load_global_policy(org, client)` | `{org}/.release-regent` | `global.toml`, `global.yml`, `global.yaml` | `global_cache[org]` | 600 s |
+| `load_group_policy(org, group, client)` | `{org}/.release-regent` | `groups/{group}.toml/.yml/.yaml` | `group_cache["{org}/{group}"]` | 300 s |
+| `fetch_repo_dotfile(owner, repo, branch, client)` | `{owner}/{repo}` | `.release-regent.yml/.yaml/.toml` | `repo_cache["{owner}/{repo}"]` | 300 s |
+
+All fetch helpers return `Ok(None)` for absent files, `Err(CoreError::Config)` for invalid
+content, and `Err(CoreError::GitHub)` for API errors. Parse/validation errors evict the
+relevant cache entry immediately.
+
+---
+
+## 7. `merge_config_with_locks` contract
+
+```rust
+/// Merge `incoming` into `base`, skipping fields whose dotted path is in `locks`.
+///
+/// For each locked field where `incoming` differs from `base`:
+///   - Keep `base` value (the locked value)
+///   - Emit `warn!` identifying the field path, locked value, and override value
+///
+/// Template and notification fields (never lockable) are always overridden.
+/// The mapping from struct fields to dotted paths is explicit and must be
+/// maintained in sync with `LOCKABLE_FIELDS`.
+fn merge_config_with_locks(
+    base: ReleaseRegentConfig,
+    incoming: ReleaseRegentConfig,
+    locks: &ConfigLocks,
+) -> ReleaseRegentConfig { /* … */ }
+
+/// Merge without lock checks (app-level baseline; no locks active yet).
+fn merge_config(base: ReleaseRegentConfig, incoming: ReleaseRegentConfig)
+    -> ReleaseRegentConfig { /* … */ }
+```
+
+---
+
+## 8. Server wiring changes
+
+**File**: `crates/server/src/main.rs`
+
+```rust
+// Type alias — shape unchanged
+type ServerProcessor = release_regent_core::ReleaseRegentProcessor<
+    release_regent_github_client::GitHubClient,
+    release_regent_config_provider::GitHubConfigurationProvider<
+        release_regent_github_client::GitHubClient,
+    >,
+    Arc<dyn VersionCalculator + Send + Sync>,
+>;
+
+// build_server_processor — no TTL parameter now; use GitHubConfigurationProvider::new
+let config_provider = release_regent_config_provider::GitHubConfigurationProvider::new(
+    file_provider,
+    github_client.clone(),
+);
+```
+
+---
+
+## 9. Mock seeding (test helpers)
+
+```rust
+// Seed metadata repo installation
+mock.with_installation_id("myorg", ".release-regent", 99001)
+
+// Seed global policy
+.with_file_content("myorg", ".release-regent", "global.toml", "main", r#"
+    [versioning]
+    strategy = "conventional"
+    locked_fields = ["versioning.strategy"]
+"#)
+
+// Seed group policy
+.with_file_content("myorg", ".release-regent", "groups/platform.toml", "main", r#"
+    [releases]
+    draft = true
+    locked_fields = ["releases.draft"]
+"#)
+
+// Seed repo dotfile
+.with_file_content("myorg", "platform-api", ".release-regent.yml", "main", r#"
+    group = "platform"
+    [release_pr]
+    title_template = "chore(release): ${version} [platform-api]"
+"#)
+```
+
+---
+
+## 10. Test matrix for `GitHubConfigurationProvider`
+
+| Scenario | Metadata repo | `global.toml` | Group declared | Group file | Repo dotfile | Expected result |
+|---|---|---|---|---|---|---|
+| No metadata access | ✗ | — | No | — | Valid | App + repo dotfile only |
+| Global only | ✓ | Valid | No | — | Absent | App + global |
+| Global + group | ✓ | Valid | Yes | Valid | Absent | App + global + group |
+| Full 5-level stack | ✓ | Valid | Yes | Valid | Valid | All 5 levels merged |
+| Global locks field; group overrides | ✓ | Locks `versioning.strategy` | Yes | Overrides it | Any | `warn!`; global value wins |
+| Group locks field; repo overrides | ✓ | Valid | Yes | Locks `releases.draft` | Overrides it | `warn!`; group value wins |
+| `locked_fields` in repo dotfile | ✓ | Valid | No | — | Contains `locked_fields` | `warn!`; ignored |
+| Non-lockable in `locked_fields` | ✓ | `locked_fields = ["release_pr.title_template"]` | No | — | Valid | `warn!`; field not locked |
+| Group declared; group file absent | ✓ | Valid | "missing" | Absent | Valid | `warn!`; skip group; proceed |
+| `global.toml` invalid | ✓ | Invalid | No | — | Valid | `Err(CoreError::Config)` |
+| Group file invalid | ✓ | Valid | Yes | Invalid | Valid | `Err(CoreError::Config)` |
+| Repo dotfile invalid | ✓ | Valid | No | — | Invalid | `Err(CoreError::Config)` |
+| API 503 fetching global | ✓ | API 503 | No | — | Valid | `warn!`; use app + repo only |
+| Global cache hit (< 600 s) | ✓ | Cached | No | — | Valid | No API call for global |
+| Group cache hit (< 300 s) | ✓ | Valid | Yes | Cached | Valid | No API call for group |
+| Repo cache hit (< 300 s) | ✓ | Valid | No | — | Cached | No API call for repo |
+| CLI mode (`installation_id = None`) | — | — | — | — | — | Delegate entirely to `FileConfigurationProvider` |

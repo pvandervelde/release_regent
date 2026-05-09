@@ -1,7 +1,7 @@
 # Functional Requirements
 
-**Last Updated**: 2025-07-19
-**Status**: Complete
+**Last Updated**: 2026-05-09
+**Status**: Updated — FR-6 revised and FR-8 added for enterprise config hierarchy (ADR-007)
 
 ## Core Functional Requirements
 
@@ -125,26 +125,70 @@
 
 ### FR-6: Configuration Management
 
-**Requirement**: The system must support flexible configuration at application and repository levels.
+**Requirement**: The system must support flexible, enterprise-grade configuration across
+five hierarchical levels with per-field policy locks.
 
 **Details**:
 
-- Load application-wide default configuration
-- Override with repository-specific configuration
-- Validate configuration before processing
-- Support template customization for PR titles and bodies
-- Provide clear error messages for invalid configuration
+Configuration is resolved in this order (later levels override earlier for unlocked fields):
+
+1. **Built-in defaults** — hard-coded in `ReleaseRegentConfig::default()`.
+2. **App-level** — `CONFIG_DIR/release-regent.yml` on local disk. Always present;
+   acts as bootstrap and fallback if higher GitHub-sourced levels are unavailable.
+3. **Global policy** — `{org}/.release-regent/global.toml` in the metadata repository.
+   Org-wide defaults and field locks set by platform teams. Optional.
+4. **Group policy** — `{org}/.release-regent/groups/{group}.toml` in the metadata
+   repository. Applies to all repositories that declare `group = "{group}"` in their
+   dotfile. Optional.
+5. **Repository config** — `.release-regent.yml` (or `.yaml` / `.toml`) in the target
+   repository root on its default branch. Optional; fetched via GitHub API at
+   event-processing time.
+
+**Per-field locks**:
+
+- Global and group policy files may include `locked_fields = ["versioning.strategy", ...]`.
+- A locked field cannot be overridden by any lower level.
+- Only designated policy fields are lockable (see [ADR-007](../../adr/ADR-007-enterprise-config-hierarchy.md)).
+  Template and notification fields are never lockable.
+- Locks accumulate downward; a lower level cannot remove a lock set above it.
+- A lower level specifying a value for a locked field is silently ignored with a
+  `warn!`; the event is **not** failed.
+- `locked_fields` in repository dotfiles is silently ignored with a `warn!`.
+
+**Group membership**:
+
+- A repository declares its group with a top-level `group = "name"` field in its dotfile.
+- The provider fetches the corresponding group policy file from the metadata repository.
+- A declared group with no corresponding group policy file causes a `warn!` and skips
+  the group level (not an error).
+
+**Fallback behaviour**:
+
+- If the metadata repository is unreachable (App not installed, API error), the provider
+  falls back to app-level as the effective top of the hierarchy; a `warn!` is emitted.
+- Absent files at any optional level are not errors; that level is silently skipped.
+- Present but invalid files (parse error or schema violation) are hard failures.
 
 **Acceptance Criteria**:
 
-- Configuration loaded from YAML files
-- Repository config overrides application defaults
-- Template variables supported: `{version}`, `{version_tag}`, `{changelog}`, `{commit_count}`, `{date}`
-- Configuration validation prevents runtime errors
-- Invalid configuration reports specific field errors with guidance
+- App-level config always loaded from `CONFIG_DIR/release-regent.yml` (required at startup).
+- Global policy fetched from `{org}/.release-regent/global.toml` via GitHub API when
+  the App is installed on the metadata repository.
+- Group policy fetched from `{org}/.release-regent/groups/{group}.toml` when repo
+  declares `group`; absence of the group file is a warn-and-skip, not an error.
+- Repository dotfile fetched in probe order: `.release-regent.yml` → `.release-regent.yaml`
+  → `.release-regent.toml`; absence is not an error.
+- Locked fields at global/group level cannot be overridden by lower levels; violation
+  causes a `warn!`, not a failure.
+- Template variables supported: `{version}`, `{version_tag}`, `{changelog}`,
+  `{commit_count}`, `{date}`.
+- Separate in-memory caches per level (global: 600 s, group and repo: 300 s).
+- Parse or schema errors at any level fail the event; cache entry is evicted immediately.
+- CLI fallback: when `LoadOptions.installation_id` is `None`, all GitHub-sourced levels
+  are skipped; only app-level (local file) is used.
 
 **Priority**: High
-**Status**: ✅ Complete
+**Status**: 🚧 In Progress (see [ADR-007](../../adr/ADR-007-enterprise-config-hierarchy.md))
 
 ### FR-7: CLI Operations
 
@@ -168,6 +212,42 @@
 
 **Priority**: Medium
 **Status**: ✅ Complete
+
+### FR-8: Enterprise Configuration Governance
+
+**Requirement**: The system must support organisation-level policy enforcement through
+a metadata repository, allowing platform teams to set non-overridable defaults for all
+repositories in an organisation.
+
+**Details**:
+
+- Metadata repository (`{org}/.release-regent`) holds global and group policy files.
+- Platform teams manage the metadata repository through standard git workflows (PRs,
+  branch protection, CODEOWNERS).
+- Release Regent does not enforce authorship of changes to the metadata repository;
+  this is delegated to GitHub branch protection rules.
+- Repository groups allow shared policy for sets of related repositories without
+  duplicating configuration in each repository.
+- Policy locks allow platform teams to prevent individual repositories from changing
+  specific settings (e.g. versioning strategy, release draft status).
+
+**Acceptance Criteria**:
+
+- Global policy changes in the metadata repository take effect within 10 minutes
+  (600-second TTL) without server restart.
+- Group policy changes take effect within 5 minutes (300-second TTL) without server restart.
+- A repository can change its group membership by updating `group` in its dotfile;
+  the change takes effect within 5 minutes of the dotfile being merged.
+- An invalid metadata repository config (global or group) fails events for affected
+  repositories with a clear error identifying the offending file and field.
+- Locked fields in global policy cannot be overridden by group or repository config;
+  violations cause `warn!` logs identifying the repository and field.
+- `locked_fields` lists in repository dotfiles are silently ignored with `warn!`.
+- Non-lockable fields (templates, notifications) in any `locked_fields` list are
+  silently ignored with `warn!`.
+
+**Priority**: High
+**Status**: 🚧 In Progress (see [ADR-007](../../adr/ADR-007-enterprise-config-hierarchy.md))
 
 ## Data Processing Requirements
 

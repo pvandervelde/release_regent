@@ -1,7 +1,7 @@
 # System Architecture Overview
 
-**Last Updated**: 2026-03-16
-**Status**: Updated — see ADR-002
+**Last Updated**: 2026-05-09
+**Status**: Updated — 5-level enterprise config hierarchy added (ADR-007)
 
 ## High-Level Architecture
 
@@ -48,17 +48,21 @@ C4Container
     Container(function, "Server", "Docker / OCI container", "Long-running Axum HTTP server")
     Container(core, "Core Engine", "Rust", "Business logic and workflow orchestration")
     Container(github_client, "GitHub Client", "Rust", "GitHub API integration")
-    Container(config, "Configuration", "YAML", "Application and repository settings")
+    ContainerDb(app_config, "App Config", "YAML / TOML", "Bootstrap defaults in CONFIG_DIR (local disk)")
 
-    Container_Ext(github_api, "GitHub API", "REST API", "Repository operations")
+    Container_Ext(github_api, "GitHub API", "REST API", "Repository operations + config file fetch")
     Container_Ext(github_webhooks, "GitHub Webhooks", "HTTP", "Event notifications")
-    ContainerDb_Ext(secrets, "Secret Store", "Key Vault/Secrets Manager", "Credentials storage")
+    ContainerDb_Ext(metadata_repo, "Metadata Repo", "{org}/.release-regent", "Global policy + group policies (GitHub)")
+    ContainerDb_Ext(repo_config, "Repo Dotfile", ".release-regent.yml", "Per-repository config in each managed repo")
+    ContainerDb_Ext(secrets, "Secret Store", "Key Vault / Secrets Manager", "Credentials storage")
 
     Rel(github_webhooks, function, "POST webhook events", "HTTPS")
     Rel(function, core, "Invokes", "Function call")
     Rel(core, github_client, "Uses", "Function call")
     Rel(github_client, github_api, "API calls", "HTTPS")
-    Rel(core, config, "Reads", "File system")
+    Rel(core, app_config, "Reads bootstrap defaults", "File system")
+    Rel(github_client, metadata_repo, "Fetches global + group policy", "HTTPS (Contents API)")
+    Rel(github_client, repo_config, "Fetches repo dotfile", "HTTPS (Contents API)")
     Rel(github_client, secrets, "Retrieves tokens", "HTTPS")
 ```
 
@@ -164,7 +168,71 @@ flowchart TD
 - Handle rate limiting and retries
 - Manage installation tokens
 
-#### 7. Version Calculator
+#### 7. Configuration Provider
+
+**Purpose**: Load and merge configuration from five levels into a single resolved config
+**Location**: `crates/config_provider/src/`
+**See**: [ADR-007](../../adr/ADR-007-enterprise-config-hierarchy.md)
+
+**Implementations**:
+
+- `FileConfigurationProvider` — reads config from local files in `CONFIG_DIR`. Used as
+  the app-level bootstrap / fallback and as the CLI fallback for all levels.
+- `GitHubConfigurationProvider` — **server deployment**. Orchestrates the full five-level
+  merge, fetching global policy and group policy from the metadata repository
+  (`{org}/.release-regent`) and the repo dotfile from the target repository via
+  `GitHubOperations::get_file_content`. Wraps `FileConfigurationProvider` for the
+  app-level baseline.
+
+**Configuration hierarchy** (later levels override earlier ones for unlocked fields):
+
+| # | Level | Source | Required? |
+|---|---|---|---|
+| 1 | Built-in defaults | Hard-coded `ReleaseRegentConfig::default()` | Always |
+| 2 | App-level | `CONFIG_DIR/release-regent.yml` — local disk | Required (bootstrap + fallback) |
+| 3 | Global policy | `{org}/.release-regent/global.toml` — metadata repo | Optional |
+| 4 | Group policy | `{org}/.release-regent/groups/{group}.toml` — metadata repo | Optional |
+| 5 | Repository config | `.release-regent.yml` in target repo root | Optional |
+
+**Per-field locks**:
+
+Global and group policy files may include a `locked_fields` list of dotted field paths
+(e.g. `["versioning.strategy", "releases.draft"]`). A locked field cannot be overridden
+by any lower level. Only policy fields can be locked (templates and notification fields
+are never lockable). Locks accumulate downward and cannot be removed by a lower level.
+A lower level specifying a value for a locked field results in a `warn!`; the event is
+not failed.
+
+**Group membership**:
+
+Repositories declare their group via a top-level `group = "name"` field in the repo
+dotfile. The provider fetches `{org}/.release-regent/groups/{name}.toml` from the
+metadata repository. A declared group with no corresponding group file causes a `warn!`
+and skips the group level; it is not an error.
+
+**Key contracts**:
+
+- Absent at any level → skip that level silently; no error.
+- Present but invalid (parse or schema error) → hard fail the event.
+- Metadata repo unreachable (API error, App not installed) → warn and skip global +
+  group levels; app-level is the effective top.
+- `LoadOptions.installation_id` must be set by the processor so the provider can scope
+  the GitHub client for each fetch.
+- `LoadOptions.default_branch` should be populated from the webhook payload; falls back
+  to `"main"` when absent.
+
+**Caching**:
+
+| Level | Cache key | TTL |
+|---|---|---|
+| Global policy | `{org}` | 600 s |
+| Group policy | `{org}/{group}` | 300 s |
+| Repository config | `{owner}/{repo}` | 300 s |
+| Metadata installation ID | `{org}` | Permanent (process lifetime) |
+
+A parse or validation error evicts the corresponding cache entry immediately.
+
+#### 8. Version Calculator
 
 **Purpose**: Derive the next semantic version and changelog from commit history
 **Implementations**:

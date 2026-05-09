@@ -1,7 +1,7 @@
 # Behavioral Assertions
 
-**Last Updated**: 2025-07-19
-**Status**: Complete - Addresses Spec Feedback
+**Last Updated**: 2026-05-09
+**Status**: Updated — enterprise config hierarchy assertions added (ADR-007)
 
 ## Overview
 
@@ -484,3 +484,416 @@ Each behavioral assertion can be verified through:
 - Validate release metadata and notes
 
 This comprehensive set of behavioral assertions provides clear, testable specifications for Release Regent that address all the gaps identified in the spec feedback while maintaining implementation independence.
+
+## Repository Configuration Source Assertions
+
+These assertions define behaviour for `GitHubConfigurationProvider` — the component that
+resolves configuration across five levels. See
+[ADR-007](../../adr/ADR-007-enterprise-config-hierarchy.md) and
+[FR-6/FR-8](../requirements/functional-requirements.md).
+
+### Config File Resolution
+
+**BA-36**: A repository that contains `.release-regent.yml` in its root on the default
+branch must have that file used as its per-repository configuration, overriding global
+defaults.
+
+*Preconditions*: `.release-regent.yml` exists at the root of the default branch of
+`myorg/my-repo`; its content specifies `versioning.strategy = "external"`.
+
+*Sequence*: A merge event arrives for `myorg/my-repo`.
+
+*Expected*:
+
+- `get_file_content("myorg", "my-repo", ".release-regent.yml", default_branch)` is called.
+- The returned content is parsed as YAML.
+- `get_merged_config` returns a config with `versioning.strategy = External`.
+- The global default strategy is **not** used.
+
+**BA-37**: When none of `.release-regent.yml`, `.release-regent.yaml`, or
+`.release-regent.toml` exist in the repository root, the global defaults must be used
+without raising an error.
+
+*Preconditions*: None of the three probe paths return a file for `myorg/vanilla-repo`.
+
+*Expected*:
+
+- `get_file_content` is called for `.release-regent.yml`, then `.release-regent.yaml`,
+  then `.release-regent.toml` in that order; each returns `Ok(None)`.
+- `load_repository_config` returns `Ok(None)`.
+- `get_merged_config` returns the global config unchanged.
+- No error is propagated; the event is processed normally.
+
+**BA-38**: Probe order must be strictly: `.release-regent.yml` → `.release-regent.yaml`
+→ `.release-regent.toml`. The first file found wins; remaining probes are skipped.
+
+*Preconditions*: Both `.release-regent.yml` and `.release-regent.toml` exist in the repo.
+
+*Expected*:
+
+- `get_file_content` is called for `.release-regent.yml` and returns `Ok(Some(…))`.
+- `get_file_content` is **not** called for `.release-regent.yaml` or `.release-regent.toml`.
+- The `.release-regent.yml` content is used.
+
+**BA-39**: A repository dotfile with a parse error (invalid YAML/TOML) must fail the event
+with `CoreError::Config`; it must **not** silently fall back to global defaults.
+
+*Preconditions*: `.release-regent.yml` in `myorg/broken-repo` contains invalid YAML
+(e.g., `versioning: : bad`).
+
+*Expected*:
+
+- File content is fetched successfully.
+- Parsing fails.
+- `load_repository_config` returns `Err(CoreError::Config(…))`.
+- The event processing fails; the error includes the repository name and parse details.
+- No version calculation or PR operation is attempted.
+
+**BA-40**: A repository dotfile that fails schema validation (required field missing,
+value out of range) must fail the event with `CoreError::Config`, not fall back to
+global defaults.
+
+*Preconditions*: `.release-regent.yml` in `myorg/invalid-config-repo` is valid YAML but
+specifies an unknown versioning strategy (`versioning.strategy = "magic"`).
+
+*Expected*:
+
+- File is fetched and parsed successfully.
+- Validation fails.
+- `load_repository_config` returns `Err(CoreError::Config(…))`.
+- The event processing fails with a description of the validation error.
+
+### Error Handling
+
+**BA-41**: A non-404 GitHub API error during config file fetch (e.g., HTTP 503, network
+timeout) must propagate as `CoreError::GitHub` and fail the event. The standard retry
+policy applies.
+
+*Preconditions*: GitHub API returns HTTP 503 when fetching `.release-regent.yml`.
+
+*Expected*:
+
+- `get_file_content` returns `Err(CoreError::GitHub(…))`.
+- `load_repository_config` propagates the error.
+- The event fails and is eligible for retry (transient error category per error-handling spec).
+- The cache entry for `myorg/repo` is **not** updated.
+
+**BA-42**: A parse or validation error must invalidate any existing cache entry for the
+repository so that a corrected dotfile is picked up on the very next event.
+
+*Preconditions*: A valid cache entry exists for `myorg/my-repo` (from a previous event).
+Then the dotfile is changed to contain invalid YAML.
+
+*Sequence*: A new event arrives after the TTL has expired and the invalidated file is
+fetched.
+
+*Expected*:
+
+- The stale cache entry is not used after TTL expiry.
+- The new fetch sees the invalid YAML.
+- The event fails with `CoreError::Config`.
+- The cache entry for `myorg/my-repo` is cleared (not updated with the invalid result).
+- A subsequent event, once the YAML is fixed, fetches and caches the corrected config.
+
+### Caching
+
+**BA-43**: Within the 300-second TTL window, a second event for the same repository must
+use the cached config and must not issue a second `get_file_content` call.
+
+*Preconditions*: First event for `myorg/cached-repo` fetches and caches the config.
+Second event arrives 30 seconds later (within TTL).
+
+*Expected*:
+
+- `get_file_content` is called exactly once across both events.
+- Both events use identical configuration values.
+
+**BA-44**: After the 300-second TTL expires, the next event for that repository must
+re-fetch the dotfile via the GitHub API.
+
+*Preconditions*: Config was cached at T=0. Next event arrives at T=301.
+
+*Expected*:
+
+- `get_file_content` is called again at T=301.
+- If the file has changed since T=0, the new content is used.
+
+### `LoadOptions` Contract
+
+**BA-45**: When `LoadOptions.installation_id` is `None` (CLI mode), `load_repository_config`
+must not make any GitHub API call. It must fall back to searching `CONFIG_DIR` for a
+local file named `{owner}-{repo}.yaml` (or `.yml` / `.toml`).
+
+*Preconditions*: CLI invokes `get_merged_config("myorg", "my-repo", LoadOptions::default())`;
+no local file exists in `CONFIG_DIR`.
+
+*Expected*:
+
+- No `get_file_content` call is made.
+- `load_repository_config` returns `Ok(None)`.
+- Global defaults are used.
+
+**BA-46**: When `LoadOptions.installation_id` is `Some(id)`, the provider must scope the
+GitHub client to that installation before fetching the config file.
+
+*Preconditions*: Event for installation `42345` of `myorg/my-repo` triggers config load.
+
+*Expected*:
+
+- `github_client.scoped_to(42345)` is called before `get_file_content`.
+- `get_file_content` is called on the scoped client, not the root client.
+
+**BA-47**: When `LoadOptions.default_branch` is `None`, the provider must fall back to
+`"main"` as the ref for `get_file_content`.
+
+*Preconditions*: `LoadOptions { installation_id: Some(42345), default_branch: None, … }`.
+
+*Expected*:
+
+- `get_file_content(…, "main")` is called.
+
+*Note*: Callers should always populate `default_branch` from the webhook payload when
+available; this fallback exists only as a safety net.
+
+### App-Level Fallback
+
+**BA-48**: When no metadata repository is accessible for an org (App not installed,
+network error, or repository absent), the provider must use only the app-level config
+(local `CONFIG_DIR/release-regent.yml`) as the effective top of the hierarchy, emit a
+`warn!`, and continue processing the event.
+
+*Preconditions*: `myorg/.release-regent` does not exist or the App is not installed on it.
+
+*Expected*:
+
+- `get_installation_id_for_repo("myorg", ".release-regent")` returns an error or `None`.
+- A `warn!` is emitted identifying the org and reason.
+- The merge proceeds using only app-level + repo dotfile (if present).
+- The event is **not** failed.
+
+**BA-49**: The app-level config (local `CONFIG_DIR/release-regent.yml`) must always be
+loaded as the second level in the merge, regardless of metadata repo availability.
+
+*Preconditions*: Both `CONFIG_DIR/release-regent.yml` and `myorg/.release-regent/global.toml`
+exist and are valid.
+
+*Expected*:
+
+- App-level is loaded first.
+- Global policy is merged on top, overriding unlocked app-level fields.
+- The resulting config reflects global policy values for fields present in `global.toml`.
+
+## Global Policy Assertions
+
+**BA-50**: An org with a valid `global.toml` in its metadata repository must have those
+settings applied to all repositories in the org that do not have conflicting locked fields.
+
+*Preconditions*: `myorg/.release-regent/global.toml` sets `versioning.strategy = "external"`;
+`myorg/repo-a` has no dotfile; `myorg/repo-b` has a dotfile that sets `versioning.strategy = "conventional"`.
+
+*Expected for `myorg/repo-a`*: effective strategy is `external` (global policy applied).
+*Expected for `myorg/repo-b`*: effective strategy is `conventional` (repo overrides unlocked field).
+
+**BA-51**: A valid `global.toml` that cannot be parsed (invalid TOML/YAML) must hard-fail
+all events for repositories in that org.
+
+*Preconditions*: `myorg/.release-regent/global.toml` contains a syntax error.
+
+*Expected*:
+
+- `load_global_policy("myorg")` returns `Err(CoreError::Config)`.
+- The event processing fails with a message identifying the offending file.
+- No version calculation or PR operation is attempted.
+- The global policy cache entry for `myorg` is **not** updated.
+
+**BA-52**: An absent `global.toml` (file not found) must skip the global level silently
+without error.
+
+*Preconditions*: `myorg/.release-regent` exists and the App is installed, but `global.toml`
+is absent.
+
+*Expected*:
+
+- `get_file_content(…, "global.toml", …)` returns `Ok(None)`.
+- No error is propagated.
+- Merge continues with app-level → group (if applicable) → repo.
+
+**BA-53**: The global policy cache must expire after 600 seconds. Within the TTL, a
+second event for any repo in the same org must not re-fetch `global.toml`.
+
+*Preconditions*: First event for any repo in `myorg` fetches and caches `global.toml`.
+Second event for a different repo in `myorg` arrives 60 seconds later.
+
+*Expected*:
+
+- `get_file_content` for `global.toml` is called exactly once across both events.
+- Both events use the same global policy values.
+
+## Group Policy Assertions
+
+**BA-54**: A repository dotfile declaring `group = "platform"` must cause the provider to
+fetch `{org}/.release-regent/groups/platform.toml` and apply it between global policy
+and the repo dotfile.
+
+*Preconditions*: `myorg/.release-regent/groups/platform.toml` exists and sets
+`releases.draft = true`. `myorg/platform-api/.release-regent.yml` declares
+`group = "platform"` and does not set `releases.draft`.
+
+*Expected*:
+
+- `get_file_content(…, "groups/platform.toml", …)` is called.
+- Effective config has `releases.draft = true` (from group policy).
+
+**BA-55**: A repository dotfile declaring `group = "engineering"` when
+`groups/engineering.toml` does not exist must emit a `warn!`, skip the group level, and
+continue processing normally.
+
+*Preconditions*: `myorg/.release-regent/groups/engineering.toml` is absent.
+
+*Expected*:
+
+- `get_file_content` for the group file returns `Ok(None)`.
+- A `warn!` is emitted: `"Group 'engineering' declared in myorg/some-repo but no group config found"`.
+- The merge continues with global policy → repo dotfile.
+- The event is **not** failed.
+
+**BA-56**: A repository dotfile that does not declare `group` must not trigger any group
+policy fetch.
+
+*Preconditions*: `myorg/ungrouped-repo/.release-regent.yml` has no `group` field.
+
+*Expected*:
+
+- `get_file_content` is **not** called for any path under `groups/`.
+
+**BA-57**: An invalid group policy file (present but unparseable) must hard-fail events
+for repositories in that group.
+
+*Preconditions*: `myorg/.release-regent/groups/broken.toml` contains invalid TOML.
+`myorg/repo-x/.release-regent.yml` declares `group = "broken"`.
+
+*Expected*:
+
+- `load_group_config("myorg", "broken")` returns `Err(CoreError::Config)`.
+- The event for `myorg/repo-x` fails with a clear error.
+- The group policy cache entry for `myorg/broken` is **not** populated.
+
+**BA-58**: The group policy cache must expire after 300 seconds per group name within an org.
+
+*Preconditions*: Two repos both in group `"platform"` generate events 30 seconds apart.
+
+*Expected*:
+
+- `get_file_content` for `groups/platform.toml` is called exactly once.
+- Both events use the same group policy values.
+
+## Lock Assertion Assertions
+
+**BA-59**: A field listed in `global.toml`'s `locked_fields` must not be overridable by
+group policy.
+
+*Preconditions*:
+
+- `global.toml` sets `versioning.strategy = "conventional"` with
+  `locked_fields = ["versioning.strategy"]`.
+- `groups/mobile.toml` sets `versioning.strategy = "external"`.
+- `myorg/mobile-app/.release-regent.yml` declares `group = "mobile"`.
+
+*Expected*:
+
+- Effective `versioning.strategy` is `"conventional"` (global lock wins).
+- A `warn!` is emitted identifying the field, the locked value, and the level that
+  attempted the override.
+- The event is **not** failed.
+
+**BA-60**: A field listed in `global.toml`'s `locked_fields` must not be overridable by
+a repository dotfile.
+
+*Preconditions*:
+
+- `global.toml` has `locked_fields = ["versioning.allow_override"]` and
+  `versioning.allow_override = false`.
+- `myorg/some-repo/.release-regent.yml` sets `versioning.allow_override = true`.
+
+*Expected*:
+
+- Effective `versioning.allow_override` is `false` (global lock wins).
+- A `warn!` is emitted.
+- The event is **not** failed.
+
+**BA-61**: A field listed in a group policy's `locked_fields` must not be overridable by
+a repository dotfile, provided global did not already lock a different value.
+
+*Preconditions*:
+
+- `global.toml` does **not** lock `releases.draft`.
+- `groups/platform.toml` sets `releases.draft = true` with
+  `locked_fields = ["releases.draft"]`.
+- `myorg/platform-api/.release-regent.yml` declares `group = "platform"` and sets
+  `releases.draft = false`.
+
+*Expected*:
+
+- Effective `releases.draft` is `true` (group lock wins).
+- A `warn!` is emitted.
+
+**BA-62**: A group policy must not be able to remove a lock set by global policy.
+
+*Preconditions*:
+
+- `global.toml` has `locked_fields = ["versioning.strategy"]`.
+- `groups/frontend.toml` does **not** list `versioning.strategy` in its own
+  `locked_fields`, and sets `versioning.strategy = "external"`.
+
+*Expected*:
+
+- `versioning.strategy` remains locked (global lock cannot be removed).
+- `groups/frontend.toml`'s value for `versioning.strategy` is silently discarded.
+- A `warn!` is emitted.
+
+**BA-63**: A non-lockable field (e.g. `release_pr.title_template`) listed in a
+`locked_fields` array must be silently ignored with a `warn!`; it must not be treated
+as a real lock.
+
+*Preconditions*:
+
+- `global.toml` sets `locked_fields = ["release_pr.title_template"]`.
+- `myorg/some-repo/.release-regent.yml` sets
+  `release_pr.title_template = "custom: ${version}"`.
+
+*Expected*:
+
+- `release_pr.title_template` is **not** locked.
+- The repo's `title_template` value is used.
+- A `warn!` is emitted for the invalid lock path.
+
+**BA-64**: A `locked_fields` array present in a repository dotfile must be silently
+ignored with a `warn!`; it must not affect the active lock set.
+
+*Preconditions*:
+
+- `myorg/some-repo/.release-regent.yml` contains
+  `locked_fields = ["versioning.strategy"]`.
+
+*Expected*:
+
+- `versioning.strategy` is **not** locked (repo dotfiles cannot add locks).
+- A `warn!` is emitted.
+- All other fields in the repo dotfile are applied normally.
+
+**BA-65**: Lock accumulation is additive: group policy may add new locks to fields that
+global did not lock; the combined lock set applies for the repo dotfile step.
+
+*Preconditions*:
+
+- `global.toml` has `locked_fields = ["versioning.strategy"]`.
+- `groups/backend.toml` has `locked_fields = ["releases.draft"]` (a different field).
+- `myorg/backend-api/.release-regent.yml` declares `group = "backend"` and sets
+  both `versioning.strategy = "external"` and `releases.draft = false`.
+
+*Expected*:
+
+- Active locks after group merge: `{"versioning.strategy", "releases.draft"}`.
+- `versioning.strategy` is locked to global's value.
+- `releases.draft` is locked to group's value (`true`).
+- Both override attempts in the repo dotfile are silently discarded with `warn!`.
