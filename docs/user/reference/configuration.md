@@ -15,14 +15,17 @@ following order:
 
 | File name | Format |
 | :--- | :--- |
-| `.release-regent.yml` | YAML |
-| `.release-regent.yaml` | YAML |
-| `release-regent.yml` | YAML |
 | `release-regent.yaml` | YAML |
-| `.release-regent.toml` | TOML |
+| `release-regent.yml` | YAML |
+| `release_regent.yaml` | YAML |
+| `release_regent.yml` | YAML |
 | `release-regent.toml` | TOML |
+| `release_regent.toml` | TOML |
+| `config.yaml` | YAML |
+| `config.yml` | YAML |
+| `config.toml` | TOML |
 
-**`rr init` creates `.release-regent.yml` (YAML) by default.** You can rename it or convert it
+**`rr init` creates `release-regent.yaml` (YAML) by default.** You can rename it or convert it
 to TOML at any time — the format is determined by the file extension.
 
 ## File structure
@@ -30,32 +33,45 @@ to TOML at any time — the format is determined by the file extension.
 === "YAML"
 
     ```yaml
+    core:
+      # Version prefix and branch settings
+
     versioning:
-      # How versions are calculated and formatted
+      # How versions are calculated
 
     release_pr:
       # How release PRs are created and what they contain
 
-    changelog:
-      # How changelogs are generated
-      commit_parsers:
-        # Rules for commit classification (repeatable)
+    releases:
+      # How GitHub releases are published
+
+    error_handling:
+      # Retry behaviour
+
+    notifications:
+      # Error notification settings
     ```
 
 === "TOML"
 
     ```toml
+    [core]
+    # Version prefix and branch settings
+
     [versioning]
-    # How versions are calculated and formatted
+    # How versions are calculated
 
     [release_pr]
     # How release PRs are created and what they contain
 
-    [changelog]
-    # How changelogs are generated
+    [releases]
+    # How GitHub releases are published
 
-    [[changelog.commit_parsers]]
-    # Rules for commit classification (repeatable)
+    [error_handling]
+    # Retry behaviour
+
+    [notifications]
+    # Error notification settings
     ```
 
 !!! note "Examples in this document"
@@ -65,109 +81,146 @@ to TOML at any time — the format is determined by the file extension.
 
 ---
 
-## Versioning configuration
+## `core` — core settings
 
-### `versioning.prefix`
+### `core.version_prefix`
 
 **Type**: string
 **Default**: `"v"`
 
-Prefix added to Git tags and version displays.
+Prefix prepended to version numbers in Git tags and release PR titles.
 
 ```yaml
-versioning:
-  prefix: "v"           # Tags like v1.2.3
-  # prefix: ""          # Tags like 1.2.3
-  # prefix: "release-"  # Tags like release-1.2.3
+core:
+  version_prefix: "v"           # Tags like v1.2.3
+  # version_prefix: ""          # Tags like 1.2.3
+  # version_prefix: "release-"  # Tags like release-1.2.3
 ```
 
-### `versioning.allow_prerelease`
-
-**Type**: boolean
-**Default**: `true`
-
-Whether to allow pre-release version identifiers (`-alpha.1`, `-beta.2`, `-rc.1`).
-
-```yaml
-versioning:
-  allow_prerelease: true   # Supports v1.2.3-beta.1
-  # allow_prerelease: false  # Only stable versions
-```
-
-### `versioning.initial_version`
+### `core.branches.main`
 
 **Type**: string
-**Default**: `"0.1.0"`
+**Default**: `"main"`
 
-Version to use when the repository has no previous releases.
+The default branch of the repository. Release Regent targets this branch when creating release
+PRs and reading commit history.
+
+```yaml
+core:
+  branches:
+    main: "main"
+    # main: "master"
+```
+
+---
+
+## `versioning` — version calculation
+
+### `versioning.strategy`
+
+**Type**: string or object
+**Default**: `"conventional"`
+
+How the next version is calculated.
+
+| Value | Behaviour |
+| :--- | :--- |
+| `"conventional"` | Analyse commit messages using the [Conventional Commits](conventional-commits.md) standard |
+| `external` (object — see below) | Delegate to an external command |
 
 ```yaml
 versioning:
-  initial_version: "0.1.0"
+  strategy: "conventional"
 ```
+
+#### External strategy
+
+`external` is a structured value, not a plain string. The format differs between YAML and TOML.
+
+=== "YAML"
+
+    In YAML, use the `!external` tag on a mapping:
+
+    ```yaml
+    versioning:
+      strategy: !external
+        command: "./scripts/calculate-version.sh"
+        env_vars: {}          # Optional: extra environment variables passed to the command
+        timeout_ms: 30000     # Optional: max execution time in milliseconds (default 30 000)
+    ```
+
+=== "TOML"
+
+    In TOML, use a sub-table or inline table under `versioning.strategy.external`:
+
+    ```toml
+    [versioning.strategy.external]
+    command = "./scripts/calculate-version.sh"
+    env_vars = {}           # Optional: extra environment variables passed to the command
+    timeout_ms = 30000      # Optional: max execution time in milliseconds (default 30 000)
+    ```
 
 ### `versioning.allow_override`
 
 **Type**: boolean
-**Default**: `false`
+**Default**: `true`
 
-Whether to allow
-[PR comment commands](pr-commands.md) (`!set-version`, `!release`) to override the calculated
-version.
+Whether contributors can override the calculated version bump using
+[PR comment commands](pr-commands.md) (e.g. `!set-version`).
 
 ```yaml
 versioning:
   allow_override: true
 ```
 
+### `versioning.excluded_pr_authors`
+
+**Type**: list of strings
+**Default**: `[]`
+
+PR author logins that Release Regent silently ignores. PRs opened by a login in this list do
+not receive a projected-version comment and are skipped during the post-merge refresh. Useful
+for bot accounts that open dependency-update PRs.
+
+```yaml
+versioning:
+  excluded_pr_authors:
+    - "dependabot[bot]"
+    - "renovate[bot]"
+```
+
 ---
 
-## Release PR configuration
+## `release_pr` — release pull requests
 
 ### `release_pr.title_template`
 
 **Type**: string
-**Default**: `"chore(release): prepare version {version}"`
+**Default**: `"chore(release): ${version}"`
 
-Template for the release PR title.
-
-**Available variables**: `{version}`, `{version_tag}`, `{date}`
-
-Both `{variable}` and `${variable}` syntax are supported.
+Template for the release PR title. Use `${version}` as the placeholder — both `${variable}`
+and `{variable}` syntax are accepted.
 
 ```yaml
 release_pr:
-  title_template: "chore(release): prepare version {version}"
-  # title_template: "Release {version_tag}"
-  # title_template: "Prepare release {version} ({date})"
+  title_template: "chore(release): ${version}"
+  # title_template: "Release ${version}"
+  # title_template: "Prepare release ${version}"
 ```
 
 ### `release_pr.body_template`
 
 **Type**: string
-**Default**: A standard template showing version, changelog, commit count, and date
+**Default**: `"## Changelog\n\n${changelog}"`
 
-Template for the release PR body.
-
-**Available variables**:
-
-| Variable | Description |
-| :--- | :--- |
-| `{version}` | Semantic version, e.g. `1.2.3` |
-| `{version_tag}` | Version with prefix, e.g. `v1.2.3` |
-| `{changelog}` | Generated changelog content |
-| `{commit_count}` | Commits since last release |
-| `{date}` | Current date in ISO 8601 format |
+Template for the release PR body. Use `${changelog}` to insert the generated changelog.
 
 ```yaml
 release_pr:
   body_template: |
-    ## Release {version}
+    ## Changelog
 
-    {changelog}
-
-    ---
-    {commit_count} commits · {date}
+    ${changelog}
 ```
 
 ### `release_pr.draft`
@@ -183,25 +236,12 @@ release_pr:
   # draft: true  # Require manual "Ready for review" before merging
 ```
 
-### `release_pr.auto_merge`
-
-**Type**: boolean
-**Default**: `false`
-
-Whether to enable GitHub auto-merge on release PRs. Requires the repository to have auto-merge
-enabled and the required status checks to pass.
-
-```yaml
-release_pr:
-  auto_merge: false
-```
-
 ### `release_pr.auto_detect_manifests`
 
 **Type**: boolean
 **Default**: `true`
 
-When `true`, Release Regent automatically detects and updates version fields in
+When `true`, Release Regent automatically detects and updates the version field in
 `Cargo.toml`, `package.json`, `pyproject.toml`, and `composer.json` at the repository root.
 
 Files listed in `manifest_files` are always processed regardless of this setting.
@@ -213,16 +253,25 @@ release_pr:
 
 ### `release_pr.manifest_files`
 
-**Type**: array of inline tables
+**Type**: list of objects
 **Default**: `[]`
 
-Explicit list of manifest files to update. Each entry has three fields:
+Explicit list of version manifest files to update when creating the release branch. Each entry
+has three required fields:
 
 | Field | Description |
 | :--- | :--- |
 | `path` | Repository-relative path to the file |
 | `format` | File format: `"toml"`, `"json"`, or `"plain_text"` |
-| `version_key` | Where to find the version: dot-separated TOML path, JSON key, or a regex |
+| `version_key` | Location of the version field (see table below) |
+
+**`version_key` by format**:
+
+| Format | `version_key` meaning | Example |
+| :--- | :--- | :--- |
+| `"toml"` | Dot-separated table path | `"package.version"` |
+| `"json"` | Top-level key | `"version"` |
+| `"plain_text"` | Regex with one capture group matching the current version | `"^version = \"(.+)\"$"` |
 
 ```yaml
 release_pr:
@@ -235,166 +284,253 @@ release_pr:
       version_key: "version"
     - path: "pyproject.toml"
       format: "toml"
-      version_key: "project.version"
+      version_key: "tool.poetry.version"
+    - path: "VERSION"
+      format: "plain_text"
+      version_key: "^([0-9]+\\.[0-9]+\\.[0-9]+)$"
 ```
 
-See [Update manifest files](../how-to/configuration/update-manifest-files.md) for format
-details and examples.
+See [Update manifest files](../how-to/configuration/update-manifest-files.md) for detailed
+format guidance.
 
 ---
 
-## Changelog configuration
+## `releases` — GitHub releases
 
-### `changelog.include_authors`
-
-**Type**: boolean
-**Default**: `true`
-
-Include commit author names in changelog entries.
-
-### `changelog.include_commit_links`
-
-**Type**: boolean
-**Default**: `true`
-
-Include linked commit SHAs in changelog entries.
-
-### `changelog.include_pr_links`
-
-**Type**: boolean
-**Default**: `true`
-
-Include linked PR numbers in changelog entries when detectable.
-
-### `changelog.group_by`
-
-**Type**: string
-**Default**: `"type"`
-**Options**: `"type"`, `"scope"`, `"none"`
-
-How to group commits in the changelog body.
-
-```yaml
-changelog:
-  group_by: "type"
-```
-
-### `changelog.sort_commits`
-
-**Type**: string
-**Default**: `"date"`
-**Options**: `"date"`, `"type"`, `"scope"`
-
-How to sort commits within each group.
-
-### `changelog.commit_types`
-
-**Type**: table of string → string
-**Default**: Standard conventional commit type labels
-
-Maps commit type identifiers to display labels.
-
-```yaml
-changelog:
-  commit_types:
-    feat: "Features"
-    fix: "Bug Fixes"
-    docs: "Documentation"
-    perf: "Performance Improvements"
-    refactor: "Code Refactoring"
-    chore: "Maintenance"
-```
-
-### `changelog.header`
-
-**Type**: string
-**Default**: Standard header
-
-Static text prepended to the changelog document.
-
-### `changelog.body`
-
-**Type**: string (Tera template)
-**Default**: Standard git-cliff template
-
-Main template rendered once per release. See
-[Customise changelog templates](../how-to/configuration/custom-changelog-template.md) for the
-full variable and filter reference.
-
-### `changelog.footer`
-
-**Type**: string (Tera template)
-**Default**: `""`
-
-Static text (or Tera template) appended to the changelog document.
-
-### `changelog.trim`
-
-**Type**: boolean
-**Default**: `true`
-
-Strip leading and trailing whitespace from template output.
-
-### `changelog.filter_unconventional`
-
-**Type**: boolean
-**Default**: `true`
-
-Exclude commits that do not follow the conventional commit format from the changelog.
-
-### `changelog.protect_breaking_commits`
+### `releases.draft`
 
 **Type**: boolean
 **Default**: `false`
 
-When `true`, breaking change commits are never filtered even if a matcher has `skip = true`.
-
----
-
-## `changelog.commit_parsers`
-
-Repeatable list that controls how commits are classified and grouped. Rules are evaluated
-in order; the first matching rule wins.
-
-Each entry can have:
-
-| Field | Description |
-| :--- | :--- |
-| `message` | Regex matched against the commit subject line |
-| `group` | Group label to assign to matching commits |
-| `skip` | When `true`, matching commits are excluded from the changelog |
+Publish releases as drafts (not publicly visible until manually published in the GitHub UI).
 
 ```yaml
-changelog:
-  commit_parsers:
-    - message: "^chore\\(release\\): prepare"
-      skip: true
-    - message: "^feat"
-      group: "🚀 Features"
-    - message: "^fix"
-      group: "🐛 Bug Fixes"
-    - message: "^docs"
-      group: "📚 Documentation"
-    - message: "^perf"
-      group: "⚡ Performance"
-    - message: "^chore"
-      group: "🔧 Maintenance"
+releases:
+  draft: false
+```
+
+### `releases.prerelease`
+
+**Type**: boolean
+**Default**: `false`
+
+Mark releases as pre-releases in the GitHub UI.
+
+```yaml
+releases:
+  prerelease: false
+```
+
+### `releases.generate_notes`
+
+**Type**: boolean
+**Default**: `true`
+
+When `true`, GitHub auto-generates release notes from merged PRs in addition to the changelog
+body. These notes appear in the GitHub release alongside the release PR body content.
+
+```yaml
+releases:
+  generate_notes: true
 ```
 
 ---
 
-## `[[changelog.postprocessors]]`
+## `error_handling` — retry behaviour
 
-Repeatable table of regex-replacement rules applied to the rendered changelog after all
-templates are evaluated. Useful for inserting repository URLs or standardising link formats.
+### `error_handling.max_retries`
 
-| Field | Description |
+**Type**: integer
+**Default**: `5`
+
+Maximum number of retries for transient GitHub API failures.
+
+```yaml
+error_handling:
+  max_retries: 5
+```
+
+### `error_handling.backoff_multiplier`
+
+**Type**: float
+**Default**: `2.0`
+
+Multiplier applied to the delay after each failed attempt (exponential back-off).
+
+```yaml
+error_handling:
+  backoff_multiplier: 2.0
+```
+
+### `error_handling.initial_delay_ms`
+
+**Type**: integer (milliseconds)
+**Default**: `1000`
+
+Delay before the first retry.
+
+```yaml
+error_handling:
+  initial_delay_ms: 1000
+```
+
+---
+
+## `notifications` — error notifications
+
+### `notifications.enabled`
+
+**Type**: boolean
+**Default**: `true`
+
+Whether to send notifications when Release Regent encounters an error.
+
+```yaml
+notifications:
+  enabled: true
+```
+
+### `notifications.strategy`
+
+**Type**: string
+**Default**: `"github_issue"`
+
+How errors are reported.
+
+| Value | Behaviour |
 | :--- | :--- |
-| `pattern` | Regex to search for |
-| `replace` | Replacement string (may use capture groups: `$1`, `$2`) |
+| `"github_issue"` | Open a GitHub issue in the repository (default) |
+| `"webhook"` | POST to an HTTP endpoint |
+| `"slack"` | Send a Slack message |
+| `"none"` | Do not send notifications |
 
-```toml
-[[changelog.postprocessors]]
-pattern = "\\(#(\\d+)\\)"
-replace = "([#$1](https://github.com/myorg/myrepo/issues/$1))"
+```yaml
+notifications:
+  strategy: "github_issue"
+```
+
+### `notifications.github_issue`
+
+Settings used when `strategy` is `"github_issue"`.
+
+#### `notifications.github_issue.labels`
+
+**Type**: list of strings
+**Default**: `["release-regent", "bug"]`
+
+Labels applied to newly created error issues.
+
+#### `notifications.github_issue.assignees`
+
+**Type**: list of strings
+**Default**: `[]`
+
+GitHub usernames to assign to newly created error issues.
+
+```yaml
+notifications:
+  strategy: "github_issue"
+  github_issue:
+    labels:
+      - "release-regent"
+      - "bug"
+    assignees: []
+```
+
+### `notifications.webhook`
+
+Settings used when `strategy` is `"webhook"`.
+
+#### `notifications.webhook.url`
+
+**Type**: string (**required** when strategy is `"webhook"`)
+
+HTTP endpoint to POST the error payload to.
+
+#### `notifications.webhook.headers`
+
+**Type**: object (string → string)
+**Default**: `{}`
+
+Additional HTTP headers included in the POST request.
+
+```yaml
+notifications:
+  strategy: "webhook"
+  webhook:
+    url: "https://hooks.example.com/release-regent"
+    headers:
+      Authorization: "Bearer mytoken"
+```
+
+### `notifications.slack`
+
+Settings used when `strategy` is `"slack"`.
+
+#### `notifications.slack.webhook_url`
+
+**Type**: string (**required** when strategy is `"slack"`)
+
+Slack incoming webhook URL.
+
+#### `notifications.slack.channel`
+
+**Type**: string
+**Default**: the channel configured in the Slack webhook
+
+Override the target Slack channel.
+
+```yaml
+notifications:
+  strategy: "slack"
+  slack:
+    webhook_url: "https://hooks.slack.com/services/T00/B00/xxx"
+    channel: "#releases"
+```
+
+---
+
+## Complete example
+
+```yaml
+core:
+  version_prefix: "v"
+  branches:
+    main: "main"
+
+versioning:
+  strategy: "conventional"
+  allow_override: true
+  excluded_pr_authors:
+    - "dependabot[bot]"
+    - "renovate[bot]"
+
+release_pr:
+  title_template: "chore(release): ${version}"
+  body_template: |
+    ## Changelog
+
+    ${changelog}
+  draft: false
+  auto_detect_manifests: true
+  manifest_files: []
+
+releases:
+  draft: false
+  prerelease: false
+  generate_notes: true
+
+error_handling:
+  max_retries: 5
+  backoff_multiplier: 2.0
+  initial_delay_ms: 1000
+
+notifications:
+  enabled: true
+  strategy: "github_issue"
+  github_issue:
+    labels:
+      - "release-regent"
+      - "bug"
+    assignees: []
 ```

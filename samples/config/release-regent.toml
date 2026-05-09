@@ -7,7 +7,7 @@
 # The server looks for a file named release-regent.toml (or .yaml) in
 # the CONFIG_DIR directory (default: /config inside the container).
 #
-# Full reference: docs/configuration-reference.md
+# Full reference: docs/user/reference/configuration.md
 # =============================================================================
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -27,9 +27,17 @@ main = "main"
 # ─────────────────────────────────────────────────────────────────────────────
 
 [versioning]
-# How to calculate the next version.
-# Options: "conventional" (conventional commits) | "external" (custom command)
+# How to calculate the next version using conventional commits (default).
+# To use an external command instead, comment out or remove this line and
+# uncomment the [versioning.strategy.external] block below.
 strategy = "conventional"
+
+# External versioning strategy — comment out `strategy = "conventional"` above
+# before uncommenting this block (both cannot coexist in TOML).
+# [versioning.strategy.external]
+# command = "./scripts/calculate-version.sh"
+# env_vars = {}
+# timeout_ms = 30000
 
 # Allow contributors to override the calculated bump via PR comments
 # (e.g. /override-bump minor).

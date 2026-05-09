@@ -91,9 +91,15 @@ impl Default for ErrorHandlingConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitHubIssueConfig {
     /// Labels to apply to issues
+    #[serde(default = "default_github_issue_labels")]
     pub labels: Vec<String>,
     /// Users to assign to issues
+    #[serde(default)]
     pub assignees: Vec<String>,
+}
+
+fn default_github_issue_labels() -> Vec<String> {
+    vec!["release-regent".to_string(), "bug".to_string()]
 }
 
 /// Notification configuration
@@ -284,7 +290,7 @@ pub struct WebhookConfig {
     /// Webhook URL
     pub url: String,
     /// Additional headers
-    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub headers: HashMap<String, String>,
 }
 
@@ -311,16 +317,24 @@ pub enum VersioningStrategy {
     Conventional,
     /// Use external script/command for version calculation.
     ///
-    /// Field layout note: this variant uses inline fields, not a nested struct.
-    /// Serialised TOML/YAML must use top-level keys `command`, `env_vars`, and
-    /// `timeout_ms` rather than a nested `external` object.
+    /// Serde encodes this as an externally-tagged enum, so the fields are
+    /// nested under an `external` key in both YAML and TOML.
     ///
     /// Example YAML:
     /// ```yaml
-    /// versioning_strategy: !external
-    ///   command: ./scripts/calculate-version.sh
-    ///   env_vars: {}
-    ///   timeout_ms: 30000
+    /// versioning:
+    ///   strategy: !external
+    ///     command: ./scripts/calculate-version.sh
+    ///     env_vars: {}
+    ///     timeout_ms: 30000
+    /// ```
+    ///
+    /// Example TOML:
+    /// ```toml
+    /// [versioning.strategy.external]
+    /// command = "./scripts/calculate-version.sh"
+    /// env_vars = {}
+    /// timeout_ms = 30000
     /// ```
     External {
         /// Command to execute for version calculation
