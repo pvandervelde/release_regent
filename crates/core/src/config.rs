@@ -317,16 +317,24 @@ pub enum VersioningStrategy {
     Conventional,
     /// Use external script/command for version calculation.
     ///
-    /// Field layout note: this variant uses inline fields, not a nested struct.
-    /// Serialised TOML/YAML must use top-level keys `command`, `env_vars`, and
-    /// `timeout_ms` rather than a nested `external` object.
+    /// Serde encodes this as an externally-tagged enum, so the fields are
+    /// nested under an `external` key in both YAML and TOML.
     ///
     /// Example YAML:
     /// ```yaml
-    /// versioning_strategy: !external
-    ///   command: ./scripts/calculate-version.sh
-    ///   env_vars: {}
-    ///   timeout_ms: 30000
+    /// versioning:
+    ///   strategy: !external
+    ///     command: ./scripts/calculate-version.sh
+    ///     env_vars: {}
+    ///     timeout_ms: 30000
+    /// ```
+    ///
+    /// Example TOML:
+    /// ```toml
+    /// [versioning.strategy.external]
+    /// command = "./scripts/calculate-version.sh"
+    /// env_vars = {}
+    /// timeout_ms = 30000
     /// ```
     External {
         /// Command to execute for version calculation

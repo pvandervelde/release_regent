@@ -28,9 +28,12 @@ main = "main"
 
 [versioning]
 # How to calculate the next version using conventional commits (default).
+# To use an external command instead, comment out or remove this line and
+# uncomment the [versioning.strategy.external] block below.
 strategy = "conventional"
 
-# To use an external command instead, replace the line above with a sub-table:
+# External versioning strategy — comment out `strategy = "conventional"` above
+# before uncommenting this block (both cannot coexist in TOML).
 # [versioning.strategy.external]
 # command = "./scripts/calculate-version.sh"
 # env_vars = {}
