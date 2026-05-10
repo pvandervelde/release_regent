@@ -1311,6 +1311,7 @@ struct TestVersionCalcForLib {
     next_version: SemanticVersion,
     changelog_entries: Vec<ChangelogEntry>,
     version_bump: VersionBump,
+    captured_ctx: Arc<Mutex<Option<VersionContext>>>,
 }
 
 impl TestVersionCalcForLib {
@@ -1319,6 +1320,7 @@ impl TestVersionCalcForLib {
             next_version: versioning::VersionCalculator::parse_version(version).unwrap(),
             changelog_entries: vec![],
             version_bump: VersionBump::Minor,
+            captured_ctx: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -1331,6 +1333,10 @@ impl TestVersionCalcForLib {
         self.version_bump = bump;
         self
     }
+
+    async fn last_context(&self) -> Option<VersionContext> {
+        self.captured_ctx.lock().await.clone()
+    }
 }
 
 #[async_trait]
@@ -1341,6 +1347,7 @@ impl VersionCalculator for TestVersionCalcForLib {
         _strategy: VCalcStrategy,
         _options: CalculationOptions,
     ) -> CoreResult<VersionCalculationResult> {
+        *self.captured_ctx.lock().await = Some(ctx.clone());
         Ok(VersionCalculationResult {
             next_version: self.next_version.clone(),
             current_version: ctx.current_version,
@@ -1433,6 +1440,7 @@ impl VersionCalculator for TestVersionCalcForLib {
             next_version: self.next_version.clone(),
             changelog_entries: self.changelog_entries.clone(),
             version_bump: self.version_bump.clone(),
+            captured_ctx: Arc::clone(&self.captured_ctx),
         })
     }
 }
@@ -2904,5 +2912,111 @@ async fn test_feature_pr_opened_with_queued_release_includes_annotation() {
     assert!(
         body.contains("already open"),
         "comment must note the queued release PR is open; got: {body}"
+    );
+}
+
+/// Regression test: when `version_prefix` is empty and the latest tag has no
+/// prefix (e.g. `0.5.0`), the `base_ref` passed to the version calculator must
+/// be `"0.5.0"` — not `"v0.5.0"`.
+///
+/// Before the fix, the code used `format!("v{v}")`, which hardcoded the `v`
+/// prefix regardless of configuration, causing GitHub's compare API to return
+/// 404 for bare-semver repositories.
+#[tokio::test]
+async fn test_feature_pr_opened_uses_version_prefix_for_base_ref_when_prefix_is_empty() {
+    let tag = GitTag {
+        name: "0.5.0".to_string(),
+        target_sha: "a".repeat(40),
+        tag_type: GitTagType::Lightweight,
+        message: None,
+        tagger: None,
+        created_at: None,
+    };
+
+    let mut cfg = config::ReleaseRegentConfig::default();
+    cfg.core.version_prefix = String::new();
+
+    let github = TestGitHubForLib::new_empty().with_tags(vec![tag]);
+    let config = TestConfigWith::new(cfg);
+    let version_calc = TestVersionCalcForLib::returning("0.6.0");
+    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc.clone());
+
+    let event = ProcessingEvent {
+        event_id: "prefix-empty-1".into(),
+        correlation_id: "corr-prefix-empty-1".into(),
+        event_type: EventType::PullRequestOpened,
+        repository: test_repo(),
+        payload: make_pr_activity_payload(10, "deadbeef1234", "feat/new-feature", "alice"),
+        received_at: Utc::now(),
+        source: EventSourceKind::Webhook,
+        installation_id: 0,
+    };
+
+    processor
+        .handle_pull_request_activity(&event)
+        .await
+        .expect("handle_pull_request_activity should succeed");
+
+    let ctx = version_calc
+        .last_context()
+        .await
+        .expect("calculate_version must have been called");
+
+    assert_eq!(
+        ctx.base_ref.as_deref(),
+        Some("0.5.0"),
+        "base_ref must not get a hardcoded 'v' prefix when version_prefix is empty; \
+         got {:?}",
+        ctx.base_ref
+    );
+}
+
+/// Regression test: when `version_prefix` is `"v"` the `base_ref` is still
+/// constructed correctly as `"v0.5.0"`.
+#[tokio::test]
+async fn test_feature_pr_opened_uses_version_prefix_for_base_ref_when_prefix_is_v() {
+    let tag = GitTag {
+        name: "v0.5.0".to_string(),
+        target_sha: "b".repeat(40),
+        tag_type: GitTagType::Lightweight,
+        message: None,
+        tagger: None,
+        created_at: None,
+    };
+
+    let mut cfg = config::ReleaseRegentConfig::default();
+    cfg.core.version_prefix = "v".to_string();
+
+    let github = TestGitHubForLib::new_empty().with_tags(vec![tag]);
+    let config = TestConfigWith::new(cfg);
+    let version_calc = TestVersionCalcForLib::returning("0.6.0");
+    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc.clone());
+
+    let event = ProcessingEvent {
+        event_id: "prefix-v-1".into(),
+        correlation_id: "corr-prefix-v-1".into(),
+        event_type: EventType::PullRequestOpened,
+        repository: test_repo(),
+        payload: make_pr_activity_payload(11, "deadbeef5678", "feat/another-feature", "bob"),
+        received_at: Utc::now(),
+        source: EventSourceKind::Webhook,
+        installation_id: 0,
+    };
+
+    processor
+        .handle_pull_request_activity(&event)
+        .await
+        .expect("handle_pull_request_activity should succeed");
+
+    let ctx = version_calc
+        .last_context()
+        .await
+        .expect("calculate_version must have been called");
+
+    assert_eq!(
+        ctx.base_ref.as_deref(),
+        Some("v0.5.0"),
+        "base_ref must include 'v' prefix when version_prefix is 'v'; got {:?}",
+        ctx.base_ref
     );
 }
