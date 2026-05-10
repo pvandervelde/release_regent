@@ -706,6 +706,24 @@ all events for repositories in that org.
 - No version calculation or PR operation is attempted.
 - The global policy cache entry for `myorg` is **not** updated.
 
+**BA-51a**: A previously valid `global.toml` that becomes invalid after TTL expiry must
+evict the stale cache entry; the stale (valid) config must not continue to be served.
+
+*Preconditions*:
+
+- First event for `myorg` fetches and caches a valid `global.toml` with
+  `versioning.strategy = "conventional"`.
+- 601 seconds later (TTL expired), `global.toml` is replaced with an invalid file
+  (TOML syntax error).
+- A second event for any repo in `myorg` arrives after the TTL has expired.
+
+*Expected*:
+
+- `load_global_policy` re-fetches (cache expired); `parse_and_validate` fails.
+- The stale cache entry is evicted — not retained.
+- The second event fails with `Err(CoreError::Config)` identifying the offending file.
+- A subsequent event after the file is corrected re-fetches and caches the corrected config.
+
 **BA-52**: An absent `global.toml` (file not found) must skip the global level silently
 without error.
 

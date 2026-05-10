@@ -803,6 +803,20 @@ All fetch helpers return `Ok(None)` for absent files, `Err(CoreError::Config)` f
 content, and `Err(CoreError::GitHub)` for API errors. Parse/validation errors evict the
 relevant cache entry immediately.
 
+> **Probe order asymmetry (intentional)**: Metadata repo helpers probe TOML-first
+> (`global.toml`, `global.yml`, `global.yaml`) because TOML is the preferred format for
+> policy files authored by platform teams. The repo dotfile probes YAML-first
+> (`.release-regent.yml`, `.release-regent.yaml`, `.release-regent.toml`) because most
+> existing repository dotfiles in the wild use YAML. This asymmetry is deliberate.
+
+> **Metadata installation scope**: The `meta` client is scoped to the metadata repo
+> installation (`meta_id` from `resolve_metadata_installation`). This installation must
+> be an **org-level** GitHub App installation with access to all repositories in `{owner}`
+> — not one scoped only to `.release-regent`. If the installation is repo-scoped, the
+> `fetch_repo_dotfile` call using `&meta` will return `Err(403)`. The `None` branch
+> (no metadata repo) correctly uses `self.github.scoped_to(installation_id)` which is
+> the per-event repo installation and always has access to the target repository.
+
 ---
 
 ## 7. `merge_config_with_locks` contract
@@ -817,6 +831,16 @@ relevant cache entry immediately.
 /// Template and notification fields (never lockable) are always overridden.
 /// The mapping from struct fields to dotted paths is explicit and must be
 /// maintained in sync with `LOCKABLE_FIELDS`.
+///
+/// **Enforcement**: Add a compile-time assertion alongside `LOCKABLE_FIELDS` to
+/// prevent silent drift as the config struct evolves:
+/// ```rust
+/// const _: () = assert!(
+///     LOCKABLE_FIELDS.len() == 10,
+///     "Update merge_config_with_locks field checks when adding or removing lockable fields"
+/// );
+/// ```
+/// Update the count and the merge logic atomically whenever `LOCKABLE_FIELDS` changes.
 fn merge_config_with_locks(
     base: ReleaseRegentConfig,
     incoming: ReleaseRegentConfig,

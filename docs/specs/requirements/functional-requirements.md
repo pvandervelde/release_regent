@@ -182,7 +182,8 @@ Configuration is resolved in this order (later levels override earlier for unloc
   causes a `warn!`, not a failure.
 - Template variables supported: `${version}`, `${version_tag}`, `${changelog}`,
   `${commit_count}`, `${date}`.
-- Separate in-memory caches per level (global: 600 s, group and repo: 300 s).
+- Separate in-memory caches per level (global: 600 s TTL, group and repo: 300 s TTL).
+  These are the normative TTL values; FR-8 references them.
 - Parse or schema errors at any level fail the event; cache entry is evicted immediately.
 - CLI fallback: when `LoadOptions.installation_id` is `None`, all GitHub-sourced levels
   are skipped; only app-level (local file) is used.
@@ -234,8 +235,9 @@ repositories in an organisation.
 **Acceptance Criteria**:
 
 - Global policy changes in the metadata repository take effect within 10 minutes
-  (600-second TTL) without server restart.
-- Group policy changes take effect within 5 minutes (300-second TTL) without server restart.
+  (600-second TTL, as defined in FR-6) without server restart.
+- Group policy changes take effect within 5 minutes (300-second TTL, as defined in FR-6)
+  without server restart.
 - A repository can change its group membership by updating `group` in its dotfile;
   the change takes effect within 5 minutes of the dotfile being merged.
 - An invalid metadata repository config (global or group) fails events for affected
