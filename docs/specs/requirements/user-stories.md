@@ -1,7 +1,7 @@
 # User Stories & Personas
 
-**Last Updated**: 2025-07-19
-**Status**: Complete
+**Last Updated**: 2026-05-09
+**Status**: Updated — US-6 revised and US-9 added for enterprise config hierarchy (ADR-007)
 
 ## User Personas
 
@@ -163,20 +163,34 @@
 **Priority**: Medium
 **Status**: Future Enhancement
 
-### US-6: Configuration Management
+### US-6: Repository Configuration Management
 
-**As** the DevOps team, **I want** to configure Release Regent behavior per repository **so that** different projects can have appropriate release processes.
+**As** the DevOps team, **I want** to configure Release Regent behaviour per repository
+**so that** different projects can have appropriate release processes without requiring
+server re-deployment.
 
 **Acceptance Criteria**:
 
-- Repository-specific configuration overrides
-- Template customization for PR titles and bodies
-- Configurable versioning strategies
-- Validation of configuration before processing
-- Clear error messages for invalid configuration
+- Adding a `.release-regent.yml` file to the root of a repository is sufficient to supply
+  per-repository configuration; no server re-deployment is required.
+- Repository config is read from the repository’s default branch on each webhook event
+  (subject to a 5-minute TTL cache), so configuration changes take effect within
+  5 minutes of merging them.
+- Repository-specific configuration overrides app-level and global policy defaults for
+  fields that are not locked.
+- Absence of a `.release-regent.yml` in the repository is not an error; the resolved
+  defaults from higher levels (app / global / group) apply.
+- Template customisation for PR titles and bodies is always available at the repo level
+  regardless of any locks set at higher levels.
+- Configurable versioning strategies per repository (subject to `versioning.strategy`
+  not being locked globally).
+- Validation of configuration before processing; parse errors or schema violations in the
+  repository dotfile produce a clear error on the event and do not silently fall back.
+- A repository can declare its group membership with `group = "name"` in the dotfile;
+  the corresponding group policy is applied transparently.
 
 **Priority**: Medium
-**Status**: Complete
+**Status**: 🚧 In Progress (see [ADR-007](../../adr/ADR-007-enterprise-config-hierarchy.md))
 
 ### US-7: CLI Testing
 
@@ -207,6 +221,37 @@
 
 **Priority**: Medium
 **Status**: Complete
+
+### US-9: Enterprise Configuration Governance
+
+**As** the platform engineering team, **I want** to enforce organisation-wide release
+policies that individual repositories cannot override **so that** compliance and
+consistency requirements are met across a large repository estate.
+
+**Acceptance Criteria**:
+
+- A single metadata repository (`{org}/.release-regent`) holds all org-level policy;
+  no per-repository changes or server re-deployments are needed to apply a policy change.
+- Global policy (`global.toml`) sets defaults and locks for the entire organisation;
+  changes take effect within 10 minutes of merging without server restart.
+- Locking a field in `global.toml` (e.g. `locked_fields = ["versioning.strategy"]`)
+  prevents **any** repository in the org from overriding that field, silently using the
+  locked value and logging a `warn!` if a lower level tries to set it differently.
+- Only designated policy fields are lockable; template and notification fields are
+  **always** customisable by individual repositories regardless of global policy.
+- Group policies (`groups/{name}.toml`) allow shared defaults for sets of related
+  repositories (e.g. all services in the `platform` group get `releases.draft = true`).
+- A repository joins a group by adding `group = "name"` to its dotfile; no central
+  membership file needs updating.
+- A declared group with no corresponding group policy file is a `warn!`, not an error;
+  the event is processed normally using global defaults.
+- An invalid `global.toml` or group policy file produces a clear error identifying the
+  offending file and field, making remediation straightforward.
+- Release Regent does not validate who merged changes to the metadata repository;
+  authorship control is delegated to GitHub branch protection and CODEOWNERS.
+
+**Priority**: High
+**Status**: 🚧 In Progress (see [ADR-007](../../adr/ADR-007-enterprise-config-hierarchy.md))
 
 ## User Journey Maps
 
