@@ -187,10 +187,19 @@ fn detect_standard_manifests_empty_list_returns_empty() {
 #[test]
 fn detect_standard_manifests_cargo_toml_detected() {
     let result = detect_standard_manifests(&["Cargo.toml"]);
-    assert_eq!(result.len(), 1);
+    assert_eq!(
+        result.len(),
+        2,
+        "root Cargo.toml should produce two entries (workspace + package)"
+    );
+    // First entry: plain-package key (emitted first so workspace key wins deduplication)
     assert_eq!(result[0].path, "Cargo.toml");
     assert_eq!(result[0].format, ManifestFormat::Toml);
     assert_eq!(result[0].version_key, "package.version");
+    // Second entry: workspace root key (emitted last so it wins deduplication)
+    assert_eq!(result[1].path, "Cargo.toml");
+    assert_eq!(result[1].format, ManifestFormat::Toml);
+    assert_eq!(result[1].version_key, "workspace.package.version");
 }
 
 #[test]
@@ -233,13 +242,129 @@ fn detect_standard_manifests_unknown_file_not_detected() {
     assert!(result.is_empty(), "unrecognised files must not be detected");
 }
 
+/// Verify that a workspace member `Cargo.toml` (non-root path ending in
+/// `/Cargo.toml`) is detected with the `package.version` key.
+#[test]
+fn detect_standard_manifests_member_cargo_toml_detected() {
+    let result = detect_standard_manifests(&["crates/my-crate/Cargo.toml"]);
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].path, "crates/my-crate/Cargo.toml");
+    assert_eq!(result[0].format, ManifestFormat::Toml);
+    assert_eq!(result[0].version_key, "package.version");
+}
+
+/// Verify that the root `Cargo.toml` (two entries) and each workspace member
+/// `Cargo.toml` (one entry each) are all detected correctly when passed together,
+/// and that `workspace.package.version` is the second (last-emitted) root entry
+/// so that `dedup_file_updates_by_path` keeps it when both root keys collide.
+#[test]
+fn detect_standard_manifests_root_and_member_cargo_tomls() {
+    let result = detect_standard_manifests(&[
+        "Cargo.toml",
+        "crates/foo/Cargo.toml",
+        "crates/bar/Cargo.toml",
+    ]);
+    // root → 2, foo → 1, bar → 1 = 4 total
+    assert_eq!(result.len(), 4);
+    let root: Vec<&ManifestFileConfig> = result.iter().filter(|m| m.path == "Cargo.toml").collect();
+    assert_eq!(root.len(), 2);
+    let root_keys: Vec<&str> = root.iter().map(|m| m.version_key.as_str()).collect();
+    assert!(
+        root_keys.contains(&"workspace.package.version"),
+        "workspace key must be present for root"
+    );
+    assert!(
+        root_keys.contains(&"package.version"),
+        "package key must be present for root"
+    );
+    let members: Vec<&ManifestFileConfig> =
+        result.iter().filter(|m| m.path != "Cargo.toml").collect();
+    assert_eq!(members.len(), 2);
+    assert!(members.iter().all(|m| m.version_key == "package.version"));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// update_manifest_content — TOML workspace support
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Verify that `workspace.package.version` (the workspace-level version key
+/// used by Cargo workspace roots) is updated correctly.
+#[test]
+fn update_manifest_content_toml_replaces_workspace_package_version() {
+    let content = "[workspace.package]\nversion = \"0.1.0\"\n";
+    let result = update_manifest_content(
+        content,
+        &ManifestFormat::Toml,
+        "workspace.package.version",
+        "2.0.0",
+    );
+    assert!(
+        result.is_ok(),
+        "workspace.package.version update should succeed: {:?}",
+        result
+    );
+    let updated = result.unwrap();
+    assert!(
+        updated.contains("2.0.0"),
+        "updated content should contain the new version"
+    );
+    assert!(
+        !updated.contains("0.1.0"),
+        "updated content should not contain the old version"
+    );
+}
+
+/// Verify that `version.workspace = true` (dotted-key form of workspace
+/// inheritance) returns a clear error rather than a generic "not a string" error.
+#[test]
+fn update_manifest_content_toml_workspace_inherited_returns_error() {
+    let content = "[package]\nname = \"my-crate\"\nversion.workspace = true\n";
+    let result =
+        update_manifest_content(content, &ManifestFormat::Toml, "package.version", "1.0.0");
+    assert!(
+        result.is_err(),
+        "workspace-inherited version should return an error"
+    );
+    let msg = format!("{:?}", result.unwrap_err());
+    assert!(
+        msg.contains("workspace inheritance"),
+        "error message should mention workspace inheritance, got: {msg}"
+    );
+}
+
+/// Verify that all well-known manifests present in the same repository are
+/// detected in one call: root `Cargo.toml` produces two entries (package key
+/// first, workspace key last), `package.json` and `composer.json` one each
+/// — four entries in total.
 #[test]
 fn detect_standard_manifests_multiple_files_all_detected() {
     let result = detect_standard_manifests(&["Cargo.toml", "package.json", "composer.json"]);
-    // Cargo.toml → 1, package.json → 1, composer.json → 1 = 3 total
-    assert_eq!(result.len(), 3);
+    // Cargo.toml → 2 (workspace + package), package.json → 1, composer.json → 1 = 4 total
+    assert_eq!(result.len(), 4);
     let paths: Vec<&str> = result.iter().map(|m| m.path.as_str()).collect();
     assert!(paths.contains(&"Cargo.toml"));
     assert!(paths.contains(&"package.json"));
     assert!(paths.contains(&"composer.json"));
+}
+
+/// Verify that `version = { workspace = true }` (inline-table form) is
+/// recognised as workspace inheritance and returns a clear error rather
+/// than the generic "not a string value" error.
+///
+/// Regression guard for the inline-table detection gap: `item.as_table()`
+/// returns `None` for inline tables, so this form was previously undetected.
+#[test]
+fn update_manifest_content_toml_workspace_inherited_inline_table_returns_error() {
+    let content = "[package]\nname = \"my-crate\"\nversion = { workspace = true }\n";
+    let result =
+        update_manifest_content(content, &ManifestFormat::Toml, "package.version", "1.0.0");
+    assert!(
+        result.is_err(),
+        "inline-table workspace-inherited version should return an error"
+    );
+    let msg = format!("{:?}", result.unwrap_err());
+    assert!(
+        msg.contains("workspace inheritance"),
+        "error message should mention workspace inheritance, got: {msg}"
+    );
 }

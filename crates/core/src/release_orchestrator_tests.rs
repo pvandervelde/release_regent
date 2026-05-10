@@ -1279,3 +1279,169 @@ fn test_extract_changelog_from_pr_body_empty_body_returns_empty() {
     let result = extract_changelog_from_pr_body("", "## Changelog");
     assert_eq!(result, "");
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// cargo_workspace_member_cargo_tomls — private helper unit tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Verify that malformed TOML input returns an empty vec without panicking.
+#[test]
+fn test_cargo_workspace_member_cargo_tomls_malformed_toml_returns_empty() {
+    let result = cargo_workspace_member_cargo_tomls("this is not toml @@@ {{{");
+    assert!(
+        result.is_empty(),
+        "malformed TOML should return empty vec, got {result:?}"
+    );
+}
+
+/// Verify that a `Cargo.toml` with no `[workspace]` table returns an empty vec.
+#[test]
+fn test_cargo_workspace_member_cargo_tomls_no_workspace_table_returns_empty() {
+    let content = "[package]\nname = \"myapp\"\nversion = \"0.1.0\"\n";
+    let result = cargo_workspace_member_cargo_tomls(content);
+    assert!(
+        result.is_empty(),
+        "no [workspace] table should return empty vec, got {result:?}"
+    );
+}
+
+/// Verify that a workspace without a `members` array returns an empty vec.
+#[test]
+fn test_cargo_workspace_member_cargo_tomls_no_members_returns_empty() {
+    let content = "[workspace]\nresolver = \"2\"\n";
+    let result = cargo_workspace_member_cargo_tomls(content);
+    assert!(
+        result.is_empty(),
+        "workspace without members should return empty vec, got {result:?}"
+    );
+}
+
+/// Verify that glob patterns in the workspace `members` array are filtered out.
+///
+/// Glob characters `*`, `?`, `[`, and `{` all disqualify an entry from being
+/// returned because filesystem enumeration is not available here.
+#[test]
+fn test_cargo_workspace_member_cargo_tomls_globs_are_filtered() {
+    let content =
+        "[workspace]\nmembers = [\"crates/*\", \"tools/?\", \"lib/[a-z]*\", \"ext/{a,b}\"]\n";
+    let result = cargo_workspace_member_cargo_tomls(content);
+    assert!(
+        result.is_empty(),
+        "all glob patterns should be filtered, got {result:?}"
+    );
+}
+
+/// Verify that explicit (non-glob) workspace member paths are returned as
+/// `<member>/Cargo.toml` strings, while glob entries in the same list are
+/// silently skipped.
+#[test]
+fn test_cargo_workspace_member_cargo_tomls_explicit_paths_returned() {
+    let content = "[workspace]\nmembers = [\"crates/foo\", \"crates/bar\", \"crates/*\"]\n";
+    let result = cargo_workspace_member_cargo_tomls(content);
+    assert_eq!(
+        result.len(),
+        2,
+        "should return exactly two explicit members (glob skipped), got {result:?}"
+    );
+    assert!(
+        result.contains(&"crates/foo/Cargo.toml".to_string()),
+        "missing crates/foo/Cargo.toml in {result:?}"
+    );
+    assert!(
+        result.contains(&"crates/bar/Cargo.toml".to_string()),
+        "missing crates/bar/Cargo.toml in {result:?}"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// dedup_file_updates_by_path — private helper unit tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Verify that an empty input list is returned unchanged with no panic.
+#[test]
+fn test_dedup_file_updates_by_path_empty_input_returns_empty() {
+    let result = dedup_file_updates_by_path(vec![]);
+    assert!(result.is_empty(), "empty input should return empty vec");
+}
+
+/// Verify that a list with no duplicate paths is returned unchanged (same
+/// length and same order).
+#[test]
+fn test_dedup_file_updates_by_path_no_duplicates_returns_input_unchanged() {
+    let updates = vec![
+        FileUpdate {
+            path: "Cargo.toml".to_string(),
+            content: "version1".to_string(),
+        },
+        FileUpdate {
+            path: "package.json".to_string(),
+            content: "version2".to_string(),
+        },
+    ];
+    let result = dedup_file_updates_by_path(updates);
+    assert_eq!(result.len(), 2, "no duplicates should not drop any entries");
+    assert_eq!(result[0].path, "Cargo.toml");
+    assert_eq!(result[1].path, "package.json");
+}
+
+/// Verify that when two entries share the same path the **last** one is kept.
+///
+/// `detect_standard_manifests` emits `package.version` first and
+/// `workspace.package.version` last for the root `Cargo.toml`, so after
+/// deduplication the workspace key must win.
+#[test]
+fn test_dedup_file_updates_by_path_last_entry_wins_for_duplicates() {
+    let updates = vec![
+        FileUpdate {
+            path: "Cargo.toml".to_string(),
+            content: "package.version update".to_string(),
+        },
+        FileUpdate {
+            path: "Cargo.toml".to_string(),
+            content: "workspace.package.version update".to_string(),
+        },
+    ];
+    let result = dedup_file_updates_by_path(updates);
+    assert_eq!(
+        result.len(),
+        1,
+        "duplicate path should be collapsed to one entry"
+    );
+    assert_eq!(
+        result[0].content, "workspace.package.version update",
+        "last entry must win; got content: {:?}",
+        result[0].content
+    );
+}
+
+/// Verify that mixed duplicate and unique paths produce the correct selection:
+/// unique paths are kept as-is; duplicate paths keep only the last occurrence.
+/// Relative order in the output follows the position of the last (surviving)
+/// occurrence of each path in the original list.
+#[test]
+fn test_dedup_file_updates_by_path_mixed_keeps_correct_entries() {
+    // Cargo.toml twice (index 0 and 2), package.json once (index 1).
+    // After dedup: package.json (last-seen at index 1) comes before Cargo.toml
+    // (last-seen at index 2), preserving the relative order of last occurrences.
+    let updates = vec![
+        FileUpdate {
+            path: "Cargo.toml".to_string(),
+            content: "first".to_string(),
+        },
+        FileUpdate {
+            path: "package.json".to_string(),
+            content: "unique".to_string(),
+        },
+        FileUpdate {
+            path: "Cargo.toml".to_string(),
+            content: "last".to_string(),
+        },
+    ];
+    let result = dedup_file_updates_by_path(updates);
+    assert_eq!(result.len(), 2, "should collapse Cargo.toml to one entry");
+    // package.json (last-seen at original index 1) precedes Cargo.toml (last-seen at index 2).
+    assert_eq!(result[0].path, "package.json");
+    assert_eq!(result[0].content, "unique");
+    assert_eq!(result[1].path, "Cargo.toml");
+    assert_eq!(result[1].content, "last", "last Cargo.toml entry must win");
+}

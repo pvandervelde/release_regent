@@ -637,7 +637,7 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
                 "pyproject.toml",
                 "composer.json",
             ];
-            let mut probe_cache: std::collections::HashMap<&str, String> =
+            let mut probe_cache: std::collections::HashMap<String, String> =
                 std::collections::HashMap::new();
             for &candidate in &candidates {
                 if explicit_paths.contains(candidate) {
@@ -649,7 +649,7 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
                     .await
                 {
                     Ok(Some(content)) => {
-                        probe_cache.insert(candidate, content);
+                        probe_cache.insert(candidate.to_string(), content);
                     }
                     Ok(None) => {} // file not present — skip silently
                     Err(e) => {
@@ -661,7 +661,42 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
                     }
                 }
             }
-            let existing: Vec<&str> = probe_cache.keys().copied().collect();
+            // Discover Cargo workspace member crates from the root Cargo.toml.
+            // Glob-pattern entries (e.g. "crates/*") are skipped because they
+            // require filesystem enumeration; list those paths explicitly in
+            // `manifest_files` config if they need to be updated individually.
+            if let Some(root_cargo) = probe_cache.get("Cargo.toml") {
+                for member_path in cargo_workspace_member_cargo_tomls(root_cargo) {
+                    if explicit_paths.contains(member_path.as_str()) {
+                        continue;
+                    }
+                    if probe_cache.contains_key(&member_path) {
+                        continue;
+                    }
+                    match self
+                        .github
+                        .get_file_content(owner, repo, &member_path, branch)
+                        .await
+                    {
+                        Ok(Some(content)) => {
+                            debug!(
+                                path = %member_path,
+                                "Found Cargo workspace member manifest"
+                            );
+                            probe_cache.insert(member_path, content);
+                        }
+                        Ok(None) => {} // member's Cargo.toml absent on this branch — skip
+                        Err(e) => {
+                            warn!(
+                                path = %member_path,
+                                error = %e,
+                                "Failed to probe Cargo workspace member manifest; skipping"
+                            );
+                        }
+                    }
+                }
+            }
+            let existing: Vec<&str> = probe_cache.keys().map(|s| s.as_str()).collect();
             for cfg in detect_standard_manifests(&existing) {
                 manifests.push(std::borrow::Cow::Owned(cfg));
             }
@@ -854,6 +889,41 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
 // Private helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Parse a root `Cargo.toml` and return a `Cargo.toml` path for each
+/// workspace member that is listed as an **explicit path** (no glob characters).
+///
+/// Glob entries such as `"crates/*"` are silently skipped because enumerating
+/// them requires a directory listing that is not available here.  Users should
+/// add those member paths explicitly to `manifest_files` in the config when
+/// they need per-crate version updates.
+///
+/// Returns an empty `Vec` when the content cannot be parsed or the file
+/// contains no `[workspace] members` array.
+fn cargo_workspace_member_cargo_tomls(workspace_cargo_toml: &str) -> Vec<String> {
+    let doc: toml_edit::DocumentMut = match workspace_cargo_toml.parse() {
+        Ok(d) => d,
+        Err(_) => return Vec::new(),
+    };
+
+    let members = match doc
+        .get("workspace")
+        .and_then(|w| w.as_table())
+        .and_then(|t| t.get("members"))
+        .and_then(|m| m.as_array())
+    {
+        Some(a) => a,
+        None => return Vec::new(),
+    };
+
+    members
+        .iter()
+        .filter_map(|v| v.as_str())
+        // Skip glob patterns — they require filesystem enumeration.
+        .filter(|s| !s.contains('*') && !s.contains('?') && !s.contains('[') && !s.contains('{'))
+        .map(|s| format!("{s}/Cargo.toml"))
+        .collect()
+}
+
 /// Deduplicate a [`FileUpdate`] list by path, keeping the **last** entry for
 /// each unique path.
 ///
@@ -862,14 +932,36 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
 /// Passing duplicate paths to the Git Trees API results in silent data loss — the
 /// last blob silently wins.  This helper makes the last-writer-wins semantics
 /// explicit and predictable.
+///
+/// Emits a `warn!` log when duplicates are detected, because a mixed
+/// workspace+package root `Cargo.toml` (containing both `[workspace.package]`
+/// and `[package]`) will produce two entries for the same path; the warning
+/// helps operators distinguish an expected deduplication from an accidental one.
 fn dedup_file_updates_by_path(updates: Vec<FileUpdate>) -> Vec<FileUpdate> {
     let mut seen = std::collections::HashSet::new();
+    let mut duplicates: Vec<String> = Vec::new();
     let mut deduped: Vec<FileUpdate> = updates
         .into_iter()
         .rev()
-        .filter(|u| seen.insert(u.path.clone()))
+        .filter(|u| {
+            if seen.insert(u.path.clone()) {
+                true
+            } else {
+                duplicates.push(u.path.clone());
+                false
+            }
+        })
         .collect();
     deduped.reverse();
+    if !duplicates.is_empty() {
+        warn!(
+            paths = ?duplicates,
+            "Duplicate manifest paths detected; keeping last entry for each. \
+             For a mixed workspace+package root Cargo.toml, \
+             workspace.package.version is kept because detect_standard_manifests \
+             emits it last (after package.version)"
+        );
+    }
     deduped
 }
 
