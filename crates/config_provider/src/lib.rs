@@ -43,11 +43,13 @@ pub mod builder;
 pub mod errors;
 pub mod file_provider;
 pub mod formats;
+pub mod github_provider;
 pub mod validation;
 
 pub use builder::ConfigurationBuilder;
 pub use errors::{ConfigProviderError, ConfigProviderResult};
 pub use file_provider::FileConfigurationProvider;
+pub use github_provider::GitHubConfigurationProvider;
 pub use formats::{ConfigFormat, FormatDetector};
 pub use validation::{ConfigValidator, ValidationResult as ConfigValidationResult};
 

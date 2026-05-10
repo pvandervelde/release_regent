@@ -88,6 +88,8 @@ fn create_default_config() -> ReleaseRegentConfig {
                 main: "main".to_string(),
             },
         },
+        group: None,
+        locked_fields: Vec::new(),
         release_pr: ReleasePrConfig {
             title_template: "Release {{version}}".to_string(),
             body_template: "Release notes for {{version}}".to_string(),

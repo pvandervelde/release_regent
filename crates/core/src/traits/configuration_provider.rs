@@ -66,8 +66,21 @@ pub struct LoadOptions {
     pub cache: bool,
     /// Maximum age for cached configuration (in seconds)
     pub cache_ttl: Option<u64>,
+    /// GitHub App default branch for the target repository.
+    ///
+    /// Used by `GitHubConfigurationProvider` to fetch the repository dotfile
+    /// from the correct branch.  Populated from the webhook payload in server
+    /// mode.  When `None`, the provider falls back to `"main"`.
+    pub default_branch: Option<String>,
     /// Environment variable prefix for overrides
     pub env_prefix: Option<String>,
+    /// GitHub App installation ID for the event's target repository.
+    ///
+    /// When `Some`, `GitHubConfigurationProvider` activates the full five-level
+    /// merge pipeline (app-level → global policy → group policy → repo dotfile).
+    /// When `None` (CLI mode), the provider delegates entirely to
+    /// `FileConfigurationProvider`.
+    pub installation_id: Option<u64>,
     /// Whether to validate configuration after loading
     pub validate: bool,
 }

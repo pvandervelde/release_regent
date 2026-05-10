@@ -532,6 +532,19 @@ impl CoreError {
         )
     }
 
+    /// Returns `true` when the error represents a configuration problem.
+    ///
+    /// Used by `GitHubConfigurationProvider::get_merged_config` to distinguish
+    /// between hard config failures (parse errors, schema violations) that should
+    /// propagate immediately and transient infrastructure errors (network, API 503)
+    /// that should trigger a fallback or warning instead.
+    ///
+    /// Only `CoreError::Config` returns `true`; all other variants return `false`.
+    #[must_use]
+    pub fn is_config_error(&self) -> bool {
+        matches!(self, Self::Config { .. })
+    }
+
     /// Returns the number of seconds to wait before retrying, if a hint is available.
     ///
     /// | Variant | Delay |
