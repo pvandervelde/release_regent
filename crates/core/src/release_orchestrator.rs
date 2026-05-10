@@ -958,7 +958,8 @@ fn dedup_file_updates_by_path(updates: Vec<FileUpdate>) -> Vec<FileUpdate> {
             paths = ?duplicates,
             "Duplicate manifest paths detected; keeping last entry for each. \
              For a mixed workspace+package root Cargo.toml, \
-             workspace.package.version takes precedence over package.version"
+             workspace.package.version is kept because detect_standard_manifests \
+             emits it last (after package.version)"
         );
     }
     deduped

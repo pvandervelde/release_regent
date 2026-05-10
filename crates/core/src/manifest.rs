@@ -25,9 +25,11 @@
 //! | PHP / Composer | `composer.json`           | JSON        | `version`                        |
 //!
 //! For the root `Cargo.toml`, **two** entries are returned — one for the
-//! workspace key (`workspace.package.version`) and one for the plain-package
-//! key (`package.version`).  The orchestrator tries both; the one whose key
-//! is absent fails with [`CoreError::InvalidInput`] and is skipped.
+//! plain-package key (`package.version`) and one for the workspace key
+//! (`workspace.package.version`).  The workspace key is emitted **last** so
+//! that `dedup_file_updates_by_path` keeps it when both keys resolve to the
+//! same path (mixed workspace + package root).  The key that is absent in the
+//! actual file fails with [`CoreError::InvalidInput`] and is skipped.
 //!
 //! When a member-crate `Cargo.toml` uses `version.workspace = true` (inheriting
 //! the version from the workspace root), `update_manifest_content` returns
@@ -191,16 +193,20 @@ pub fn detect_standard_manifests(existing_paths: &[&str]) -> Vec<ManifestFileCon
     // Rust — root Cargo.toml.  Both a workspace root (`workspace.package.version`)
     // and a plain package (`package.version`) are tried; the one whose key is
     // absent produces a `CoreError::InvalidInput` that the orchestrator skips.
+    //
+    // ORDER MATTERS: `dedup_file_updates_by_path` keeps the **last** entry for
+    // each path, so `workspace.package.version` is emitted second so that it
+    // takes precedence over `package.version` for mixed workspace+package roots.
     if path_set.contains("Cargo.toml") {
         result.push(ManifestFileConfig {
             path: "Cargo.toml".to_string(),
             format: ManifestFormat::Toml,
-            version_key: "workspace.package.version".to_string(),
+            version_key: "package.version".to_string(),
         });
         result.push(ManifestFileConfig {
             path: "Cargo.toml".to_string(),
             format: ManifestFormat::Toml,
-            version_key: "package.version".to_string(),
+            version_key: "workspace.package.version".to_string(),
         });
     }
 

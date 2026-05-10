@@ -192,14 +192,14 @@ fn detect_standard_manifests_cargo_toml_detected() {
         2,
         "root Cargo.toml should produce two entries (workspace + package)"
     );
-    // First entry: workspace root key
+    // First entry: plain-package key (emitted first so workspace key wins deduplication)
     assert_eq!(result[0].path, "Cargo.toml");
     assert_eq!(result[0].format, ManifestFormat::Toml);
-    assert_eq!(result[0].version_key, "workspace.package.version");
-    // Second entry: plain package key
+    assert_eq!(result[0].version_key, "package.version");
+    // Second entry: workspace root key (emitted last so it wins deduplication)
     assert_eq!(result[1].path, "Cargo.toml");
     assert_eq!(result[1].format, ManifestFormat::Toml);
-    assert_eq!(result[1].version_key, "package.version");
+    assert_eq!(result[1].version_key, "workspace.package.version");
 }
 
 #[test]
@@ -254,7 +254,9 @@ fn detect_standard_manifests_member_cargo_toml_detected() {
 }
 
 /// Verify that the root `Cargo.toml` (two entries) and each workspace member
-/// `Cargo.toml` (one entry each) are all detected correctly when passed together.
+/// `Cargo.toml` (one entry each) are all detected correctly when passed together,
+/// and that `workspace.package.version` is the second (last-emitted) root entry
+/// so that `dedup_file_updates_by_path` keeps it when both root keys collide.
 #[test]
 fn detect_standard_manifests_root_and_member_cargo_tomls() {
     let result = detect_standard_manifests(&[
@@ -330,6 +332,10 @@ fn update_manifest_content_toml_workspace_inherited_returns_error() {
     );
 }
 
+/// Verify that all well-known manifests present in the same repository are
+/// detected in one call: root `Cargo.toml` produces two entries (package key
+/// first, workspace key last), `package.json` and `composer.json` one each
+/// — four entries in total.
 #[test]
 fn detect_standard_manifests_multiple_files_all_detected() {
     let result = detect_standard_manifests(&["Cargo.toml", "package.json", "composer.json"]);

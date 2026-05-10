@@ -1352,3 +1352,96 @@ fn test_cargo_workspace_member_cargo_tomls_explicit_paths_returned() {
         "missing crates/bar/Cargo.toml in {result:?}"
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// dedup_file_updates_by_path — private helper unit tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Verify that an empty input list is returned unchanged with no panic.
+#[test]
+fn test_dedup_file_updates_by_path_empty_input_returns_empty() {
+    let result = dedup_file_updates_by_path(vec![]);
+    assert!(result.is_empty(), "empty input should return empty vec");
+}
+
+/// Verify that a list with no duplicate paths is returned unchanged (same
+/// length and same order).
+#[test]
+fn test_dedup_file_updates_by_path_no_duplicates_returns_input_unchanged() {
+    let updates = vec![
+        FileUpdate {
+            path: "Cargo.toml".to_string(),
+            content: "version1".to_string(),
+        },
+        FileUpdate {
+            path: "package.json".to_string(),
+            content: "version2".to_string(),
+        },
+    ];
+    let result = dedup_file_updates_by_path(updates);
+    assert_eq!(result.len(), 2, "no duplicates should not drop any entries");
+    assert_eq!(result[0].path, "Cargo.toml");
+    assert_eq!(result[1].path, "package.json");
+}
+
+/// Verify that when two entries share the same path the **last** one is kept.
+///
+/// `detect_standard_manifests` emits `package.version` first and
+/// `workspace.package.version` last for the root `Cargo.toml`, so after
+/// deduplication the workspace key must win.
+#[test]
+fn test_dedup_file_updates_by_path_last_entry_wins_for_duplicates() {
+    let updates = vec![
+        FileUpdate {
+            path: "Cargo.toml".to_string(),
+            content: "package.version update".to_string(),
+        },
+        FileUpdate {
+            path: "Cargo.toml".to_string(),
+            content: "workspace.package.version update".to_string(),
+        },
+    ];
+    let result = dedup_file_updates_by_path(updates);
+    assert_eq!(
+        result.len(),
+        1,
+        "duplicate path should be collapsed to one entry"
+    );
+    assert_eq!(
+        result[0].content, "workspace.package.version update",
+        "last entry must win; got content: {:?}",
+        result[0].content
+    );
+}
+
+/// Verify that mixed duplicate and unique paths produce the correct selection:
+/// unique paths are kept as-is; duplicate paths keep only the last occurrence.
+/// Relative order in the output follows the position of the last (surviving)
+/// occurrence of each path in the original list.
+#[test]
+fn test_dedup_file_updates_by_path_mixed_keeps_correct_entries() {
+    // Cargo.toml twice (index 0 and 2), package.json once (index 1).
+    // After dedup: package.json (last-seen at index 1) comes before Cargo.toml
+    // (last-seen at index 2), preserving the relative order of last occurrences.
+    let updates = vec![
+        FileUpdate {
+            path: "Cargo.toml".to_string(),
+            content: "first".to_string(),
+        },
+        FileUpdate {
+            path: "package.json".to_string(),
+            content: "unique".to_string(),
+        },
+        FileUpdate {
+            path: "Cargo.toml".to_string(),
+            content: "last".to_string(),
+        },
+    ];
+    let result = dedup_file_updates_by_path(updates);
+    assert_eq!(result.len(), 2, "should collapse Cargo.toml to one entry");
+    // package.json (last-seen at original index 1) precedes Cargo.toml (last-seen at index 2).
+    assert_eq!(result[0].path, "package.json");
+    assert_eq!(result[0].content, "unique");
+    assert_eq!(result[1].path, "Cargo.toml");
+    assert_eq!(result[1].content, "last", "last Cargo.toml entry must win");
+}
