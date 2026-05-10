@@ -494,7 +494,9 @@ where
             };
 
             let ctx = VersionContext {
-                base_ref: current_version.as_ref().map(|v| format!("v{v}")),
+                base_ref: current_version
+                    .as_ref()
+                    .map(|v| format!("{}{v}", repo_config.core.version_prefix)),
                 current_version: current_version.clone(),
                 head_ref: pr_head_sha,
                 owner: owner.to_string(),
@@ -1017,7 +1019,9 @@ where
             versioning::resolve_current_version(&scoped_github, owner, repo, false).await?;
 
         let ctx = VersionContext {
-            base_ref: current_version.as_ref().map(|v| format!("v{v}")),
+            base_ref: current_version
+                .as_ref()
+                .map(|v| format!("{}{v}", repo_config.core.version_prefix)),
             current_version: current_version.clone(),
             head_ref: base_sha.to_string(),
             owner: owner.to_string(),
@@ -1541,7 +1545,9 @@ where
             }
 
             let ctx = VersionContext {
-                base_ref: current_version.as_ref().map(|v| format!("v{v}")),
+                base_ref: current_version
+                    .as_ref()
+                    .map(|v| format!("{}{v}", repo_config.core.version_prefix)),
                 current_version: current_version.clone(),
                 head_ref: pr.head.sha.clone(),
                 owner: owner.to_string(),
