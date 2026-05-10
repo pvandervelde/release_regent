@@ -610,7 +610,14 @@ impl ConfigLocks {
                 );
                 continue;
             }
-            self.locked.insert(path.clone());
+            if self.locked.contains(path.as_str()) {
+                tracing::warn!(
+                    path = %path, level = %source_level,
+                    "field already locked by higher level; ignoring duplicate lock entry"
+                );
+            } else {
+                self.locked.insert(path.clone());
+            }
         }
     }
 
@@ -627,7 +634,9 @@ impl ConfigLocks {
 **File**: `crates/core/src/traits/configuration_provider.rs`
 
 Two new fields: `installation_id: Option<u64>` and `default_branch: Option<String>`.
-Callers in `crates/core/src/lib.rs` are unchanged.
+Existing call sites compile without modification because both fields are `Option<_>`, but
+they **must be updated** to populate `installation_id` and `default_branch` from the
+webhook payload for the new GitHub-sourced config levels to activate.
 
 ---
 
@@ -652,6 +661,12 @@ where
     group_cache: tokio::sync::RwLock<HashMap<String, (ReleaseRegentConfig, Instant)>>,
     /// "{owner}/{repo}" → (config, cached_at). TTL: 300 s.
     repo_cache: tokio::sync::RwLock<HashMap<String, (ReleaseRegentConfig, Instant)>>,
+    /// Validates each parsed config level using schema rules and custom constraints.
+    ///
+    /// Uses `release_regent_config_provider::ConfigValidator` (re-exported from
+    /// `crates/config_provider/src/validation.rs`). Constructed with
+    /// `ConfigValidator::new()` (permissive mode); switch to `ConfigValidator::strict()`
+    /// for stricter policy enforcement if desired.
     validator: ConfigValidator,
 }
 
@@ -696,36 +711,52 @@ async fn get_merged_config(
             let meta = self.github.scoped_to(meta_id);
 
             // Level 3: Global policy
-            match self.load_global_policy(owner, &meta).await {
+            let metadata_reachable = match self.load_global_policy(owner, &meta).await {
                 Ok(Some(g)) => {
                     locks.extend_from(&g.locked_fields, "global");
                     result = merge_config_with_locks(result, g, &locks);
+                    true
                 }
-                Ok(None) => {}
+                Ok(None) => true,
                 Err(e) if e.is_config_error() => return Err(e),
-                Err(e) => tracing::warn!(org=%owner, error=%e,
-                    "Metadata repo unreachable; skipping global+group levels"),
-            }
+                Err(e) => {
+                    tracing::warn!(org=%owner, error=%e,
+                        "Metadata repo unreachable; skipping global AND group levels");
+                    false
+                }
+            };
 
             // Peek repo dotfile to discover group name (fetched once, applied at level 5)
             let repo_result = self.fetch_repo_dotfile(owner, repo, default_branch, &meta).await;
 
-            // Level 4: Group policy
-            let group = repo_result.as_ref().ok()
-                .and_then(Option::as_ref)
-                .and_then(|c: &ReleaseRegentConfig| c.group.clone());
+            // Warn if dotfile fetch failed with a transient API error: group policy will
+            // not be applied (group name cannot be resolved) and the event will hard-fail
+            // at level 5. The warn gives operators a clear signal in the log.
+            if let Err(ref e) = repo_result {
+                if !e.is_config_error() {
+                    tracing::warn!(repo=%format!("{owner}/{repo}"), error=%e,
+                        "Transient API error fetching repo dotfile; group policy will not be applied");
+                }
+            }
 
-            if let Some(ref g) = group {
-                match self.load_group_policy(owner, g, &meta).await {
-                    Ok(Some(gc)) => {
-                        locks.extend_from(&gc.locked_fields, &format!("group:{g}"));
-                        result = merge_config_with_locks(result, gc, &locks);
+            // Level 4: Group policy (only when metadata repo was reachable)
+            if metadata_reachable {
+                let group = repo_result.as_ref().ok()
+                    .and_then(Option::as_ref)
+                    .and_then(|c: &ReleaseRegentConfig| c.group.clone());
+
+                if let Some(ref g) = group {
+                    match self.load_group_policy(owner, g, &meta).await {
+                        Ok(Some(gc)) => {
+                            locks.extend_from(&gc.locked_fields, &format!("group:{g}"));
+                            result = merge_config_with_locks(result, gc, &locks);
+                        }
+                        Ok(None) => tracing::warn!(org=%owner, group=%g,
+                            "Group '{g}' declared in {owner}/{repo} but no group config found; skipping"),
+                        Err(e) if e.is_config_error() => return Err(e),
+                        Err(e) => tracing::warn!(group=%g, error=%e,
+                            "Failed to load group policy; skipping group level"),
                     }
-                    Ok(None) => tracing::warn!(org=%owner, group=%g,
-                        "Group '{g}' declared in {owner}/{repo} but no group config found; skipping"),
-                    Err(e) if e.is_config_error() => return Err(e),
-                    Err(e) => tracing::warn!(group=%g, error=%e,
-                        "Failed to load group policy; skipping group level"),
                 }
             }
 
@@ -830,21 +861,24 @@ mock.with_installation_id("myorg", ".release-regent", 99001)
 
 // Seed global policy
 .with_file_content("myorg", ".release-regent", "global.toml", "main", r#"
+    locked_fields = ["versioning.strategy"]
+
     [versioning]
     strategy = "conventional"
-    locked_fields = ["versioning.strategy"]
 "#)
 
 // Seed group policy
 .with_file_content("myorg", ".release-regent", "groups/platform.toml", "main", r#"
+    locked_fields = ["releases.draft"]
+
     [releases]
     draft = true
-    locked_fields = ["releases.draft"]
 "#)
 
 // Seed repo dotfile
-.with_file_content("myorg", "platform-api", ".release-regent.yml", "main", r#"
+.with_file_content("myorg", "platform-api", ".release-regent.toml", "main", r#"
     group = "platform"
+
     [release_pr]
     title_template = "chore(release): ${version} [platform-api]"
 "#)

@@ -180,8 +180,8 @@ Configuration is resolved in this order (later levels override earlier for unloc
   → `.release-regent.toml`; absence is not an error.
 - Locked fields at global/group level cannot be overridden by lower levels; violation
   causes a `warn!`, not a failure.
-- Template variables supported: `{version}`, `{version_tag}`, `{changelog}`,
-  `{commit_count}`, `{date}`.
+- Template variables supported: `${version}`, `${version_tag}`, `${changelog}`,
+  `${commit_count}`, `${date}`.
 - Separate in-memory caches per level (global: 600 s, group and repo: 300 s).
 - Parse or schema errors at any level fail the event; cache entry is evicted immediately.
 - CLI fallback: when `LoadOptions.installation_id` is `None`, all GitHub-sourced levels

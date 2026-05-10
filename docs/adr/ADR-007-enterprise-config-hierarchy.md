@@ -64,12 +64,16 @@ silently falls back to the app-level config as the top of the hierarchy.
 Repositories self-declare their group in the repo dotfile via a top-level `group` field:
 
 ```toml
-# .release-regent.yml in myorg/platform-api
+# .release-regent.toml in myorg/platform-api
 group = "platform"
 
 [release_pr]
 title_template = "chore(release): ${version} [platform-api]"
 ```
+
+> **Note**: The `group` field and section-based config both use TOML syntax here. Use
+> `.release-regent.toml` for TOML content and `.release-regent.yml` / `.release-regent.yaml`
+> for YAML content — the parser is selected by file extension.
 
 The `group` field is added to `ReleaseRegentConfig`. It is only meaningful in repository
 dotfiles; if present in global or group config files it is ignored with a `warn!`.
@@ -81,20 +85,20 @@ dotted field path. Lower levels cannot override locked fields.
 
 ```toml
 # global.toml
+locked_fields = ["versioning.strategy", "versioning.allow_override"]
+
 [versioning]
 strategy = "conventional"
 allow_override = false
-
-locked_fields = ["versioning.strategy", "versioning.allow_override"]
 ```
 
 ```toml
 # groups/platform.toml
-[releases]
-draft = true
-
 # Adds to global's locks; cannot remove globally-locked fields
 locked_fields = ["releases.draft"]
+
+[releases]
+draft = true
 ```
 
 **Lockable fields** (only these are valid in `locked_fields`):
@@ -145,6 +149,7 @@ at their own pace.
 | Group file present but invalid | **Hard fail** events for repos in that group |
 | Repository dotfile absent | Skip repo level; use merged result so far |
 | Repository dotfile present but invalid | **Hard fail** that event only |
+| Repository dotfile API error (503, network timeout) | **Hard fail** that event only — unlike a transient error on the metadata repo, the repo dotfile is the primary per-repository config source; transient failures are not silently skipped |
 
 The asymmetry between "absent = skip silently" and "present but invalid = hard fail" is
 intentional: absence is a valid operational state (not yet configured), while an invalid
@@ -259,26 +264,32 @@ if metadata_installation is Some(id):
     scoped ← github.scoped_to(id)
 
     // 2a. Global policy
+    metadata_reachable ← true
     global_raw ← fetch_file(scoped, org, ".release-regent", "global.toml")
     if global_raw is Ok(Some(content)):
         global_config ← parse_and_validate(content)   // Err → hard fail
         locks.extend(validate_lockable(global_config.locked_fields))
         result ← merge_with_locks(result, global_config, locks)
-    // if Ok(None): skip; if Err(API): fall through with warning
+    // if Ok(None): global absent; metadata reachable; continue to group level
+    if global_raw is Err(API):
+        warn!("Metadata repo unreachable; skipping global AND group levels")
+        metadata_reachable ← false
 
     // 2b. Group policy (need group name from repo dotfile peek)
-    group_name ← peek_group_field(owner, repo, branch, scoped)  // may return None
-    if group_name is Some(name):
-        group_raw ← fetch_file(scoped, org, ".release-regent", "groups/{name}.toml")
-        if group_raw is Ok(Some(content)):
-            group_config ← parse_and_validate(content)  // Err → hard fail
-            new_locks ← validate_lockable(group_config.locked_fields)
-            // Locks already in `locks` remain; new_locks adds more
-            locks.extend(new_locks)
-            result ← merge_with_locks(result, group_config, locks)
-        if group_raw is Ok(None):
-            warn!("Group '{name}' declared in {owner}/{repo} but no group config found")
-            // skip group level, continue
+    // Only attempted when metadata repo was reachable (global returned Ok)
+    if metadata_reachable:
+        group_name ← peek_group_field(owner, repo, branch, scoped)  // may return None
+        if group_name is Some(name):
+            group_raw ← fetch_file(scoped, org, ".release-regent", "groups/{name}.toml")
+            if group_raw is Ok(Some(content)):
+                group_config ← parse_and_validate(content)  // Err → hard fail
+                new_locks ← validate_lockable(group_config.locked_fields)
+                // Locks already in `locks` remain; new_locks adds more
+                locks.extend(new_locks)
+                result ← merge_with_locks(result, group_config, locks)
+            if group_raw is Ok(None):
+                warn!("Group '{name}' declared in {owner}/{repo} but no group config found")
+                // skip group level, continue
 
 else:
     warn!("Metadata repo {org}/.release-regent not accessible; using app-level as baseline")

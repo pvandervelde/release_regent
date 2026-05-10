@@ -787,7 +787,7 @@ for repositories in that group.
 - `get_file_content` for `groups/platform.toml` is called exactly once.
 - Both events use the same group policy values.
 
-## Lock Assertion Assertions
+## Lock Assertions
 
 **BA-59**: A field listed in `global.toml`'s `locked_fields` must not be overridable by
 group policy.
