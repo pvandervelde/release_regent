@@ -1531,10 +1531,7 @@ async fn test_load_group_policy_cache_keyed_by_org_and_group() {
 // G.3: get_merged_config — five-level pipeline
 // ─────────────────────────────────────────────────────────────────────────────
 
-use release_regent_core::traits::{
-    configuration_provider::{LoadOptions, RepositoryConfig},
-    ConfigurationProvider,
-};
+use release_regent_core::traits::{configuration_provider::LoadOptions, ConfigurationProvider};
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -2100,4 +2097,203 @@ async fn test_load_repository_config_cli_mode_delegates_to_inner() {
 
     // FileConfigurationProvider finds no per-repo file → Ok(None)
     assert!(result.is_none());
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// G.5: Integration scenarios — five-level config pipeline (server mode)
+//
+// These tests exercise the full path from provider construction through
+// `get_merged_config`, verifying each scenario produces the correct outcome
+// when using `MockGitHubOperations` with call-tracking.
+// ─────────────────────────────────────────────────────────────────────────────
+
+use release_regent_testing::mocks::MockGitHubOperations;
+
+/// Create a `GitHubConfigurationProvider<MockGitHubOperations>` backed by a real
+/// temp-dir baseline containing a valid app-level `release-regent.yml` (identical
+/// to `make_provider_with_app_config` but for `MockGitHubOperations`).
+async fn make_provider_with_mock(
+    mock: MockGitHubOperations,
+) -> super::GitHubConfigurationProvider<MockGitHubOperations> {
+    use crate::file_provider::FileConfigurationProvider;
+    let tmp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(tmp.path().join("release-regent.yml"), app_config_yaml())
+        .expect("write app config");
+    let inner = FileConfigurationProvider::new(tmp.path())
+        .await
+        .expect("FileConfigurationProvider");
+    std::mem::forget(tmp);
+    super::GitHubConfigurationProvider::new(inner, mock)
+}
+
+/// Seed the standard metadata repo global policy file on a `MockGitHubOperations`.
+async fn seed_mock_global(mock: &MockGitHubOperations, content: &str) {
+    mock.with_file_content(
+        "myorg",
+        ".release-regent",
+        "global.toml",
+        "main",
+        Some(content.to_string()),
+    )
+    .await;
+}
+
+/// Seed the repo dotfile on a `MockGitHubOperations`.
+async fn seed_mock_dotfile(mock: &MockGitHubOperations, content: &str) {
+    mock.with_file_content(
+        "myorg",
+        "myrepo",
+        ".release-regent.yml",
+        "main",
+        Some(content.to_string()),
+    )
+    .await;
+}
+
+/// Scenario (a): Global policy locks `versioning.strategy = "conventional"`.
+///
+/// The repo dotfile tries to override with the `external` strategy.
+/// Expected: The globally-locked value (`conventional`) wins; a `warn!` is emitted
+/// for the override attempt; `get_merged_config` succeeds and returns the locked value.
+#[tokio::test]
+#[traced_test]
+async fn test_g5_global_locks_strategy_prevents_repo_override() {
+    let mock = MockGitHubOperations::new();
+    let global_content =
+        "locked_fields = [\"versioning.strategy\"]\n[versioning]\nstrategy = \"conventional\"\n";
+    seed_mock_global(&mock, global_content).await;
+    // Repo dotfile tries to switch to the `external` strategy.
+    let dotfile_content = "versioning:\n  strategy: !external\n    command: \"./my-version.sh\"\n    env_vars: {}\n    timeout_ms: 30000\n";
+    seed_mock_dotfile(&mock, dotfile_content).await;
+    let provider = make_provider_with_mock(mock).await;
+
+    let result = provider
+        .get_merged_config("myorg", "myrepo", server_options())
+        .await
+        .expect("locked strategy must not hard-fail the event");
+
+    assert_eq!(
+        result.versioning.strategy,
+        VersioningStrategy::Conventional,
+        "globally-locked versioning.strategy must not be overridden by repo dotfile"
+    );
+    assert!(
+        logs_contain("locked field override attempt ignored"),
+        "must emit warn! when a locked field override is attempted"
+    );
+}
+
+/// Scenario (b): Metadata repo absent (installation ID lookup returns an error).
+///
+/// Expected: provider falls back to app-level + repo dotfile; a `warn!` is emitted;
+/// `get_file_content` is NOT called for the global policy file.
+#[tokio::test]
+#[traced_test]
+async fn test_g5_metadata_absent_uses_app_and_repo_dotfile_no_global_api_call() {
+    let mock = MockGitHubOperations::new().with_method_error(
+        "get_installation_id_for_repo",
+        "App not installed on metadata repo",
+    );
+    seed_mock_dotfile(&mock, &yaml_config("repo-v")).await;
+    let provider = make_provider_with_mock(mock.clone()).await;
+
+    let result = provider
+        .get_merged_config("myorg", "myrepo", server_options())
+        .await
+        .expect("metadata-absent must not hard-fail the event");
+
+    assert_eq!(
+        result.core.version_prefix, "repo-v",
+        "repo dotfile must apply when metadata repo is absent"
+    );
+    assert!(
+        logs_contain(".release-regent not accessible"),
+        "must emit warn! when metadata repo is absent"
+    );
+
+    // Quality checklist: no get_file_content call for the global policy.
+    let file_calls = mock.get_file_content_calls().await;
+    let global_calls: Vec<_> = file_calls
+        .iter()
+        .filter(|(_, repo, path, _)| repo == ".release-regent" && path.starts_with("global"))
+        .collect();
+    assert!(
+        global_calls.is_empty(),
+        "must not call get_file_content for global policy when metadata repo is absent, \
+         but got: {global_calls:?}"
+    );
+}
+
+/// Scenario (c): Global policy file contains invalid TOML.
+///
+/// Expected: `get_merged_config` returns `Err` with `is_config_error() == true`; no
+/// PR or version-calculator operations are attempted.
+#[tokio::test]
+async fn test_g5_invalid_global_hard_fails_with_config_error() {
+    let mock = MockGitHubOperations::new();
+    seed_mock_global(&mock, "not valid toml ]][[").await;
+    let provider = make_provider_with_mock(mock).await;
+
+    let result = provider
+        .get_merged_config("myorg", "myrepo", server_options())
+        .await;
+
+    assert!(result.is_err(), "invalid global.toml must return Err");
+    assert!(
+        result.unwrap_err().is_config_error(),
+        "error must be CoreError::Config"
+    );
+}
+
+/// Scenario (d): Repo dotfile is absent; global defaults used.
+///
+/// Expected: global-level `version_prefix` is the effective config; no `Err` returned.
+#[tokio::test]
+async fn test_g5_absent_repo_dotfile_uses_global_defaults() {
+    let mock = MockGitHubOperations::new();
+    seed_mock_global(&mock, &global_toml("global-v")).await;
+    // No repo dotfile seeded → all three dotfile probes return Ok(None).
+    let provider = make_provider_with_mock(mock).await;
+
+    let result = provider
+        .get_merged_config("myorg", "myrepo", server_options())
+        .await
+        .expect("absent repo dotfile must not fail");
+
+    assert_eq!(
+        result.core.version_prefix, "global-v",
+        "global policy must be the effective config when repo dotfile is absent"
+    );
+}
+
+/// Scenario (e): CLI mode (`installation_id = None`).
+///
+/// Expected: `get_merged_config` delegates entirely to `FileConfigurationProvider`
+/// without making any GitHub API calls.  The result reflects the app-level config
+/// (the temp-dir `release-regent.yml` seeded by `make_provider_with_mock`).
+#[tokio::test]
+async fn test_g5_cli_mode_delegates_to_file_provider_no_github_calls() {
+    let mock = MockGitHubOperations::new();
+    // Even if GitHub were called, the method errors would propagate as test failures.
+    // We verify via call tracking rather than error injection.
+    let provider = make_provider_with_mock(mock.clone()).await;
+
+    // CLI mode: installation_id = None.
+    let result = provider
+        .get_merged_config("myorg", "myrepo", cli_options())
+        .await
+        .expect("CLI mode must delegate to FileConfigurationProvider without error");
+
+    // FileConfigurationProvider returns the app-level config (version_prefix = "app-v").
+    assert_eq!(
+        result.core.version_prefix, "app-v",
+        "CLI mode must return the FileConfigurationProvider result (app-level config)"
+    );
+
+    // No GitHub API calls must have been made for config.
+    let file_calls = mock.get_file_content_calls().await;
+    assert!(
+        file_calls.is_empty(),
+        "CLI mode must not make any get_file_content GitHub API calls, but got: {file_calls:?}"
+    );
 }
