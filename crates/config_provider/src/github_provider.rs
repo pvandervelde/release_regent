@@ -40,7 +40,9 @@ use release_regent_core::{
     CoreResult,
 };
 
-use crate::{file_provider::FileConfigurationProvider, validation::ConfigValidator};
+use crate::{
+    file_provider::FileConfigurationProvider, formats::ConfigFormat, validation::ConfigValidator,
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Lockable field registry
@@ -394,13 +396,15 @@ const REPO_GROUP_CACHE_TTL: Duration = Duration::from_secs(300);
 /// | `group_cache` | `"{org}/{group}"` | 300 s |
 /// | `repo_cache` | `"{owner}/{repo}"` | 300 s |
 ///
-/// A parse or validation error at any level evicts the relevant cache entry immediately
-/// so that a corrected file is picked up on the next event.
+/// `None` entries (absent files) are cached exactly like present-file entries so
+/// that repeated events in the same TTL window do not re-probe the API.
+///
+/// A parse or validation error at any level evicts the relevant cache entry so
+/// that a corrected file is picked up on the next event.
 ///
 /// # Spec reference
 ///
 /// `docs/specs/interfaces/github_operations_additions.md` §4
-#[allow(dead_code)] // fields used by G.2 (resolve_metadata_installation, load_global_policy, load_group_policy, fetch_repo_dotfile)
 pub struct GitHubConfigurationProvider<G>
 where
     G: GitHubOperations + Clone + Send + Sync,
@@ -411,12 +415,15 @@ where
     github: G,
     /// `org` → installation ID for `{org}/.release-regent`. Never evicted.
     metadata_installation_cache: RwLock<HashMap<String, u64>>,
-    /// `org` → `(config, cached_at)`. TTL: [`GLOBAL_CACHE_TTL`].
-    global_cache: RwLock<HashMap<String, (ReleaseRegentConfig, Instant)>>,
-    /// `"{org}/{group}"` → `(config, cached_at)`. TTL: [`REPO_GROUP_CACHE_TTL`].
-    group_cache: RwLock<HashMap<String, (ReleaseRegentConfig, Instant)>>,
-    /// `"{owner}/{repo}"` → `(config, cached_at)`. TTL: [`REPO_GROUP_CACHE_TTL`].
-    repo_cache: RwLock<HashMap<String, (ReleaseRegentConfig, Instant)>>,
+    /// `org` → `(config_or_none, cached_at)`. TTL: [`GLOBAL_CACHE_TTL`].
+    /// `None` means the global policy file is absent (valid operational state).
+    global_cache: RwLock<HashMap<String, (Option<ReleaseRegentConfig>, Instant)>>,
+    /// `"{org}/{group}"` → `(config_or_none, cached_at)`. TTL: [`REPO_GROUP_CACHE_TTL`].
+    /// `None` means the group policy file is absent.
+    group_cache: RwLock<HashMap<String, (Option<ReleaseRegentConfig>, Instant)>>,
+    /// `"{owner}/{repo}"` → `(config_or_none, cached_at)`. TTL: [`REPO_GROUP_CACHE_TTL`].
+    /// `None` means the repo dotfile is absent.
+    repo_cache: RwLock<HashMap<String, (Option<ReleaseRegentConfig>, Instant)>>,
     /// Schema validator for each parsed config level.
     validator: ConfigValidator,
 }
@@ -454,12 +461,70 @@ impl<G: GitHubOperations + Clone + Send + Sync> GitHubConfigurationProvider<G> {
     /// # Spec reference
     ///
     /// `docs/specs/interfaces/github_operations_additions.md` §6 — `resolve_metadata_installation`
-    #[allow(dead_code)] // stub; implemented in G.2
-    async fn resolve_metadata_installation(&self, _org: &str) -> Option<u64> {
-        unimplemented!(
-            "See docs/specs/interfaces/github_operations_additions.md §6 \
-             (resolve_metadata_installation)"
-        );
+    async fn resolve_metadata_installation(&self, org: &str) -> Option<u64> {
+        // Fast path: permanent cache hit.
+        {
+            let cache = self.metadata_installation_cache.read().await;
+            if let Some(&id) = cache.get(org) {
+                return Some(id);
+            }
+        }
+
+        // Slow path: look up via GitHub API.
+        match self
+            .github
+            .get_installation_id_for_repo(org, ".release-regent")
+            .await
+        {
+            Ok(id) => {
+                self.metadata_installation_cache
+                    .write()
+                    .await
+                    .insert(org.to_string(), id);
+                Some(id)
+            }
+            Err(e) => {
+                warn!(
+                    org = %org,
+                    error = %e,
+                    "metadata repository is not accessible; \
+                     falling back to app-level config as effective top"
+                );
+                None
+            }
+        }
+    }
+
+    /// Parse raw file content with the given format and run schema validation.
+    ///
+    /// Returns `Err(CoreError::Config)` when parsing fails or when the parsed
+    /// config does not satisfy the validator's rules.
+    fn parse_and_validate_content(
+        &self,
+        format: ConfigFormat,
+        content: &str,
+        source_desc: &str,
+    ) -> CoreResult<ReleaseRegentConfig> {
+        let config = format.parse(content).map_err(|e| {
+            release_regent_core::CoreError::config(format!(
+                "Failed to parse config at {source_desc}: {e}"
+            ))
+        })?;
+
+        let validation = self.validator.validate(&config).map_err(|e| {
+            release_regent_core::CoreError::config(format!(
+                "Validation error for {source_desc}: {e}"
+            ))
+        })?;
+
+        if !validation.is_valid {
+            return Err(release_regent_core::CoreError::config(format!(
+                "Config at {source_desc} is invalid: {}",
+                validation.errors.join(", ")
+            )));
+        }
+
+        Ok(config)
     }
 
     /// Probe the metadata repository for `global.toml` (then `.yml`, then `.yaml`) and
@@ -475,15 +540,68 @@ impl<G: GitHubOperations + Clone + Send + Sync> GitHubConfigurationProvider<G> {
     /// # Spec reference
     ///
     /// `docs/specs/interfaces/github_operations_additions.md` §6 — `load_global_policy`
-    #[allow(dead_code)] // stub; implemented in G.2
     async fn load_global_policy(
         &self,
-        _org: &str,
-        _client: &G,
+        org: &str,
+        client: &G,
     ) -> CoreResult<Option<ReleaseRegentConfig>> {
-        unimplemented!(
-            "See docs/specs/interfaces/github_operations_additions.md §6 (load_global_policy)"
-        );
+        // Cache check.
+        {
+            let cache = self.global_cache.read().await;
+            if let Some((cached, cached_at)) = cache.get(org) {
+                if cached_at.elapsed() < GLOBAL_CACHE_TTL {
+                    return Ok(cached.clone());
+                }
+            }
+        }
+
+        // TOML-first probe order for the metadata repo.
+        // "main" is the conventional default branch for the metadata repository.
+        const META_BRANCH: &str = "main";
+        const META_REPO: &str = ".release-regent";
+        let probes: &[(&str, ConfigFormat)] = &[
+            ("global.toml", ConfigFormat::Toml),
+            ("global.yml", ConfigFormat::Yaml),
+            ("global.yaml", ConfigFormat::Yaml),
+        ];
+
+        for (path, format) in probes {
+            match client
+                .get_file_content(org, META_REPO, path, META_BRANCH)
+                .await
+            {
+                Ok(Some(content)) => {
+                    let source = format!("{org}/{META_REPO}/{path}");
+                    match self.parse_and_validate_content(*format, &content, &source) {
+                        Ok(config) => {
+                            self.global_cache
+                                .write()
+                                .await
+                                .insert(org.to_string(), (Some(config.clone()), Instant::now()));
+                            return Ok(Some(config));
+                        }
+                        Err(e) => {
+                            // Evict on parse/validation error so the next event re-probes.
+                            self.global_cache.write().await.remove(org);
+                            return Err(e);
+                        }
+                    }
+                }
+                Ok(None) => continue, // file absent; try next candidate
+                Err(api_err) => {
+                    // Transient API failure: propagate; caller decides whether to warn-and-skip
+                    // or hard-fail.
+                    return Err(api_err);
+                }
+            }
+        }
+
+        // All candidates absent: cache None and return Ok(None).
+        self.global_cache
+            .write()
+            .await
+            .insert(org.to_string(), (None, Instant::now()));
+        Ok(None)
     }
 
     /// Probe the metadata repository for `groups/{group}.toml` (then `.yml`, `.yaml`) and
@@ -498,16 +616,68 @@ impl<G: GitHubOperations + Clone + Send + Sync> GitHubConfigurationProvider<G> {
     /// # Spec reference
     ///
     /// `docs/specs/interfaces/github_operations_additions.md` §6 — `load_group_policy`
-    #[allow(dead_code)] // stub; implemented in G.2
     async fn load_group_policy(
         &self,
-        _org: &str,
-        _group: &str,
-        _client: &G,
+        org: &str,
+        group: &str,
+        client: &G,
     ) -> CoreResult<Option<ReleaseRegentConfig>> {
-        unimplemented!(
-            "See docs/specs/interfaces/github_operations_additions.md §6 (load_group_policy)"
-        );
+        let cache_key = format!("{org}/{group}");
+
+        // Cache check.
+        {
+            let cache = self.group_cache.read().await;
+            if let Some((cached, cached_at)) = cache.get(&cache_key) {
+                if cached_at.elapsed() < REPO_GROUP_CACHE_TTL {
+                    return Ok(cached.clone());
+                }
+            }
+        }
+
+        const META_BRANCH: &str = "main";
+        const META_REPO: &str = ".release-regent";
+        // Build owned probe paths so that format! can embed the group name.
+        let probe_paths = [
+            format!("groups/{group}.toml"),
+            format!("groups/{group}.yml"),
+            format!("groups/{group}.yaml"),
+        ];
+        let probe_formats = [ConfigFormat::Toml, ConfigFormat::Yaml, ConfigFormat::Yaml];
+
+        for (path, format) in probe_paths.iter().zip(probe_formats.iter()) {
+            match client
+                .get_file_content(org, META_REPO, path, META_BRANCH)
+                .await
+            {
+                Ok(Some(content)) => {
+                    let source = format!("{org}/{META_REPO}/{path}");
+                    match self.parse_and_validate_content(*format, &content, &source) {
+                        Ok(config) => {
+                            self.group_cache
+                                .write()
+                                .await
+                                .insert(cache_key, (Some(config.clone()), Instant::now()));
+                            return Ok(Some(config));
+                        }
+                        Err(e) => {
+                            self.group_cache.write().await.remove(&cache_key);
+                            return Err(e);
+                        }
+                    }
+                }
+                Ok(None) => continue,
+                Err(api_err) => {
+                    return Err(api_err);
+                }
+            }
+        }
+
+        // All candidates absent.
+        self.group_cache
+            .write()
+            .await
+            .insert(cache_key, (None, Instant::now()));
+        Ok(None)
     }
 
     /// Probe the target repository for `.release-regent.yml` (then `.yaml`, then `.toml`)
@@ -528,17 +698,65 @@ impl<G: GitHubOperations + Clone + Send + Sync> GitHubConfigurationProvider<G> {
     /// # Spec reference
     ///
     /// `docs/specs/interfaces/github_operations_additions.md` §6 — `fetch_repo_dotfile`
-    #[allow(dead_code)] // stub; implemented in G.2
     async fn fetch_repo_dotfile(
         &self,
-        _owner: &str,
-        _repo: &str,
-        _branch: &str,
-        _client: &G,
+        owner: &str,
+        repo: &str,
+        branch: &str,
+        client: &G,
     ) -> CoreResult<Option<ReleaseRegentConfig>> {
-        unimplemented!(
-            "See docs/specs/interfaces/github_operations_additions.md §6 (fetch_repo_dotfile)"
-        );
+        let cache_key = format!("{owner}/{repo}");
+
+        // Cache check.
+        {
+            let cache = self.repo_cache.read().await;
+            if let Some((cached, cached_at)) = cache.get(&cache_key) {
+                if cached_at.elapsed() < REPO_GROUP_CACHE_TTL {
+                    return Ok(cached.clone());
+                }
+            }
+        }
+
+        // YAML-first probe order (matches existing installations that use .yml).
+        let probes: &[(&str, ConfigFormat)] = &[
+            (".release-regent.yml", ConfigFormat::Yaml),
+            (".release-regent.yaml", ConfigFormat::Yaml),
+            (".release-regent.toml", ConfigFormat::Toml),
+        ];
+
+        for (path, format) in probes {
+            match client.get_file_content(owner, repo, path, branch).await {
+                Ok(Some(content)) => {
+                    let source = format!("{owner}/{repo}/{path}@{branch}");
+                    match self.parse_and_validate_content(*format, &content, &source) {
+                        Ok(config) => {
+                            self.repo_cache
+                                .write()
+                                .await
+                                .insert(cache_key, (Some(config.clone()), Instant::now()));
+                            return Ok(Some(config));
+                        }
+                        Err(e) => {
+                            // Evict on error; hard-fail the event.
+                            self.repo_cache.write().await.remove(&cache_key);
+                            return Err(e);
+                        }
+                    }
+                }
+                Ok(None) => continue, // try next filename
+                Err(api_err) => {
+                    // API errors on the target repo dotfile are always hard failures.
+                    return Err(api_err);
+                }
+            }
+        }
+
+        // All probes returned None: dotfile absent.
+        self.repo_cache
+            .write()
+            .await
+            .insert(cache_key, (None, Instant::now()));
+        Ok(None)
     }
 }
 
