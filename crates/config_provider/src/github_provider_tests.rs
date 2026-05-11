@@ -1751,22 +1751,24 @@ async fn test_get_merged_config_api_error_on_global_uses_app_plus_repo_dotfile()
 
 // ── get_merged_config — lock semantics ────────────────────────────────────────
 
-/// Global policy locks `versioning.allow_override`.
-/// Group tries to override it → `warn!` emitted; locked value (app-level default) preserved.
+/// Global policy locks `releases.draft` (default = false).
+/// Group tries to override it with `true` → `warn!` emitted; locked value (false) preserved.
 #[tokio::test]
 #[traced_test]
 async fn test_get_merged_config_global_locks_field_group_cannot_override() {
     let gh = TestGitHub::new();
 
-    // Global: locks allow_override. Per spec lock-then-merge semantics, the app-level
-    // value (false) is preserved during the global merge. Group's `true` attempt warns.
-    let global_toml_content =
-        "locked_fields = [\"versioning.allow_override\"]\n[versioning]\nallow_override = false\n";
+    // Global: lock draft (which is false by default) with the same default value.
+    // lock-then-merge means global's own draft=false merges cleanly (same as base),
+    // so no warn fires at level 3. Group's draft=true fires the warn at level 4.
+    let global_toml_content = "locked_fields = [\"releases.draft\"]\n[releases]\ndraft = false\n";
     seed_global(&gh, global_toml_content).await;
 
-    let group_toml_content = "[versioning]\nallow_override = true\n";
+    // Group tries to set draft = true.
+    let group_toml_content = "[releases]\ndraft = true\n";
     seed_group(&gh, "mygroup", group_toml_content).await;
 
+    // Repo dotfile declares group; no draft setting (defaults to false).
     seed_dotfile(&gh, &repo_dotfile_yaml_with_group("repo-v", "mygroup")).await;
     let provider = make_provider_with_app_config(gh).await;
 
@@ -1776,14 +1778,14 @@ async fn test_get_merged_config_global_locks_field_group_cannot_override() {
         .expect("should succeed");
 
     assert!(
-        !result.versioning.allow_override,
-        "locked field must not be overridden by group"
+        !result.releases.draft,
+        "globally-locked releases.draft must not be overridden by group"
     );
     assert!(logs_contain("locked field override attempt ignored"));
 }
 
-/// Group policy locks `releases.draft`.
-/// Repo dotfile tries to override it → `warn!` emitted; locked value preserved.
+/// Group policy locks `releases.draft` (default = false).
+/// Repo dotfile tries to override it with `true` → `warn!` emitted; locked value preserved.
 #[tokio::test]
 #[traced_test]
 async fn test_get_merged_config_group_locks_field_repo_dotfile_cannot_override() {
@@ -1791,13 +1793,13 @@ async fn test_get_merged_config_group_locks_field_repo_dotfile_cannot_override()
 
     seed_global(&gh, &global_toml("global-v")).await;
 
-    // Group: locks releases.draft (app-level default is false).
+    // Group: lock draft = false (same value as app-level default so no warn at level 4 merge).
     let group_content = "locked_fields = [\"releases.draft\"]\n[releases]\ndraft = false\n";
     seed_group(&gh, "mygroup", group_content).await;
 
-    // Repo dotfile: tries to set draft = true.
+    // Repo dotfile: tries to set draft = true (YAML format, file is .release-regent.yml).
     let repo_content =
-        "group: \"mygroup\"\n[releases]\ndraft = true\n[core]\nversion_prefix = \"repo-v\"\n";
+        "group: \"mygroup\"\nreleases:\n  draft: true\ncore:\n  version_prefix: \"repo-v\"\n";
     seed_dotfile(&gh, repo_content).await;
 
     let provider = make_provider_with_app_config(gh).await;
@@ -1809,7 +1811,7 @@ async fn test_get_merged_config_group_locks_field_repo_dotfile_cannot_override()
 
     assert!(
         !result.releases.draft,
-        "locked releases.draft must not be overridden by repo dotfile"
+        "group-locked releases.draft must not be overridden by repo dotfile"
     );
     assert!(logs_contain("locked field override attempt ignored"));
 }
@@ -1821,8 +1823,9 @@ async fn test_get_merged_config_locked_fields_in_repo_dotfile_are_cleared() {
     let gh = TestGitHub::new();
     seed_global(&gh, &global_toml("global-v")).await;
 
+    // YAML format (file is .release-regent.yml).
     let repo_content =
-        "locked_fields = [\"versioning.strategy\"]\n[core]\nversion_prefix = \"repo-v\"\n";
+        "locked_fields:\n  - \"versioning.strategy\"\ncore:\n  version_prefix: \"repo-v\"\n";
     seed_dotfile(&gh, repo_content).await;
 
     let provider = make_provider_with_app_config(gh).await;
@@ -1871,7 +1874,7 @@ async fn test_get_merged_config_non_lockable_path_in_global_locked_fields_is_ign
         "non-lockable field in locked_fields must not block repo dotfile from overriding"
     );
     assert!(
-        logs_contain("not a lockable path"),
+        logs_contain("not a lockable policy field"),
         "must warn when a non-lockable path appears in locked_fields"
     );
 }

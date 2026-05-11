@@ -801,13 +801,135 @@ where
     #[allow(clippy::too_many_lines)] // Five-level pipeline is inherently long; sub-helpers keep it manageable
     async fn get_merged_config(
         &self,
-        _owner: &str,
-        _repo: &str,
-        _options: LoadOptions,
+        owner: &str,
+        repo: &str,
+        options: LoadOptions,
     ) -> CoreResult<ReleaseRegentConfig> {
-        unimplemented!(
-            "See docs/specs/interfaces/github_operations_additions.md §5 (get_merged_config)"
+        // CLI / no-GitHub fallback — delegate entirely to the file provider.
+        if options.installation_id.is_none() {
+            return self.inner.get_merged_config(owner, repo, options).await;
+        }
+
+        let installation_id = options.installation_id.unwrap();
+        let default_branch = options.default_branch.as_deref().unwrap_or("main");
+
+        // Level 1: Built-in defaults.
+        let mut result = ReleaseRegentConfig::default();
+        let mut locks = ConfigLocks::default();
+
+        // Level 2: App-level (local disk, always present).
+        result = merge_config(
+            result,
+            self.inner.load_global_config(options.clone()).await?,
         );
+
+        // Levels 3, 4, 5: Metadata repo path vs. no-metadata fallback.
+        match self.resolve_metadata_installation(owner).await {
+            Some(meta_id) => {
+                let meta = self.github.scoped_to(meta_id);
+
+                // Level 3: Global policy.
+                let metadata_reachable = match self.load_global_policy(owner, &meta).await {
+                    Ok(Some(g)) => {
+                        locks.extend_from(&g.locked_fields, "global");
+                        result = merge_config_with_locks(result, g, &locks);
+                        true
+                    }
+                    Ok(None) => true,
+                    Err(e) if e.is_config_error() => return Err(e),
+                    Err(e) => {
+                        tracing::warn!(
+                            org = %owner,
+                            error = %e,
+                            "Metadata repo unreachable; skipping global AND group levels"
+                        );
+                        false
+                    }
+                };
+
+                // Peek repo dotfile with the meta-scoped client (fetched once, reused at level 5).
+                let repo_result = self
+                    .fetch_repo_dotfile(owner, repo, default_branch, &meta)
+                    .await;
+
+                if let Err(ref e) = repo_result {
+                    if !e.is_config_error() {
+                        tracing::warn!(
+                            repo = %format!("{owner}/{repo}"),
+                            error = %e,
+                            "Transient API error fetching repo dotfile; \
+                             group policy will not be applied"
+                        );
+                    }
+                }
+
+                // Level 4: Group policy (only if metadata repo was reachable).
+                if metadata_reachable {
+                    let group = repo_result
+                        .as_ref()
+                        .ok()
+                        .and_then(Option::as_ref)
+                        .and_then(|c: &ReleaseRegentConfig| c.group.clone());
+
+                    if let Some(ref g) = group {
+                        match self.load_group_policy(owner, g, &meta).await {
+                            Ok(Some(gc)) => {
+                                locks.extend_from(&gc.locked_fields, &format!("group:{g}"));
+                                result = merge_config_with_locks(result, gc, &locks);
+                            }
+                            Ok(None) => {
+                                tracing::warn!(
+                                    org = %owner,
+                                    group = %g,
+                                    "Group '{g}' declared in {owner}/{repo} but \
+                                     no group config found; skipping"
+                                );
+                            }
+                            Err(e) if e.is_config_error() => return Err(e),
+                            Err(e) => {
+                                tracing::warn!(
+                                    group = %g,
+                                    error = %e,
+                                    "Failed to load group policy; skipping group level"
+                                );
+                            }
+                        }
+                    }
+                }
+
+                // Level 5: Repo dotfile (reusing the already-fetched result).
+                match repo_result? {
+                    Some(mut rc) => {
+                        if !rc.locked_fields.is_empty() {
+                            tracing::warn!(
+                                repo = %format!("{owner}/{repo}"),
+                                "locked_fields in repository dotfile is ignored"
+                            );
+                            rc.locked_fields.clear();
+                        }
+                        result = merge_config_with_locks(result, rc, &locks);
+                    }
+                    None => {}
+                }
+            }
+            None => {
+                // Metadata repo absent: use only app-level + repo dotfile.
+                warn!(
+                    org = %owner,
+                    "Metadata repo {owner}/.release-regent not accessible; \
+                     using app-level as baseline"
+                );
+                let scoped = self.github.scoped_to(installation_id);
+                if let Some(rc) = self
+                    .fetch_repo_dotfile(owner, repo, default_branch, &scoped)
+                    .await?
+                {
+                    result = merge_config_with_locks(result, rc, &locks);
+                }
+            }
+        }
+
+        Ok(result)
     }
 
     /// Load configuration for a specific repository.
@@ -824,13 +946,32 @@ where
     /// `docs/specs/interfaces/github_operations_additions.md` §5
     async fn load_repository_config(
         &self,
-        _owner: &str,
-        _repo: &str,
-        _options: LoadOptions,
+        owner: &str,
+        repo: &str,
+        options: LoadOptions,
     ) -> CoreResult<Option<RepositoryConfig>> {
-        unimplemented!(
-            "See docs/specs/interfaces/github_operations_additions.md §5 (load_repository_config)"
-        );
+        if options.installation_id.is_none() {
+            return self
+                .inner
+                .load_repository_config(owner, repo, options)
+                .await;
+        }
+
+        let installation_id = options.installation_id.unwrap();
+        let default_branch = options.default_branch.as_deref().unwrap_or("main");
+        let client = self.github.scoped_to(installation_id);
+
+        match self
+            .fetch_repo_dotfile(owner, repo, default_branch, &client)
+            .await?
+        {
+            Some(config) => Ok(Some(RepositoryConfig {
+                config,
+                name: repo.to_string(),
+                owner: owner.to_string(),
+            })),
+            None => Ok(None),
+        }
     }
 
     /// Load the app-level global config from local disk.
