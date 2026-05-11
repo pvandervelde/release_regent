@@ -155,13 +155,12 @@ async fn build_server_processor(webhook_secret: String) -> Result<ServerProcesso
     };
     info!(config_dir = %config_dir.display(), "Using configuration directory");
 
-    let config_provider =
-        release_regent_config_provider::GitHubConfigurationProvider::new(
-            release_regent_config_provider::FileConfigurationProvider::new(config_dir)
-                .await
-                .map_err(|e| errors::Error::config_provider(e.to_string()))?,
-            github_client.clone(),
-        );
+    let config_provider = release_regent_config_provider::GitHubConfigurationProvider::new(
+        release_regent_config_provider::FileConfigurationProvider::new(config_dir)
+            .await
+            .map_err(|e| errors::Error::config_provider(e.to_string()))?,
+        github_client.clone(),
+    );
 
     // The GitHubVersionCalculator is constructed with a clone of the (unscoped)
     // GitHub client and held as a trait object.  The processor calls
