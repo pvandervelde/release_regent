@@ -269,3 +269,157 @@ notifications:
     let reloaded: ReleaseRegentConfig = serde_yaml::from_str(&serialized).unwrap();
     assert!(reloaded.notifications.webhook.unwrap().headers.is_empty());
 }
+
+// ============================================================================
+// ReleaseRegentConfig::group and locked_fields — ADR-007 extension
+// ============================================================================
+
+#[test]
+fn test_release_regent_config_group_none_by_default() {
+    assert!(ReleaseRegentConfig::default().group.is_none());
+}
+
+#[test]
+fn test_release_regent_config_locked_fields_empty_by_default() {
+    assert!(ReleaseRegentConfig::default().locked_fields.is_empty());
+}
+
+#[test]
+fn test_release_regent_config_group_yaml_round_trip() {
+    let yaml = r#"
+group: platform
+"#;
+    let config: ReleaseRegentConfig =
+        serde_yaml::from_str(yaml).expect("should deserialize group field");
+    assert_eq!(config.group.as_deref(), Some("platform"));
+
+    let serialized = serde_yaml::to_string(&config).expect("should serialize");
+    let reloaded: ReleaseRegentConfig =
+        serde_yaml::from_str(&serialized).expect("should re-deserialize");
+    assert_eq!(reloaded.group.as_deref(), Some("platform"));
+}
+
+#[test]
+fn test_release_regent_config_group_absent_yaml_deserializes_to_none() {
+    // A YAML document without the `group` key must silently default to None.
+    let yaml = r#"
+core:
+  version_prefix: v
+"#;
+    let config: ReleaseRegentConfig =
+        serde_yaml::from_str(yaml).expect("should deserialize without group key");
+    assert!(config.group.is_none());
+}
+
+#[test]
+fn test_release_regent_config_locked_fields_yaml_round_trip() {
+    let yaml = r#"
+locked_fields:
+  - versioning.strategy
+  - releases.draft
+"#;
+    let config: ReleaseRegentConfig =
+        serde_yaml::from_str(yaml).expect("should deserialize locked_fields");
+    assert_eq!(
+        config.locked_fields,
+        vec!["versioning.strategy", "releases.draft"]
+    );
+
+    let serialized = serde_yaml::to_string(&config).expect("should serialize");
+    let reloaded: ReleaseRegentConfig =
+        serde_yaml::from_str(&serialized).expect("should re-deserialize");
+    assert_eq!(
+        reloaded.locked_fields,
+        vec!["versioning.strategy", "releases.draft"]
+    );
+}
+
+#[test]
+fn test_release_regent_config_locked_fields_absent_yaml_deserializes_to_empty() {
+    // A YAML document without `locked_fields` must silently default to [].
+    let yaml = r#"
+core:
+  version_prefix: v
+"#;
+    let config: ReleaseRegentConfig =
+        serde_yaml::from_str(yaml).expect("should deserialize without locked_fields key");
+    assert!(config.locked_fields.is_empty());
+}
+
+#[test]
+fn test_release_regent_config_group_toml_round_trip() {
+    let toml_str = r#"
+group = "backend"
+"#;
+    let config: ReleaseRegentConfig =
+        toml::from_str(toml_str).expect("should deserialize group from TOML");
+    assert_eq!(config.group.as_deref(), Some("backend"));
+
+    let serialized = toml::to_string(&config).expect("should serialize to TOML");
+    let reloaded: ReleaseRegentConfig =
+        toml::from_str(&serialized).expect("should re-deserialize from TOML");
+    assert_eq!(reloaded.group.as_deref(), Some("backend"));
+}
+
+#[test]
+fn test_release_regent_config_locked_fields_toml_round_trip() {
+    let toml_str = r#"
+locked_fields = ["versioning.strategy", "core.version_prefix"]
+"#;
+    let config: ReleaseRegentConfig =
+        toml::from_str(toml_str).expect("should deserialize locked_fields from TOML");
+    assert_eq!(
+        config.locked_fields,
+        vec!["versioning.strategy", "core.version_prefix"]
+    );
+
+    let serialized = toml::to_string(&config).expect("should serialize to TOML");
+    let reloaded: ReleaseRegentConfig =
+        toml::from_str(&serialized).expect("should re-deserialize from TOML");
+    assert_eq!(
+        reloaded.locked_fields,
+        vec!["versioning.strategy", "core.version_prefix"]
+    );
+}
+
+// ============================================================================
+// LoadOptions::default() — ADR-007 extension fields
+// ============================================================================
+
+#[test]
+fn test_load_options_default_has_none_installation_id() {
+    use crate::traits::configuration_provider::LoadOptions;
+    assert!(LoadOptions::default().installation_id.is_none());
+}
+
+#[test]
+fn test_load_options_default_has_none_default_branch() {
+    use crate::traits::configuration_provider::LoadOptions;
+    assert!(LoadOptions::default().default_branch.is_none());
+}
+
+#[test]
+fn test_load_options_installation_id_can_be_set() {
+    use crate::traits::configuration_provider::LoadOptions;
+    let opts = LoadOptions {
+        installation_id: Some(12_345_u64),
+        ..Default::default()
+    };
+    assert_eq!(opts.installation_id, Some(12_345));
+    // Other fields must still have their default values.
+    assert!(opts.default_branch.is_none());
+    assert!(!opts.apply_env_overrides);
+    assert!(!opts.cache);
+    assert!(!opts.validate);
+}
+
+#[test]
+fn test_load_options_default_branch_can_be_set() {
+    use crate::traits::configuration_provider::LoadOptions;
+    let opts = LoadOptions {
+        default_branch: Some("develop".to_string()),
+        ..Default::default()
+    };
+    assert_eq!(opts.default_branch.as_deref(), Some("develop"));
+    assert!(opts.installation_id.is_none());
+}

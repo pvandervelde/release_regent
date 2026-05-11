@@ -413,3 +413,58 @@ fn test_retry_delay_seconds_permanent_variants_return_none() {
     );
     assert_eq!(CoreError::not_found("resource").retry_delay_seconds(), None);
 }
+
+// ============================================================================
+// is_config_error — exhaustive classification for all CoreError variants
+// ============================================================================
+
+#[test]
+fn test_is_config_error_config_variant_returns_true() {
+    assert!(CoreError::config("Missing required field: repo").is_config_error());
+}
+
+#[test]
+fn test_is_config_error_github_variant_returns_false() {
+    let inner = std::io::Error::new(std::io::ErrorKind::Other, "api error");
+    assert!(!CoreError::github(inner).is_config_error());
+}
+
+#[test]
+fn test_is_config_error_network_variant_returns_false() {
+    assert!(!CoreError::network("Connection refused").is_config_error());
+}
+
+#[test]
+fn test_is_config_error_not_found_variant_returns_false() {
+    assert!(!CoreError::not_found("release for tag v1.0.0").is_config_error());
+}
+
+#[test]
+fn test_is_config_error_authentication_variant_returns_false() {
+    assert!(!CoreError::authentication("Invalid token").is_config_error());
+}
+
+#[test]
+fn test_is_config_error_non_config_variants_all_return_false() {
+    // Batch test for all remaining non-Config variants so the exhaustive intent
+    // is clear without requiring a test per variant for each simple case.
+    let cases: &[CoreError] = &[
+        CoreError::changelog_generation("failed"),
+        CoreError::conflict("concurrent update"),
+        CoreError::internal_state("bad state"),
+        CoreError::invalid_input("field", "bad value"),
+        CoreError::network("timeout"),
+        CoreError::not_supported("op", "not impl"),
+        CoreError::rate_limit("quota"),
+        CoreError::timeout("op", 5_000),
+        CoreError::validation("field", "invalid"),
+        CoreError::versioning("no commits"),
+        CoreError::webhook("sig", "mismatch"),
+    ];
+    for (i, e) in cases.iter().enumerate() {
+        assert!(
+            !e.is_config_error(),
+            "variant at index {i} unexpectedly returned true for is_config_error()"
+        );
+    }
+}
