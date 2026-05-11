@@ -305,6 +305,7 @@ where
                 self.try_refresh_feature_pr_status_comments(
                     &event.repository.owner,
                     &event.repository.name,
+                    &event.repository.default_branch,
                 )
                 .await;
                 Ok(())
@@ -344,7 +345,7 @@ where
         {
             Ok(result) => {
                 tracing::info!(result = ?result, "Release automation completed");
-                self.try_refresh_feature_pr_status_comments(owner, repo)
+                self.try_refresh_feature_pr_status_comments(owner, repo, &event.repository.default_branch)
                     .await;
                 Ok(())
             }
@@ -364,7 +365,11 @@ where
 
         let repo_config = self
             .configuration_provider
-            .get_merged_config(owner, repo, LoadOptions::default())
+            .get_merged_config(owner, repo, LoadOptions {
+                installation_id: Some(event.installation_id),
+                default_branch: Some(event.repository.default_branch.clone()),
+                ..Default::default()
+            })
             .await?;
 
         let config = CommentCommandConfig {
@@ -446,7 +451,11 @@ where
 
         let repo_config = self
             .configuration_provider
-            .get_merged_config(owner, repo, LoadOptions::default())
+            .get_merged_config(owner, repo, LoadOptions {
+                installation_id: Some(installation_id),
+                default_branch: Some(event.repository.default_branch.clone()),
+                ..Default::default()
+            })
             .await?;
 
         // Skip PRs from excluded authors.
@@ -1011,7 +1020,11 @@ where
 
         let repo_config = self
             .configuration_provider
-            .get_merged_config(owner, repo, LoadOptions::default())
+            .get_merged_config(owner, repo, LoadOptions {
+                installation_id: Some(installation_id),
+                default_branch: Some(base_branch.to_string()),
+                ..Default::default()
+            })
             .await?;
 
         let scoped_github = self.github_operations.scoped_to(installation_id);
@@ -1387,7 +1400,7 @@ where
     /// delegating to [`Self::refresh_open_feature_pr_comments`].  All errors
     /// are logged and swallowed so that a refresh failure never fails the
     /// triggering merge event.
-    async fn try_refresh_feature_pr_status_comments(&self, owner: &str, repo: &str) {
+    async fn try_refresh_feature_pr_status_comments(&self, owner: &str, repo: &str, default_branch: &str) {
         use traits::configuration_provider::LoadOptions;
 
         let installation_id = match self.resolve_installation_id(owner, repo).await {
@@ -1405,7 +1418,11 @@ where
 
         let repo_config = match self
             .configuration_provider
-            .get_merged_config(owner, repo, LoadOptions::default())
+            .get_merged_config(owner, repo, LoadOptions {
+                installation_id: Some(installation_id),
+                default_branch: Some(default_branch.to_string()),
+                ..Default::default()
+            })
             .await
         {
             Ok(c) => c,
