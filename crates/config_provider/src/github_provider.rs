@@ -91,6 +91,7 @@ impl ConfigLocks {
     ///
     /// Non-lockable paths are dropped with a `warn!`.
     /// Paths that are already locked are a no-op with a `warn!` (duplicate entry).
+    #[allow(dead_code)] // called by get_merged_config (G.3); verified by unit tests
     fn extend_from(&mut self, locked_fields: &[String], source_level: &str) {
         for path in locked_fields {
             if !LOCKABLE_FIELDS.contains(&path.as_str()) {
@@ -124,50 +125,239 @@ impl ConfigLocks {
 
 /// Unconditionally merge `incoming` over `base` (no lock checks).
 ///
-/// Used for the app-level baseline where no locks are active yet.
+/// Every field from `incoming` replaces the corresponding field in `base`.
+/// Used for the app-level baseline where no locks are active yet — the caller
+/// starts from `ReleaseRegentConfig::default()` and merges the app-config on
+/// top, which produces the app-level effective config.
 ///
 /// # Spec reference
 ///
 /// `docs/specs/interfaces/github_operations_additions.md` §7
-pub fn merge_config(
-    base: ReleaseRegentConfig,
-    incoming: ReleaseRegentConfig,
-) -> ReleaseRegentConfig {
-    unimplemented!("See docs/specs/interfaces/github_operations_additions.md §7 (merge_config)");
-    // Suppress unused-variable warnings in stub
-    #[allow(clippy::drop_non_drop)]
-    let _ = (base, incoming);
+#[must_use]
+fn merge_config(_base: ReleaseRegentConfig, incoming: ReleaseRegentConfig) -> ReleaseRegentConfig {
+    // All fields come from `incoming`; base is replaced entirely.
+    // This is intentional: each config level is a complete parsed document whose
+    // un-specified fields carry their defaults — the caller must start from the
+    // correct baseline before calling this function (see get_merged_config).
+    incoming
 }
 
 /// Merge `incoming` into `base`, keeping locked fields from `base` unchanged.
 ///
-/// For each locked field where `incoming` differs from `base`:
-/// - The `base` (locked) value is kept.
-/// - A `warn!` is emitted identifying the field path, locked value, and override value.
+/// For each of the ten lockable fields (see [`LOCKABLE_FIELDS`]):
 ///
-/// Template (`release_pr.*`) and notification (`notifications.*`) fields are always
-/// taken from `incoming` because they are never lockable.
+/// - If the field's path is in `locks` **and** `incoming` carries a value that
+///   differs from `base`, the `base` value is retained and a `warn!` is emitted
+///   carrying the `path`, `locked_value`, and `override_value`.
+/// - Otherwise `incoming`'s value is used.
+///
+/// The `release_pr` and `notifications` sub-configs (and `group` / `locked_fields`)
+/// are never lockable and are always taken from `incoming`.
 ///
 /// # Compile-time contract
 ///
 /// The compile-time assertion on [`LOCKABLE_FIELDS`] ensures that this function's
-/// per-field checks stay in sync with the lockable-fields list. Update the count and
-/// the match arms together whenever `LOCKABLE_FIELDS` changes.
+/// per-field match arms stay in sync with the lockable-fields list. Update the
+/// count and every match arm together whenever `LOCKABLE_FIELDS` changes.
 ///
 /// # Spec reference
 ///
 /// `docs/specs/interfaces/github_operations_additions.md` §7
-pub fn merge_config_with_locks(
+#[must_use]
+#[allow(clippy::too_many_lines)] // 10 lockable fields × ~6 lines each; helpers would obscure the contract
+fn merge_config_with_locks(
     base: ReleaseRegentConfig,
     incoming: ReleaseRegentConfig,
     locks: &ConfigLocks,
 ) -> ReleaseRegentConfig {
-    unimplemented!(
-        "See docs/specs/interfaces/github_operations_additions.md §7 (merge_config_with_locks)"
-    );
-    // Suppress unused-variable warnings in stub
-    #[allow(clippy::drop_non_drop)]
-    let _ = (base, incoming, locks);
+    use release_regent_core::config::{
+        BranchConfig, CoreConfig, ErrorHandlingConfig, ReleasesConfig, VersioningConfig,
+    };
+
+    // ── versioning.strategy ────────────────────────────────────────────────
+    let versioning_strategy = if locks.is_locked("versioning.strategy")
+        && incoming.versioning.strategy != base.versioning.strategy
+    {
+        warn!(
+            path = "versioning.strategy",
+            locked_value = ?base.versioning.strategy,
+            override_value = ?incoming.versioning.strategy,
+            "locked field override attempt ignored"
+        );
+        base.versioning.strategy
+    } else {
+        incoming.versioning.strategy
+    };
+
+    // ── versioning.allow_override ──────────────────────────────────────────
+    let versioning_allow_override = if locks.is_locked("versioning.allow_override")
+        && incoming.versioning.allow_override != base.versioning.allow_override
+    {
+        warn!(
+            path = "versioning.allow_override",
+            locked_value = base.versioning.allow_override,
+            override_value = incoming.versioning.allow_override,
+            "locked field override attempt ignored"
+        );
+        base.versioning.allow_override
+    } else {
+        incoming.versioning.allow_override
+    };
+
+    // ── releases.draft ─────────────────────────────────────────────────────
+    let releases_draft =
+        if locks.is_locked("releases.draft") && incoming.releases.draft != base.releases.draft {
+            warn!(
+                path = "releases.draft",
+                locked_value = base.releases.draft,
+                override_value = incoming.releases.draft,
+                "locked field override attempt ignored"
+            );
+            base.releases.draft
+        } else {
+            incoming.releases.draft
+        };
+
+    // ── releases.prerelease ────────────────────────────────────────────────
+    let releases_prerelease = if locks.is_locked("releases.prerelease")
+        && incoming.releases.prerelease != base.releases.prerelease
+    {
+        warn!(
+            path = "releases.prerelease",
+            locked_value = base.releases.prerelease,
+            override_value = incoming.releases.prerelease,
+            "locked field override attempt ignored"
+        );
+        base.releases.prerelease
+    } else {
+        incoming.releases.prerelease
+    };
+
+    // ── releases.generate_notes ────────────────────────────────────────────
+    let releases_generate_notes = if locks.is_locked("releases.generate_notes")
+        && incoming.releases.generate_notes != base.releases.generate_notes
+    {
+        warn!(
+            path = "releases.generate_notes",
+            locked_value = base.releases.generate_notes,
+            override_value = incoming.releases.generate_notes,
+            "locked field override attempt ignored"
+        );
+        base.releases.generate_notes
+    } else {
+        incoming.releases.generate_notes
+    };
+
+    // ── core.branches.main ─────────────────────────────────────────────────
+    let core_branches_main = if locks.is_locked("core.branches.main")
+        && incoming.core.branches.main != base.core.branches.main
+    {
+        warn!(
+            path = "core.branches.main",
+            locked_value = %base.core.branches.main,
+            override_value = %incoming.core.branches.main,
+            "locked field override attempt ignored"
+        );
+        base.core.branches.main
+    } else {
+        incoming.core.branches.main
+    };
+
+    // ── core.version_prefix ────────────────────────────────────────────────
+    let core_version_prefix = if locks.is_locked("core.version_prefix")
+        && incoming.core.version_prefix != base.core.version_prefix
+    {
+        warn!(
+            path = "core.version_prefix",
+            locked_value = %base.core.version_prefix,
+            override_value = %incoming.core.version_prefix,
+            "locked field override attempt ignored"
+        );
+        base.core.version_prefix
+    } else {
+        incoming.core.version_prefix
+    };
+
+    // ── error_handling.max_retries ─────────────────────────────────────────
+    let error_max_retries = if locks.is_locked("error_handling.max_retries")
+        && incoming.error_handling.max_retries != base.error_handling.max_retries
+    {
+        warn!(
+            path = "error_handling.max_retries",
+            locked_value = base.error_handling.max_retries,
+            override_value = incoming.error_handling.max_retries,
+            "locked field override attempt ignored"
+        );
+        base.error_handling.max_retries
+    } else {
+        incoming.error_handling.max_retries
+    };
+
+    // ── error_handling.backoff_multiplier ──────────────────────────────────
+    // Exact float equality is intentional: values come from parsed config text, so
+    // identical literals produce identical bit patterns. A difference means a genuine
+    // config change, not a rounding artefact.
+    #[allow(clippy::float_cmp)]
+    let error_backoff_multiplier = if locks.is_locked("error_handling.backoff_multiplier")
+        && incoming.error_handling.backoff_multiplier != base.error_handling.backoff_multiplier
+    {
+        warn!(
+            path = "error_handling.backoff_multiplier",
+            locked_value = base.error_handling.backoff_multiplier,
+            override_value = incoming.error_handling.backoff_multiplier,
+            "locked field override attempt ignored"
+        );
+        base.error_handling.backoff_multiplier
+    } else {
+        incoming.error_handling.backoff_multiplier
+    };
+
+    // ── error_handling.initial_delay_ms ───────────────────────────────────
+    let error_initial_delay_ms = if locks.is_locked("error_handling.initial_delay_ms")
+        && incoming.error_handling.initial_delay_ms != base.error_handling.initial_delay_ms
+    {
+        warn!(
+            path = "error_handling.initial_delay_ms",
+            locked_value = base.error_handling.initial_delay_ms,
+            override_value = incoming.error_handling.initial_delay_ms,
+            "locked field override attempt ignored"
+        );
+        base.error_handling.initial_delay_ms
+    } else {
+        incoming.error_handling.initial_delay_ms
+    };
+
+    ReleaseRegentConfig {
+        core: CoreConfig {
+            version_prefix: core_version_prefix,
+            branches: BranchConfig {
+                main: core_branches_main,
+            },
+        },
+        // group and locked_fields are metadata fields handled by get_merged_config;
+        // always take from incoming.
+        group: incoming.group,
+        locked_fields: incoming.locked_fields,
+        // release_pr and notifications are never lockable; always take from incoming.
+        release_pr: incoming.release_pr,
+        notifications: incoming.notifications,
+        releases: ReleasesConfig {
+            draft: releases_draft,
+            prerelease: releases_prerelease,
+            generate_notes: releases_generate_notes,
+        },
+        error_handling: ErrorHandlingConfig {
+            max_retries: error_max_retries,
+            backoff_multiplier: error_backoff_multiplier,
+            initial_delay_ms: error_initial_delay_ms,
+        },
+        versioning: VersioningConfig {
+            strategy: versioning_strategy,
+            allow_override: versioning_allow_override,
+            // excluded_pr_authors is not lockable; always from incoming.
+            excluded_pr_authors: incoming.versioning.excluded_pr_authors,
+        },
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -175,9 +365,11 @@ pub fn merge_config_with_locks(
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// TTL for global policy cache entries (10 minutes).
+#[allow(dead_code)] // used by load_global_policy (G.2)
 const GLOBAL_CACHE_TTL: Duration = Duration::from_secs(600);
 
 /// TTL for group and repository config cache entries (5 minutes).
+#[allow(dead_code)] // used by load_group_policy / fetch_repo_dotfile (G.2)
 const REPO_GROUP_CACHE_TTL: Duration = Duration::from_secs(300);
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -208,6 +400,7 @@ const REPO_GROUP_CACHE_TTL: Duration = Duration::from_secs(300);
 /// # Spec reference
 ///
 /// `docs/specs/interfaces/github_operations_additions.md` §4
+#[allow(dead_code)] // fields used by G.2 (resolve_metadata_installation, load_global_policy, load_group_policy, fetch_repo_dotfile)
 pub struct GitHubConfigurationProvider<G>
 where
     G: GitHubOperations + Clone + Send + Sync,
@@ -261,13 +454,12 @@ impl<G: GitHubOperations + Clone + Send + Sync> GitHubConfigurationProvider<G> {
     /// # Spec reference
     ///
     /// `docs/specs/interfaces/github_operations_additions.md` §6 — `resolve_metadata_installation`
-    async fn resolve_metadata_installation(&self, org: &str) -> Option<u64> {
+    #[allow(dead_code)] // stub; implemented in G.2
+    async fn resolve_metadata_installation(&self, _org: &str) -> Option<u64> {
         unimplemented!(
             "See docs/specs/interfaces/github_operations_additions.md §6 \
              (resolve_metadata_installation)"
         );
-        #[allow(clippy::drop_non_drop)]
-        let _ = org;
     }
 
     /// Probe the metadata repository for `global.toml` (then `.yml`, then `.yaml`) and
@@ -283,16 +475,15 @@ impl<G: GitHubOperations + Clone + Send + Sync> GitHubConfigurationProvider<G> {
     /// # Spec reference
     ///
     /// `docs/specs/interfaces/github_operations_additions.md` §6 — `load_global_policy`
+    #[allow(dead_code)] // stub; implemented in G.2
     async fn load_global_policy(
         &self,
-        org: &str,
-        client: &G,
+        _org: &str,
+        _client: &G,
     ) -> CoreResult<Option<ReleaseRegentConfig>> {
         unimplemented!(
             "See docs/specs/interfaces/github_operations_additions.md §6 (load_global_policy)"
         );
-        #[allow(clippy::drop_non_drop)]
-        let _ = (org, client);
     }
 
     /// Probe the metadata repository for `groups/{group}.toml` (then `.yml`, `.yaml`) and
@@ -307,17 +498,16 @@ impl<G: GitHubOperations + Clone + Send + Sync> GitHubConfigurationProvider<G> {
     /// # Spec reference
     ///
     /// `docs/specs/interfaces/github_operations_additions.md` §6 — `load_group_policy`
+    #[allow(dead_code)] // stub; implemented in G.2
     async fn load_group_policy(
         &self,
-        org: &str,
-        group: &str,
-        client: &G,
+        _org: &str,
+        _group: &str,
+        _client: &G,
     ) -> CoreResult<Option<ReleaseRegentConfig>> {
         unimplemented!(
             "See docs/specs/interfaces/github_operations_additions.md §6 (load_group_policy)"
         );
-        #[allow(clippy::drop_non_drop)]
-        let _ = (org, group, client);
     }
 
     /// Probe the target repository for `.release-regent.yml` (then `.yaml`, then `.toml`)
@@ -338,18 +528,17 @@ impl<G: GitHubOperations + Clone + Send + Sync> GitHubConfigurationProvider<G> {
     /// # Spec reference
     ///
     /// `docs/specs/interfaces/github_operations_additions.md` §6 — `fetch_repo_dotfile`
+    #[allow(dead_code)] // stub; implemented in G.2
     async fn fetch_repo_dotfile(
         &self,
-        owner: &str,
-        repo: &str,
-        branch: &str,
-        client: &G,
+        _owner: &str,
+        _repo: &str,
+        _branch: &str,
+        _client: &G,
     ) -> CoreResult<Option<ReleaseRegentConfig>> {
         unimplemented!(
             "See docs/specs/interfaces/github_operations_additions.md §6 (fetch_repo_dotfile)"
         );
-        #[allow(clippy::drop_non_drop)]
-        let _ = (owner, repo, branch, client);
     }
 }
 
@@ -394,15 +583,13 @@ where
     #[allow(clippy::too_many_lines)] // Five-level pipeline is inherently long; sub-helpers keep it manageable
     async fn get_merged_config(
         &self,
-        owner: &str,
-        repo: &str,
-        options: LoadOptions,
+        _owner: &str,
+        _repo: &str,
+        _options: LoadOptions,
     ) -> CoreResult<ReleaseRegentConfig> {
         unimplemented!(
             "See docs/specs/interfaces/github_operations_additions.md §5 (get_merged_config)"
         );
-        #[allow(clippy::drop_non_drop)]
-        let _ = (owner, repo, options);
     }
 
     /// Load configuration for a specific repository.
@@ -419,15 +606,13 @@ where
     /// `docs/specs/interfaces/github_operations_additions.md` §5
     async fn load_repository_config(
         &self,
-        owner: &str,
-        repo: &str,
-        options: LoadOptions,
+        _owner: &str,
+        _repo: &str,
+        _options: LoadOptions,
     ) -> CoreResult<Option<RepositoryConfig>> {
         unimplemented!(
             "See docs/specs/interfaces/github_operations_additions.md §5 (load_repository_config)"
         );
-        #[allow(clippy::drop_non_drop)]
-        let _ = (owner, repo, options);
     }
 
     /// Load the app-level global config from local disk.
@@ -483,3 +668,7 @@ where
         self.inner.get_default_config().await
     }
 }
+
+#[cfg(test)]
+#[path = "github_provider_tests.rs"]
+mod tests;

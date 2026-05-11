@@ -1,7 +1,6 @@
 //! Unit tests for configuration validation.
 
 use super::*;
-use release_regent_core::config::*;
 
 #[test]
 fn test_validation_result_creation() {
