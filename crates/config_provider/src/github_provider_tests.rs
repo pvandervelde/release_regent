@@ -1526,3 +1526,575 @@ async fn test_load_group_policy_cache_keyed_by_org_and_group() {
         "different groups must have independent cache entries"
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// G.3: get_merged_config — five-level pipeline
+// ─────────────────────────────────────────────────────────────────────────────
+
+use release_regent_core::traits::{
+    configuration_provider::{LoadOptions, RepositoryConfig},
+    ConfigurationProvider,
+};
+
+// ── helpers ───────────────────────────────────────────────────────────────────
+
+/// Minimal valid app-level config seeded onto disk.
+/// Uses a distinctive `version_prefix` so tests can verify the app level ran.
+fn app_config_yaml() -> &'static str {
+    "core:\n  version_prefix: \"app-v\"\n"
+}
+
+/// Create a `GitHubConfigurationProvider<TestGitHub>` backed by a real temp-dir
+/// baseline that contains a valid app-level `release-regent.yml`.
+async fn make_provider_with_app_config(
+    github: TestGitHub,
+) -> super::GitHubConfigurationProvider<TestGitHub> {
+    use crate::file_provider::FileConfigurationProvider;
+    let tmp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(tmp.path().join("release-regent.yml"), app_config_yaml())
+        .expect("write app config");
+    let inner = FileConfigurationProvider::new(tmp.path())
+        .await
+        .expect("FileConfigurationProvider");
+    std::mem::forget(tmp);
+    super::GitHubConfigurationProvider::new(inner, github)
+}
+
+/// `LoadOptions` for server mode (installation_id present).
+fn server_options() -> LoadOptions {
+    LoadOptions {
+        installation_id: Some(1),
+        default_branch: Some("main".to_string()),
+        ..Default::default()
+    }
+}
+
+/// `LoadOptions` for CLI mode (no installation_id).
+fn cli_options() -> LoadOptions {
+    LoadOptions::default()
+}
+
+/// TOML content for global policy, setting version_prefix to a unique marker.
+fn global_toml(version_prefix: &str) -> String {
+    format!("[core]\nversion_prefix = \"{version_prefix}\"\n")
+}
+
+/// TOML content for group policy, setting version_prefix to a unique marker.
+fn group_toml(version_prefix: &str) -> String {
+    format!("[core]\nversion_prefix = \"{version_prefix}\"\n")
+}
+
+/// YAML content for a repo dotfile, setting only group declaration.
+/// `version_prefix` is set to the given value for easy assertion.
+fn repo_dotfile_yaml_with_group(version_prefix: &str, group: &str) -> String {
+    format!("group: \"{group}\"\ncore:\n  version_prefix: \"{version_prefix}\"\n")
+}
+
+/// Seed the standard metadata repo global policy file.
+async fn seed_global(gh: &TestGitHub, content: &str) {
+    gh.add_file("myorg", ".release-regent", "global.toml", "main", content)
+        .await;
+}
+
+/// Seed the standard metadata repo group policy file.
+async fn seed_group(gh: &TestGitHub, group_name: &str, content: &str) {
+    let path = format!("groups/{group_name}.toml");
+    gh.add_file("myorg", ".release-regent", &path, "main", content)
+        .await;
+}
+
+/// Seed the repo dotfile in the target repository.
+async fn seed_dotfile(gh: &TestGitHub, content: &str) {
+    gh.add_file("myorg", "myrepo", ".release-regent.yml", "main", content)
+        .await;
+}
+
+// ── get_merged_config — pipeline path tests ───────────────────────────────────
+
+/// Scenario 1: Metadata repo not accessible → app-level + repo dotfile only.
+/// The provider must emit `warn!` about the missing metadata repo.
+#[tokio::test]
+#[traced_test]
+async fn test_get_merged_config_no_metadata_access_uses_app_plus_repo_dotfile() {
+    let gh = TestGitHub::new();
+    gh.set_install_error().await;
+    // Dotfile uses scoped_to(installation_id=1) since meta was absent.
+    gh.add_file(
+        "myorg",
+        "myrepo",
+        ".release-regent.yml",
+        "main",
+        &yaml_config("repo-v"),
+    )
+    .await;
+    let provider = make_provider_with_app_config(gh).await;
+
+    let result = provider
+        .get_merged_config("myorg", "myrepo", server_options())
+        .await
+        .expect("should succeed");
+
+    assert_eq!(result.core.version_prefix, "repo-v");
+    assert!(
+        logs_contain(".release-regent not accessible"),
+        "must warn about absent metadata repo"
+    );
+}
+
+/// Scenario 2: Metadata accessible, global policy present, no group, no repo dotfile.
+/// Expected: global policy wins as the highest applied level.
+#[tokio::test]
+async fn test_get_merged_config_global_only_no_repo_dotfile() {
+    let gh = TestGitHub::new();
+    seed_global(&gh, &global_toml("global-v")).await;
+    // No repo dotfile → fetch returns Ok(None).
+    let provider = make_provider_with_app_config(gh).await;
+
+    let result = provider
+        .get_merged_config("myorg", "myrepo", server_options())
+        .await
+        .expect("should succeed");
+
+    assert_eq!(result.core.version_prefix, "global-v");
+}
+
+/// Scenario 3: Metadata accessible, no global policy, no group, repo dotfile present.
+/// Expected: repo dotfile wins as the highest applied level.
+#[tokio::test]
+async fn test_get_merged_config_no_global_no_group_repo_dotfile_applies() {
+    let gh = TestGitHub::new();
+    // No global policy → Ok(None).
+    seed_dotfile(&gh, &yaml_config("repo-v")).await;
+    let provider = make_provider_with_app_config(gh).await;
+
+    let result = provider
+        .get_merged_config("myorg", "myrepo", server_options())
+        .await
+        .expect("should succeed");
+
+    assert_eq!(result.core.version_prefix, "repo-v");
+}
+
+/// Full 5-level stack: all levels present, repo dotfile declares group.
+/// Expected: repo dotfile's `version_prefix` wins (last non-locked level).
+#[tokio::test]
+async fn test_get_merged_config_full_five_level_stack_repo_dotfile_wins() {
+    let gh = TestGitHub::new();
+    seed_global(&gh, &global_toml("global-v")).await;
+    seed_group(&gh, "mygroup", &group_toml("group-v")).await;
+    seed_dotfile(&gh, &repo_dotfile_yaml_with_group("repo-v", "mygroup")).await;
+    let provider = make_provider_with_app_config(gh).await;
+
+    let result = provider
+        .get_merged_config("myorg", "myrepo", server_options())
+        .await
+        .expect("should succeed");
+
+    assert_eq!(
+        result.core.version_prefix, "repo-v",
+        "repo dotfile is level 5 and must win all unlocked fields"
+    );
+}
+
+/// Group declared in dotfile but group file absent: must emit `warn!` and skip group.
+#[tokio::test]
+#[traced_test]
+async fn test_get_merged_config_group_declared_but_file_absent_warns_and_skips() {
+    let gh = TestGitHub::new();
+    seed_global(&gh, &global_toml("global-v")).await;
+    // Group "missing" has no file seeded.
+    seed_dotfile(&gh, &repo_dotfile_yaml_with_group("repo-v", "missing")).await;
+    let provider = make_provider_with_app_config(gh).await;
+
+    let result = provider
+        .get_merged_config("myorg", "myrepo", server_options())
+        .await
+        .expect("should succeed even when group file absent");
+
+    assert_eq!(result.core.version_prefix, "repo-v");
+    assert!(
+        logs_contain("no group config found"),
+        "must warn when declared group file is absent"
+    );
+}
+
+/// API 503 on global policy fetch: must emit `warn!`, skip metadata levels, and
+/// use only app-level + repo dotfile (with the per-event scoped client).
+///
+/// NOTE: The spec treats a transient API error on the global policy as metadata
+/// unreachable. The repo dotfile is fetched with the meta-scoped client (same in
+/// this test since `scoped_to` shares state). The event continues using app + repo.
+#[tokio::test]
+#[traced_test]
+async fn test_get_merged_config_api_error_on_global_uses_app_plus_repo_dotfile() {
+    let gh = TestGitHub::new();
+    // All three global probe paths return an API error.
+    for path in &["global.toml", "global.yml", "global.yaml"] {
+        gh.add_file_error("myorg", ".release-regent", path, "main")
+            .await;
+    }
+    // Repo dotfile fetched via meta client (same state due to scoped_to clone).
+    seed_dotfile(&gh, &yaml_config("repo-v")).await;
+    let provider = make_provider_with_app_config(gh).await;
+
+    let result = provider
+        .get_merged_config("myorg", "myrepo", server_options())
+        .await
+        .expect("transient global API error must not hard-fail the event");
+
+    assert_eq!(result.core.version_prefix, "repo-v");
+    assert!(
+        logs_contain("Metadata repo unreachable"),
+        "must emit warn! when global API errors"
+    );
+}
+
+// ── get_merged_config — lock semantics ────────────────────────────────────────
+
+/// Global policy locks `versioning.allow_override`.
+/// Group tries to override it → `warn!` emitted; locked value (app-level default) preserved.
+#[tokio::test]
+#[traced_test]
+async fn test_get_merged_config_global_locks_field_group_cannot_override() {
+    let gh = TestGitHub::new();
+
+    // Global: locks allow_override. Per spec lock-then-merge semantics, the app-level
+    // value (false) is preserved during the global merge. Group's `true` attempt warns.
+    let global_toml_content =
+        "locked_fields = [\"versioning.allow_override\"]\n[versioning]\nallow_override = false\n";
+    seed_global(&gh, global_toml_content).await;
+
+    let group_toml_content = "[versioning]\nallow_override = true\n";
+    seed_group(&gh, "mygroup", group_toml_content).await;
+
+    seed_dotfile(&gh, &repo_dotfile_yaml_with_group("repo-v", "mygroup")).await;
+    let provider = make_provider_with_app_config(gh).await;
+
+    let result = provider
+        .get_merged_config("myorg", "myrepo", server_options())
+        .await
+        .expect("should succeed");
+
+    assert!(
+        !result.versioning.allow_override,
+        "locked field must not be overridden by group"
+    );
+    assert!(logs_contain("locked field override attempt ignored"));
+}
+
+/// Group policy locks `releases.draft`.
+/// Repo dotfile tries to override it → `warn!` emitted; locked value preserved.
+#[tokio::test]
+#[traced_test]
+async fn test_get_merged_config_group_locks_field_repo_dotfile_cannot_override() {
+    let gh = TestGitHub::new();
+
+    seed_global(&gh, &global_toml("global-v")).await;
+
+    // Group: locks releases.draft (app-level default is false).
+    let group_content = "locked_fields = [\"releases.draft\"]\n[releases]\ndraft = false\n";
+    seed_group(&gh, "mygroup", group_content).await;
+
+    // Repo dotfile: tries to set draft = true.
+    let repo_content =
+        "group: \"mygroup\"\n[releases]\ndraft = true\n[core]\nversion_prefix = \"repo-v\"\n";
+    seed_dotfile(&gh, repo_content).await;
+
+    let provider = make_provider_with_app_config(gh).await;
+
+    let result = provider
+        .get_merged_config("myorg", "myrepo", server_options())
+        .await
+        .expect("should succeed");
+
+    assert!(
+        !result.releases.draft,
+        "locked releases.draft must not be overridden by repo dotfile"
+    );
+    assert!(logs_contain("locked field override attempt ignored"));
+}
+
+/// Repo dotfile contains `locked_fields`: must be cleared with `warn!` before merge.
+#[tokio::test]
+#[traced_test]
+async fn test_get_merged_config_locked_fields_in_repo_dotfile_are_cleared() {
+    let gh = TestGitHub::new();
+    seed_global(&gh, &global_toml("global-v")).await;
+
+    let repo_content =
+        "locked_fields = [\"versioning.strategy\"]\n[core]\nversion_prefix = \"repo-v\"\n";
+    seed_dotfile(&gh, repo_content).await;
+
+    let provider = make_provider_with_app_config(gh).await;
+
+    let result = provider
+        .get_merged_config("myorg", "myrepo", server_options())
+        .await
+        .expect("should succeed");
+
+    // locked_fields must be cleared before the merge so they don't propagate.
+    assert!(
+        result.locked_fields.is_empty(),
+        "locked_fields from repo dotfile must be cleared"
+    );
+    assert!(logs_contain(
+        "locked_fields in repository dotfile is ignored"
+    ));
+    // Other fields should still come from the repo dotfile.
+    assert_eq!(result.core.version_prefix, "repo-v");
+}
+
+/// Non-lockable path in `locked_fields` is ignored (with `warn!`).
+/// `release_pr.title_template` is not lockable per `LOCKABLE_FIELDS`.
+#[tokio::test]
+#[traced_test]
+async fn test_get_merged_config_non_lockable_path_in_global_locked_fields_is_ignored() {
+    let gh = TestGitHub::new();
+
+    // Global tries to lock release_pr.title_template — non-lockable, should warn and skip.
+    let global_content =
+        "locked_fields = [\"release_pr.title_template\"]\n[core]\nversion_prefix = \"global-v\"\n";
+    seed_global(&gh, global_content).await;
+
+    seed_dotfile(&gh, &yaml_config("repo-v")).await;
+
+    let provider = make_provider_with_app_config(gh).await;
+
+    let result = provider
+        .get_merged_config("myorg", "myrepo", server_options())
+        .await
+        .expect("should succeed");
+
+    // Non-lockable path must not actually prevent the repo dotfile from applying.
+    assert_eq!(
+        result.core.version_prefix, "repo-v",
+        "non-lockable field in locked_fields must not block repo dotfile from overriding"
+    );
+    assert!(
+        logs_contain("not a lockable path"),
+        "must warn when a non-lockable path appears in locked_fields"
+    );
+}
+
+// ── get_merged_config — hard-fail scenarios ───────────────────────────────────
+
+#[tokio::test]
+async fn test_get_merged_config_global_policy_invalid_returns_err_config() {
+    let gh = TestGitHub::new();
+    gh.add_file(
+        "myorg",
+        ".release-regent",
+        "global.toml",
+        "main",
+        "not valid toml {{{{",
+    )
+    .await;
+    let provider = make_provider_with_app_config(gh).await;
+
+    let result = provider
+        .get_merged_config("myorg", "myrepo", server_options())
+        .await;
+
+    assert!(result.is_err());
+    assert!(result.unwrap_err().is_config_error());
+}
+
+#[tokio::test]
+async fn test_get_merged_config_group_policy_invalid_returns_err_config() {
+    let gh = TestGitHub::new();
+    seed_global(&gh, &global_toml("global-v")).await;
+    gh.add_file(
+        "myorg",
+        ".release-regent",
+        "groups/mygroup.toml",
+        "main",
+        "definitely not toml {{",
+    )
+    .await;
+    seed_dotfile(&gh, &repo_dotfile_yaml_with_group("repo-v", "mygroup")).await;
+    let provider = make_provider_with_app_config(gh).await;
+
+    let result = provider
+        .get_merged_config("myorg", "myrepo", server_options())
+        .await;
+
+    assert!(result.is_err());
+    assert!(result.unwrap_err().is_config_error());
+}
+
+#[tokio::test]
+async fn test_get_merged_config_repo_dotfile_invalid_returns_err_config() {
+    let gh = TestGitHub::new();
+    seed_global(&gh, &global_toml("global-v")).await;
+    gh.add_file(
+        "myorg",
+        "myrepo",
+        ".release-regent.yml",
+        "main",
+        ": this is not valid yaml {{{{",
+    )
+    .await;
+    let provider = make_provider_with_app_config(gh).await;
+
+    let result = provider
+        .get_merged_config("myorg", "myrepo", server_options())
+        .await;
+
+    assert!(result.is_err());
+    assert!(result.unwrap_err().is_config_error());
+}
+
+// ── get_merged_config — cache hits ────────────────────────────────────────────
+
+/// Global policy cache hit: second call must return same result without re-probing files.
+#[tokio::test]
+async fn test_get_merged_config_global_cache_hit_skips_api_on_second_call() {
+    let gh = TestGitHub::new();
+    seed_global(&gh, &global_toml("global-v")).await;
+    let provider = make_provider_with_app_config(gh.clone()).await;
+
+    // First call: populates global cache.
+    let first = provider
+        .get_merged_config("myorg", "myrepo", server_options())
+        .await
+        .expect("first call");
+
+    // Remove global file so any re-probe would return absent.
+    gh.state.lock().await.file_responses.clear();
+
+    // Second call: must use cache.
+    let second = provider
+        .get_merged_config("myorg", "myrepo", server_options())
+        .await
+        .expect("second call");
+
+    assert_eq!(
+        first.core.version_prefix, second.core.version_prefix,
+        "global cache hit must return the same result as the first call"
+    );
+}
+
+/// Group cache hit: second call must return same result without re-probing files.
+#[tokio::test]
+async fn test_get_merged_config_group_cache_hit_skips_api_on_second_call() {
+    let gh = TestGitHub::new();
+    seed_global(&gh, &global_toml("global-v")).await;
+    seed_group(&gh, "mygroup", &group_toml("group-v")).await;
+    seed_dotfile(&gh, &repo_dotfile_yaml_with_group("repo-v", "mygroup")).await;
+    let provider = make_provider_with_app_config(gh.clone()).await;
+
+    let first = provider
+        .get_merged_config("myorg", "myrepo", server_options())
+        .await
+        .expect("first call");
+
+    gh.state.lock().await.file_responses.clear();
+
+    let second = provider
+        .get_merged_config("myorg", "myrepo", server_options())
+        .await
+        .expect("second call");
+
+    assert_eq!(first.core.version_prefix, second.core.version_prefix);
+}
+
+/// Repo dotfile cache hit: second call must return same result without re-probing.
+#[tokio::test]
+async fn test_get_merged_config_repo_dotfile_cache_hit_skips_api_on_second_call() {
+    let gh = TestGitHub::new();
+    seed_global(&gh, &global_toml("global-v")).await;
+    seed_dotfile(&gh, &yaml_config("repo-v")).await;
+    let provider = make_provider_with_app_config(gh.clone()).await;
+
+    let first = provider
+        .get_merged_config("myorg", "myrepo", server_options())
+        .await
+        .expect("first call");
+
+    gh.state.lock().await.file_responses.clear();
+
+    let second = provider
+        .get_merged_config("myorg", "myrepo", server_options())
+        .await
+        .expect("second call");
+
+    assert_eq!(first.core.version_prefix, second.core.version_prefix);
+}
+
+// ── get_merged_config — CLI mode ──────────────────────────────────────────────
+
+/// CLI mode (`installation_id = None`): must delegate entirely to `FileConfigurationProvider`.
+/// No GitHub API calls should be attempted (verified by having the install lookup error;
+/// any call to the GitHub backend would cause the test to fail via the error propagation
+/// in `resolve_metadata_installation`, but with None install_id the code path is skipped).
+#[tokio::test]
+async fn test_get_merged_config_cli_mode_delegates_to_file_provider() {
+    let gh = TestGitHub::new();
+    // If GitHub were called, this would cause a panic/error.
+    gh.set_install_error().await;
+    let provider = make_provider_with_app_config(gh).await;
+
+    // CLI mode: installation_id = None.
+    let result = provider
+        .get_merged_config("myorg", "myrepo", cli_options())
+        .await
+        .expect("CLI mode must delegate to FileConfigurationProvider");
+
+    // FileConfigurationProvider with empty tempdir + release-regent.yml returns that file's config.
+    assert_eq!(
+        result.core.version_prefix, "app-v",
+        "CLI mode must use FileConfigurationProvider result (app config)"
+    );
+}
+
+// ── load_repository_config ────────────────────────────────────────────────────
+
+/// Server mode: dotfile present → returns wrapped `RepositoryConfig`.
+#[tokio::test]
+async fn test_load_repository_config_server_mode_returns_repo_dotfile_wrapped() {
+    let gh = TestGitHub::new();
+    seed_dotfile(&gh, &yaml_config("repo-v")).await;
+    let provider = make_provider_with_app_config(gh).await;
+
+    let result = provider
+        .load_repository_config("myorg", "myrepo", server_options())
+        .await
+        .expect("should succeed");
+
+    assert!(result.is_some());
+    let repo_config = result.unwrap();
+    assert_eq!(repo_config.config.core.version_prefix, "repo-v");
+    assert_eq!(repo_config.owner, "myorg");
+    assert_eq!(repo_config.name, "myrepo");
+}
+
+/// Server mode: dotfile absent → returns `Ok(None)`.
+#[tokio::test]
+async fn test_load_repository_config_server_mode_absent_returns_ok_none() {
+    let gh = TestGitHub::new();
+    // No dotfile seeded → all probes return Ok(None).
+    let provider = make_provider_with_app_config(gh).await;
+
+    let result = provider
+        .load_repository_config("myorg", "myrepo", server_options())
+        .await
+        .expect("should succeed");
+
+    assert!(result.is_none());
+}
+
+/// CLI mode: delegates to `FileConfigurationProvider` (returns Ok(None) for empty tempdir).
+#[tokio::test]
+async fn test_load_repository_config_cli_mode_delegates_to_inner() {
+    let gh = TestGitHub::new();
+    gh.set_install_error().await;
+    let provider = make_provider_with_app_config(gh).await;
+
+    let result = provider
+        .load_repository_config("myorg", "myrepo", cli_options())
+        .await
+        .expect("CLI mode must delegate without error");
+
+    // FileConfigurationProvider finds no per-repo file → Ok(None)
+    assert!(result.is_none());
+}
