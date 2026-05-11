@@ -516,3 +516,1013 @@ fn test_merge_config_with_locks_all_ten_lockable_fields_enforced() {
         "expected 10 warn! events for all locked fields, got {log_count}"
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// G.2: GitHubConfigurationProvider cache helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Minimal test double for GitHubOperations. Only the three methods exercised
+// by the G.2 helpers (get_installation_id_for_repo, get_file_content, scoped_to)
+// carry real logic; the rest are safe stubs.
+
+use std::collections::HashMap as GH2HashMap;
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use tokio::sync::Mutex as TokioMutex;
+
+use release_regent_core::{
+    traits::{
+        git_operations::{
+            GetCommitsOptions, GitCommit, GitOperations, GitRepository, GitTag, ListTagsOptions,
+        },
+        github_operations::{
+            CollaboratorPermission, CreatePullRequestParams, CreateReleaseParams, FileUpdate,
+            IssueComment, Label, PullRequest, Release, Tag, UpdateReleaseParams,
+        },
+        GitHubOperations,
+    },
+    CoreError,
+};
+
+/// State shared across clones of `TestGitHub` via `Arc<Mutex>`.
+struct TestGitHubState {
+    /// Override for `get_installation_id_for_repo`. `None` → return `Err(GitHub)`.
+    install_response: Option<u64>,
+    /// Per-key response for `get_file_content`.
+    /// Value is `Ok(Some(content))`, `Ok(None)` (absent), or `Err(msg)` (API error).
+    file_responses: GH2HashMap<(String, String, String, String), Result<Option<String>, String>>,
+}
+
+impl TestGitHubState {
+    fn new() -> Self {
+        Self {
+            install_response: Some(42),
+            file_responses: GH2HashMap::new(),
+        }
+    }
+}
+
+/// Minimal GitHub client stub for testing config cache helpers.
+///
+/// Shares state across `scoped_to` clones so tests can inspect call results.
+#[derive(Clone)]
+struct TestGitHub {
+    state: Arc<TokioMutex<TestGitHubState>>,
+}
+
+impl TestGitHub {
+    fn new() -> Self {
+        Self {
+            state: Arc::new(TokioMutex::new(TestGitHubState::new())),
+        }
+    }
+
+    /// Make `get_installation_id_for_repo` return an error.
+    async fn set_install_error(&self) {
+        self.state.lock().await.install_response = None;
+    }
+
+    /// Register a file with content (file exists).
+    async fn add_file(&self, owner: &str, repo: &str, path: &str, branch: &str, content: &str) {
+        self.state.lock().await.file_responses.insert(
+            (
+                owner.to_string(),
+                repo.to_string(),
+                path.to_string(),
+                branch.to_string(),
+            ),
+            Ok(Some(content.to_string())),
+        );
+    }
+
+    /// Register a file path as returning an API error.
+    async fn add_file_error(&self, owner: &str, repo: &str, path: &str, branch: &str) {
+        self.state.lock().await.file_responses.insert(
+            (
+                owner.to_string(),
+                repo.to_string(),
+                path.to_string(),
+                branch.to_string(),
+            ),
+            Err("simulated GitHub API error".to_string()),
+        );
+    }
+}
+
+// ── GitOperations stub ────────────────────────────────────────────────────────
+
+#[async_trait]
+impl GitOperations for TestGitHub {
+    async fn get_commits_between(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _base: &str,
+        _head: &str,
+        _options: GetCommitsOptions,
+    ) -> release_regent_core::CoreResult<Vec<GitCommit>> {
+        Ok(vec![])
+    }
+
+    async fn get_commit(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _sha: &str,
+    ) -> release_regent_core::CoreResult<GitCommit> {
+        Err(CoreError::not_found("stub"))
+    }
+
+    async fn list_tags(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _options: ListTagsOptions,
+    ) -> release_regent_core::CoreResult<Vec<GitTag>> {
+        Ok(vec![])
+    }
+
+    async fn get_tag(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _tag_name: &str,
+    ) -> release_regent_core::CoreResult<GitTag> {
+        Err(CoreError::not_found("stub"))
+    }
+
+    async fn tag_exists(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _tag_name: &str,
+    ) -> release_regent_core::CoreResult<bool> {
+        Ok(false)
+    }
+
+    async fn get_head_commit(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _branch: Option<&str>,
+    ) -> release_regent_core::CoreResult<GitCommit> {
+        Err(CoreError::not_found("stub"))
+    }
+
+    async fn get_repository_info(
+        &self,
+        _owner: &str,
+        _repo: &str,
+    ) -> release_regent_core::CoreResult<GitRepository> {
+        Err(CoreError::not_found("stub"))
+    }
+}
+
+// ── GitHubOperations impl ─────────────────────────────────────────────────────
+
+#[async_trait]
+impl GitHubOperations for TestGitHub {
+    async fn add_labels(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _issue_number: u64,
+        _labels: &[&str],
+    ) -> release_regent_core::CoreResult<()> {
+        Ok(())
+    }
+
+    async fn create_branch(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _branch_name: &str,
+        _sha: &str,
+    ) -> release_regent_core::CoreResult<()> {
+        Ok(())
+    }
+
+    async fn create_issue_comment(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _issue_number: u64,
+        _body: &str,
+    ) -> release_regent_core::CoreResult<()> {
+        Ok(())
+    }
+
+    async fn create_pull_request(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _params: CreatePullRequestParams,
+    ) -> release_regent_core::CoreResult<PullRequest> {
+        Err(CoreError::not_found("stub"))
+    }
+
+    async fn create_release(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _params: CreateReleaseParams,
+    ) -> release_regent_core::CoreResult<Release> {
+        Err(CoreError::not_found("stub"))
+    }
+
+    async fn create_tag(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _tag_name: &str,
+        _commit_sha: &str,
+        _message: Option<String>,
+        _tagger: Option<release_regent_core::traits::github_operations::GitUser>,
+    ) -> release_regent_core::CoreResult<Tag> {
+        Err(CoreError::not_found("stub"))
+    }
+
+    async fn delete_branch(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _branch_name: &str,
+    ) -> release_regent_core::CoreResult<()> {
+        Ok(())
+    }
+
+    async fn force_update_branch(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _branch_name: &str,
+        _sha: &str,
+    ) -> release_regent_core::CoreResult<()> {
+        Ok(())
+    }
+
+    async fn get_collaborator_permission(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _username: &str,
+    ) -> release_regent_core::CoreResult<CollaboratorPermission> {
+        Ok(CollaboratorPermission::Write)
+    }
+
+    async fn get_latest_release(
+        &self,
+        _owner: &str,
+        _repo: &str,
+    ) -> release_regent_core::CoreResult<Option<Release>> {
+        Ok(None)
+    }
+
+    async fn get_pull_request(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        pr_number: u64,
+    ) -> release_regent_core::CoreResult<PullRequest> {
+        Err(CoreError::not_found(format!("PR #{pr_number}")))
+    }
+
+    async fn get_release_by_tag(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        tag: &str,
+    ) -> release_regent_core::CoreResult<Release> {
+        Err(CoreError::not_found(format!("release for tag '{tag}'")))
+    }
+
+    async fn list_pr_labels(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _issue_number: u64,
+    ) -> release_regent_core::CoreResult<Vec<Label>> {
+        Ok(vec![])
+    }
+
+    async fn list_issue_comments(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _issue_number: u64,
+    ) -> release_regent_core::CoreResult<Vec<IssueComment>> {
+        Ok(vec![])
+    }
+
+    async fn list_pull_requests(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _state: Option<&str>,
+        _head: Option<&str>,
+        _base: Option<&str>,
+        _per_page: Option<u8>,
+        _page: Option<u32>,
+    ) -> release_regent_core::CoreResult<Vec<PullRequest>> {
+        Ok(vec![])
+    }
+
+    async fn list_releases(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _per_page: Option<u8>,
+        _page: Option<u32>,
+    ) -> release_regent_core::CoreResult<Vec<Release>> {
+        Ok(vec![])
+    }
+
+    async fn remove_label(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _issue_number: u64,
+        _label_name: &str,
+    ) -> release_regent_core::CoreResult<()> {
+        Ok(())
+    }
+
+    async fn search_pull_requests(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _query: &str,
+    ) -> release_regent_core::CoreResult<Vec<PullRequest>> {
+        Ok(vec![])
+    }
+
+    async fn update_pull_request(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        pr_number: u64,
+        _title: Option<String>,
+        _body: Option<String>,
+        _state: Option<String>,
+    ) -> release_regent_core::CoreResult<PullRequest> {
+        Err(CoreError::not_found(format!("PR #{pr_number}")))
+    }
+
+    async fn update_issue_comment(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _comment_id: u64,
+        _body: &str,
+    ) -> release_regent_core::CoreResult<()> {
+        Ok(())
+    }
+
+    async fn update_release(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        release_id: u64,
+        _params: UpdateReleaseParams,
+    ) -> release_regent_core::CoreResult<Release> {
+        Err(CoreError::not_found(format!("release #{release_id}")))
+    }
+
+    async fn upsert_file(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _path: &str,
+        _commit_message: &str,
+        _content: &str,
+        _branch: &str,
+    ) -> release_regent_core::CoreResult<()> {
+        Ok(())
+    }
+
+    async fn get_installation_id_for_repo(
+        &self,
+        _owner: &str,
+        _repo: &str,
+    ) -> release_regent_core::CoreResult<u64> {
+        match self.state.lock().await.install_response {
+            Some(id) => Ok(id),
+            None => Err(CoreError::github(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "simulated installation lookup failure",
+            ))),
+        }
+    }
+
+    fn scoped_to(&self, _installation_id: u64) -> Self {
+        // Share Arc state so all clones observe the same responses.
+        Self {
+            state: Arc::clone(&self.state),
+        }
+    }
+
+    async fn get_file_content(
+        &self,
+        owner: &str,
+        repo: &str,
+        path: &str,
+        branch: &str,
+    ) -> release_regent_core::CoreResult<Option<String>> {
+        let key = (
+            owner.to_string(),
+            repo.to_string(),
+            path.to_string(),
+            branch.to_string(),
+        );
+        match self.state.lock().await.file_responses.get(&key).cloned() {
+            Some(Ok(content)) => Ok(content),
+            Some(Err(msg)) => Err(CoreError::github(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                msg,
+            ))),
+            None => Ok(None), // path not registered → absent
+        }
+    }
+
+    async fn batch_commit_files(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _branch: &str,
+        _files: &[FileUpdate],
+        _message: &str,
+    ) -> release_regent_core::CoreResult<()> {
+        Ok(())
+    }
+}
+
+// ── Provider factory ──────────────────────────────────────────────────────────
+
+/// Create a `GitHubConfigurationProvider<TestGitHub>` backed by a real temp-dir baseline.
+async fn make_github_provider(
+    github: TestGitHub,
+) -> super::GitHubConfigurationProvider<TestGitHub> {
+    use crate::file_provider::FileConfigurationProvider;
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let inner = FileConfigurationProvider::new(tmp.path())
+        .await
+        .expect("FileConfigurationProvider");
+    // Keep the tempdir alive for the duration of the test; it is dropped
+    // implicitly at end of the calling test function.
+    std::mem::forget(tmp);
+    super::GitHubConfigurationProvider::new(inner, github)
+}
+
+/// Minimal valid YAML config content (overrides version_prefix for traceability).
+fn yaml_config(version_prefix: &str) -> String {
+    format!("core:\n  version_prefix: \"{version_prefix}\"\n")
+}
+
+/// Minimal valid TOML config content (overrides version_prefix for traceability).
+fn toml_config(version_prefix: &str) -> String {
+    format!("[core]\nversion_prefix = \"{version_prefix}\"\n")
+}
+
+// ── resolve_metadata_installation ────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_resolve_metadata_installation_success_returns_some() {
+    let gh = TestGitHub::new();
+    let provider = make_github_provider(gh).await;
+
+    let result = provider.resolve_metadata_installation("myorg").await;
+
+    assert_eq!(result, Some(42));
+}
+
+#[tokio::test]
+async fn test_resolve_metadata_installation_caches_result_avoids_second_api_call() {
+    let gh = TestGitHub::new();
+    let provider = make_github_provider(gh).await;
+
+    // First call hits the API.
+    let first = provider.resolve_metadata_installation("myorg").await;
+    // Corrupt the state so a second API call would return an error.
+    provider.github.set_install_error().await;
+    // Second call must hit the cache and still return Some(42).
+    let second = provider.resolve_metadata_installation("myorg").await;
+
+    assert_eq!(first, Some(42));
+    assert_eq!(second, Some(42), "cache hit must bypass the API");
+}
+
+#[tokio::test]
+#[traced_test]
+async fn test_resolve_metadata_installation_api_error_returns_none_and_emits_warn() {
+    let gh = TestGitHub::new();
+    gh.set_install_error().await;
+    let provider = make_github_provider(gh).await;
+
+    let result = provider.resolve_metadata_installation("myorg").await;
+
+    assert!(result.is_none(), "API error must return None");
+    assert!(
+        logs_contain("metadata repository is not accessible"),
+        "a warn! must be emitted when the metadata repo cannot be resolved"
+    );
+}
+
+// ── fetch_repo_dotfile ────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_fetch_repo_dotfile_absent_returns_ok_none() {
+    let gh = TestGitHub::new();
+    let provider = make_github_provider(gh).await;
+
+    let result = provider
+        .fetch_repo_dotfile("owner", "repo", "main", &provider.github.clone())
+        .await;
+
+    assert!(result.is_ok());
+    assert!(result.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn test_fetch_repo_dotfile_yml_found_returns_parsed_config() {
+    let gh = TestGitHub::new();
+    gh.add_file(
+        "owner",
+        "repo",
+        ".release-regent.yml",
+        "main",
+        &yaml_config("yml-prefix"),
+    )
+    .await;
+    let client = gh.clone();
+    let provider = make_github_provider(gh).await;
+
+    let result = provider
+        .fetch_repo_dotfile("owner", "repo", "main", &client)
+        .await
+        .expect("should succeed");
+
+    assert!(result.is_some());
+    assert_eq!(
+        result.unwrap().core.version_prefix,
+        "yml-prefix",
+        "content of .yml file must be reflected in the parsed config"
+    );
+}
+
+#[tokio::test]
+async fn test_fetch_repo_dotfile_yaml_found_when_yml_absent() {
+    let gh = TestGitHub::new();
+    // .yml absent, .yaml present
+    gh.add_file(
+        "owner",
+        "repo",
+        ".release-regent.yaml",
+        "main",
+        &yaml_config("yaml-prefix"),
+    )
+    .await;
+    let client = gh.clone();
+    let provider = make_github_provider(gh).await;
+
+    let result = provider
+        .fetch_repo_dotfile("owner", "repo", "main", &client)
+        .await
+        .expect("should succeed");
+
+    assert_eq!(result.unwrap().core.version_prefix, "yaml-prefix");
+}
+
+#[tokio::test]
+async fn test_fetch_repo_dotfile_toml_found_when_yml_and_yaml_absent() {
+    let gh = TestGitHub::new();
+    // .yml and .yaml absent, .toml present
+    gh.add_file(
+        "owner",
+        "repo",
+        ".release-regent.toml",
+        "main",
+        &toml_config("toml-prefix"),
+    )
+    .await;
+    let client = gh.clone();
+    let provider = make_github_provider(gh).await;
+
+    let result = provider
+        .fetch_repo_dotfile("owner", "repo", "main", &client)
+        .await
+        .expect("should succeed");
+
+    assert_eq!(result.unwrap().core.version_prefix, "toml-prefix");
+}
+
+#[tokio::test]
+async fn test_fetch_repo_dotfile_yml_takes_precedence_over_yaml() {
+    let gh = TestGitHub::new();
+    gh.add_file(
+        "owner",
+        "repo",
+        ".release-regent.yml",
+        "main",
+        &yaml_config("from-yml"),
+    )
+    .await;
+    gh.add_file(
+        "owner",
+        "repo",
+        ".release-regent.yaml",
+        "main",
+        &yaml_config("from-yaml"),
+    )
+    .await;
+    let client = gh.clone();
+    let provider = make_github_provider(gh).await;
+
+    let result = provider
+        .fetch_repo_dotfile("owner", "repo", "main", &client)
+        .await
+        .expect("should succeed");
+
+    assert_eq!(
+        result.unwrap().core.version_prefix,
+        "from-yml",
+        ".yml must be tried before .yaml"
+    );
+}
+
+#[tokio::test]
+async fn test_fetch_repo_dotfile_invalid_content_returns_err_config() {
+    let gh = TestGitHub::new();
+    gh.add_file(
+        "owner",
+        "repo",
+        ".release-regent.yml",
+        "main",
+        ": this is not valid yaml {{{{ ]]]]",
+    )
+    .await;
+    let client = gh.clone();
+    let provider = make_github_provider(gh).await;
+
+    let result = provider
+        .fetch_repo_dotfile("owner", "repo", "main", &client)
+        .await;
+
+    assert!(result.is_err());
+    assert!(
+        result.unwrap_err().is_config_error(),
+        "parse failure must be CoreError::Config"
+    );
+}
+
+#[tokio::test]
+async fn test_fetch_repo_dotfile_api_error_returns_err_github() {
+    let gh = TestGitHub::new();
+    gh.add_file_error("owner", "repo", ".release-regent.yml", "main")
+        .await;
+    let client = gh.clone();
+    let provider = make_github_provider(gh).await;
+
+    let result = provider
+        .fetch_repo_dotfile("owner", "repo", "main", &client)
+        .await;
+
+    assert!(result.is_err());
+    // The error is a GitHub/Network error (not a Config parse error).
+    assert!(
+        !result.unwrap_err().is_config_error(),
+        "API error must not be classified as CoreError::Config"
+    );
+}
+
+#[tokio::test]
+async fn test_fetch_repo_dotfile_cache_hit_within_ttl_skips_api() {
+    let gh = TestGitHub::new();
+    gh.add_file(
+        "owner",
+        "repo",
+        ".release-regent.yml",
+        "main",
+        &yaml_config("v1"),
+    )
+    .await;
+    let client = gh.clone();
+    let provider = make_github_provider(gh).await;
+
+    // Populate cache.
+    let first = provider
+        .fetch_repo_dotfile("owner", "repo", "main", &client)
+        .await
+        .expect("first call");
+
+    // Remove the file from the mock (simulates "no longer there").
+    // A cache hit must still return the cached result.
+    client.state.lock().await.file_responses.clear();
+
+    let second = provider
+        .fetch_repo_dotfile("owner", "repo", "main", &client)
+        .await
+        .expect("cached call");
+
+    assert_eq!(
+        first.as_ref().map(|c| &c.core.version_prefix),
+        second.as_ref().map(|c| &c.core.version_prefix),
+        "cache hit must return the previously parsed config"
+    );
+}
+
+// ── load_global_policy ────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_load_global_policy_absent_returns_ok_none() {
+    let gh = TestGitHub::new();
+    let client = gh.clone();
+    let provider = make_github_provider(gh).await;
+
+    let result = provider.load_global_policy("myorg", &client).await;
+
+    assert!(result.is_ok());
+    assert!(result.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn test_load_global_policy_toml_found_returns_parsed_config() {
+    let gh = TestGitHub::new();
+    gh.add_file(
+        "myorg",
+        ".release-regent",
+        "global.toml",
+        "main",
+        &toml_config("global-prefix"),
+    )
+    .await;
+    let client = gh.clone();
+    let provider = make_github_provider(gh).await;
+
+    let result = provider
+        .load_global_policy("myorg", &client)
+        .await
+        .expect("should succeed");
+
+    assert!(result.is_some());
+    assert_eq!(result.unwrap().core.version_prefix, "global-prefix");
+}
+
+#[tokio::test]
+async fn test_load_global_policy_yml_found_when_toml_absent() {
+    let gh = TestGitHub::new();
+    // toml absent, yml present
+    gh.add_file(
+        "myorg",
+        ".release-regent",
+        "global.yml",
+        "main",
+        &yaml_config("global-yml"),
+    )
+    .await;
+    let client = gh.clone();
+    let provider = make_github_provider(gh).await;
+
+    let result = provider
+        .load_global_policy("myorg", &client)
+        .await
+        .expect("should succeed");
+
+    assert_eq!(result.unwrap().core.version_prefix, "global-yml");
+}
+
+#[tokio::test]
+async fn test_load_global_policy_toml_takes_precedence_over_yml() {
+    let gh = TestGitHub::new();
+    gh.add_file(
+        "myorg",
+        ".release-regent",
+        "global.toml",
+        "main",
+        &toml_config("from-toml"),
+    )
+    .await;
+    gh.add_file(
+        "myorg",
+        ".release-regent",
+        "global.yml",
+        "main",
+        &yaml_config("from-yml"),
+    )
+    .await;
+    let client = gh.clone();
+    let provider = make_github_provider(gh).await;
+
+    let result = provider
+        .load_global_policy("myorg", &client)
+        .await
+        .expect("should succeed");
+
+    assert_eq!(
+        result.unwrap().core.version_prefix,
+        "from-toml",
+        "TOML must be tried first for global policy"
+    );
+}
+
+#[tokio::test]
+async fn test_load_global_policy_invalid_content_returns_err_config() {
+    let gh = TestGitHub::new();
+    gh.add_file(
+        "myorg",
+        ".release-regent",
+        "global.toml",
+        "main",
+        "not valid toml [[[",
+    )
+    .await;
+    let client = gh.clone();
+    let provider = make_github_provider(gh).await;
+
+    let result = provider.load_global_policy("myorg", &client).await;
+
+    assert!(result.is_err());
+    assert!(result.unwrap_err().is_config_error());
+}
+
+#[tokio::test]
+async fn test_load_global_policy_api_error_propagates() {
+    let gh = TestGitHub::new();
+    // All three probe paths return an error.
+    for path in &["global.toml", "global.yml", "global.yaml"] {
+        gh.add_file_error("myorg", ".release-regent", path, "main")
+            .await;
+    }
+    let client = gh.clone();
+    let provider = make_github_provider(gh).await;
+
+    let result = provider.load_global_policy("myorg", &client).await;
+
+    assert!(result.is_err());
+    assert!(
+        !result.unwrap_err().is_config_error(),
+        "API error must not be CoreError::Config"
+    );
+}
+
+#[tokio::test]
+async fn test_load_global_policy_cache_hit_within_ttl_skips_api() {
+    let gh = TestGitHub::new();
+    gh.add_file(
+        "myorg",
+        ".release-regent",
+        "global.toml",
+        "main",
+        &toml_config("cached"),
+    )
+    .await;
+    let client = gh.clone();
+    let provider = make_github_provider(gh).await;
+
+    // Populate cache.
+    let _ = provider.load_global_policy("myorg", &client).await;
+    // Clear responses to prove cache is used.
+    client.state.lock().await.file_responses.clear();
+
+    let result = provider
+        .load_global_policy("myorg", &client)
+        .await
+        .expect("cached call");
+
+    assert_eq!(result.unwrap().core.version_prefix, "cached");
+}
+
+// ── load_group_policy ─────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_load_group_policy_absent_returns_ok_none() {
+    let gh = TestGitHub::new();
+    let client = gh.clone();
+    let provider = make_github_provider(gh).await;
+
+    let result = provider
+        .load_group_policy("myorg", "platform", &client)
+        .await;
+
+    assert!(result.is_ok());
+    assert!(result.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn test_load_group_policy_toml_found_returns_parsed_config() {
+    let gh = TestGitHub::new();
+    gh.add_file(
+        "myorg",
+        ".release-regent",
+        "groups/platform.toml",
+        "main",
+        &toml_config("group-prefix"),
+    )
+    .await;
+    let client = gh.clone();
+    let provider = make_github_provider(gh).await;
+
+    let result = provider
+        .load_group_policy("myorg", "platform", &client)
+        .await
+        .expect("should succeed");
+
+    assert_eq!(result.unwrap().core.version_prefix, "group-prefix");
+}
+
+#[tokio::test]
+async fn test_load_group_policy_toml_takes_precedence_over_yml() {
+    let gh = TestGitHub::new();
+    gh.add_file(
+        "myorg",
+        ".release-regent",
+        "groups/backend.toml",
+        "main",
+        &toml_config("from-toml"),
+    )
+    .await;
+    gh.add_file(
+        "myorg",
+        ".release-regent",
+        "groups/backend.yml",
+        "main",
+        &yaml_config("from-yml"),
+    )
+    .await;
+    let client = gh.clone();
+    let provider = make_github_provider(gh).await;
+
+    let result = provider
+        .load_group_policy("myorg", "backend", &client)
+        .await
+        .expect("should succeed");
+
+    assert_eq!(
+        result.unwrap().core.version_prefix,
+        "from-toml",
+        "TOML must be tried first for group policy"
+    );
+}
+
+#[tokio::test]
+async fn test_load_group_policy_invalid_content_returns_err_config() {
+    let gh = TestGitHub::new();
+    gh.add_file(
+        "myorg",
+        ".release-regent",
+        "groups/backend.toml",
+        "main",
+        "definitely not toml {{{{",
+    )
+    .await;
+    let client = gh.clone();
+    let provider = make_github_provider(gh).await;
+
+    let result = provider
+        .load_group_policy("myorg", "backend", &client)
+        .await;
+
+    assert!(result.is_err());
+    assert!(result.unwrap_err().is_config_error());
+}
+
+#[tokio::test]
+async fn test_load_group_policy_cache_keyed_by_org_and_group() {
+    let gh = TestGitHub::new();
+    gh.add_file(
+        "myorg",
+        ".release-regent",
+        "groups/platform.toml",
+        "main",
+        &toml_config("platform"),
+    )
+    .await;
+    gh.add_file(
+        "myorg",
+        ".release-regent",
+        "groups/mobile.toml",
+        "main",
+        &toml_config("mobile"),
+    )
+    .await;
+    let client = gh.clone();
+    let provider = make_github_provider(gh).await;
+
+    let platform = provider
+        .load_group_policy("myorg", "platform", &client)
+        .await
+        .expect("platform")
+        .unwrap();
+    let mobile = provider
+        .load_group_policy("myorg", "mobile", &client)
+        .await
+        .expect("mobile")
+        .unwrap();
+
+    assert_eq!(platform.core.version_prefix, "platform");
+    assert_eq!(mobile.core.version_prefix, "mobile");
+    assert_ne!(
+        platform.core.version_prefix, mobile.core.version_prefix,
+        "different groups must have independent cache entries"
+    );
+}
