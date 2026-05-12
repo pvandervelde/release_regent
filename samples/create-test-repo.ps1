@@ -531,6 +531,21 @@ Merge the branches in the following order to exercise each Release Regent code p
 | 5 | \`chore/update-ci\` | \`chore:\` | No version bump |
 |   | _Merge \`release/v0.2.0\` PR_ | — | GitHub release v0.2.0 created |
 | 6 | \`feat/breaking-rename-endpoint\` | \`feat!:\` | \`release/v1.0.0\` PR created |
+
+## PR comment commands
+
+The dotfile sets \`allow_override: true\`, so you can test both PR comment commands at any
+point while Release Regent is running:
+
+| Command | Where to post it | What it does |
+| :------ | :--------------- | :----------- |
+| \`!release minor\` | Any open **feature** PR | Raises the bump floor to \`minor\` for that PR, regardless of commit types |
+| \`!release major\` | Any open **feature** PR | Raises the bump floor to \`major\` for that PR |
+| \`!set-version 3.0.0\` | The open **release** PR | Overrides the calculated version; renames branch and updates changelog heading |
+| \`!set-version 1.0.0-rc.1\` | The open **release** PR | Same as above, with a pre-release suffix |
+
+Post the command as a PR comment. Only users with **Write** or higher access on the
+repository can issue commands — comments from Read-only users are silently ignored.
 "@
 
 New-RepoFile '.release-regent.yml' @"
@@ -926,7 +941,12 @@ Write-Host ''
 Write-Host '  3. Start Release Regent locally (from the repository root):'
 Write-Host '       .\samples\run-local.ps1 -SmeeUrl https://smee.io/YOUR_CHANNEL'
 Write-Host ''
-Write-Host '  4. Merge branches in this order and watch the Release Regent logs:'
+Write-Host '  4. Test PR comment commands (allow_override = true is set in the dotfile):'
+Write-Host '       On any open FEATURE PR:  post  !release minor  or  !release major'
+Write-Host '       On the open RELEASE PR:  post  !set-version 3.0.0  to override the version'
+Write-Host '     Only Write+ users can issue commands; Read-only comments are ignored.'
+Write-Host ''
+Write-Host '  5. Merge branches in this order and watch the Release Regent logs:'
 Write-Host ''
 
 $scenarios = @(
