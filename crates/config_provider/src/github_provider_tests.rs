@@ -1,4 +1,4 @@
-use super::{merge_config, merge_config_with_locks, ConfigLocks, LOCKABLE_FIELDS};
+use super::{apply_app_level_config, merge_config_with_locks, ConfigLocks, LOCKABLE_FIELDS};
 use release_regent_core::config::{
     BranchConfig, CoreConfig, ErrorHandlingConfig, ReleasesConfig, VersioningConfig,
     VersioningStrategy,
@@ -181,11 +181,11 @@ fn test_config_locks_is_locked_returns_false_on_empty_set() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// merge_config — unconditional merge
+// apply_app_level_config — unconditional app-level baseline application
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[test]
-fn test_merge_config_takes_all_incoming_fields_unconditionally() {
+fn test_apply_app_level_config_takes_all_incoming_fields_unconditionally() {
     let base = make_config(
         VersioningStrategy::Conventional,
         true,
@@ -211,7 +211,7 @@ fn test_merge_config_takes_all_incoming_fields_unconditionally() {
         500,
     );
 
-    let result = merge_config(base, incoming.clone());
+    let result = apply_app_level_config(base, incoming.clone());
 
     assert!(!result.versioning.allow_override);
     assert!(result.releases.draft);
@@ -224,7 +224,7 @@ fn test_merge_config_takes_all_incoming_fields_unconditionally() {
 }
 
 #[test]
-fn test_merge_config_ignores_base_when_incoming_differs() {
+fn test_apply_app_level_config_ignores_base_when_incoming_differs() {
     // When there are no locks the base is always discarded.
     let base = make_config(
         VersioningStrategy::Conventional,
@@ -241,7 +241,7 @@ fn test_merge_config_ignores_base_when_incoming_differs() {
     let mut incoming = default_config();
     incoming.core.version_prefix = "nightly-".to_string();
 
-    let result = merge_config(base, incoming);
+    let result = apply_app_level_config(base, incoming);
     assert_eq!(result.core.version_prefix, "nightly-");
 }
 
@@ -1025,6 +1025,30 @@ async fn test_resolve_metadata_installation_api_error_returns_none_and_emits_war
     assert!(
         logs_contain("metadata repository is not accessible"),
         "a warn! must be emitted when the metadata repo cannot be resolved"
+    );
+}
+
+#[tokio::test]
+async fn test_resolve_metadata_installation_negative_cache_suppresses_second_api_call() {
+    // First call returns an error and populates the negative cache.
+    // A second call within the TTL window must return None without hitting the API.
+    let gh = TestGitHub::new();
+    gh.set_install_error().await;
+    let provider = make_github_provider(gh).await;
+
+    let first = provider.resolve_metadata_installation("myorg").await;
+    // Re-enable the API so a second real call would succeed — if the negative cache
+    // works, the second call must still return None without a network round-trip.
+    provider.github.state.lock().await.install_response = Some(99);
+    let second = provider.resolve_metadata_installation("myorg").await;
+
+    assert!(
+        first.is_none(),
+        "first call after API error must return None"
+    );
+    assert!(
+        second.is_none(),
+        "second call within TTL must be served from negative cache and return None"
     );
 }
 
@@ -1873,6 +1897,94 @@ async fn test_get_merged_config_non_lockable_path_in_global_locked_fields_is_ign
     assert!(
         logs_contain("not a lockable policy field"),
         "must warn when a non-lockable path appears in locked_fields"
+    );
+}
+
+/// Global policy file contains a `group` field: must emit a `warn!` and strip it
+/// before the merge so it is absent from the final effective config.
+#[tokio::test]
+#[traced_test]
+async fn test_get_merged_config_global_policy_group_field_is_warned_and_stripped() {
+    let gh = TestGitHub::new();
+    // Global file contains `group = "backend"` which is only meaningful in dotfiles.
+    let global_content = "group = \"backend\"\n[core]\nversion_prefix = \"global-v\"\n";
+    seed_global(&gh, global_content).await;
+    let provider = make_provider_with_app_config(gh).await;
+
+    let result = provider
+        .get_merged_config("myorg", "myrepo", server_options())
+        .await
+        .expect("should succeed; group in global policy is a non-fatal warning");
+
+    assert_eq!(result.core.version_prefix, "global-v");
+    assert!(
+        result.group.is_none(),
+        "group field from global policy must not appear in the final result"
+    );
+    assert!(
+        logs_contain("`group` is only meaningful in repository dotfiles"),
+        "must warn when global policy file contains a group field"
+    );
+}
+
+/// Group policy file contains a `group` field: must emit a `warn!` and strip it
+/// before the merge so it is absent from the final effective config.
+#[tokio::test]
+#[traced_test]
+async fn test_get_merged_config_group_policy_group_field_is_warned_and_stripped() {
+    let gh = TestGitHub::new();
+    seed_global(&gh, &global_toml("global-v")).await;
+    // Group file contains `group = "other"` which is invalid at this level.
+    let group_content = "group = \"other\"\n[core]\nversion_prefix = \"group-v\"\n";
+    seed_group(&gh, "mygroup", group_content).await;
+    seed_dotfile(&gh, &repo_dotfile_yaml_with_group("repo-v", "mygroup")).await;
+    let provider = make_provider_with_app_config(gh).await;
+
+    let result = provider
+        .get_merged_config("myorg", "myrepo", server_options())
+        .await
+        .expect("should succeed; group in group policy is a non-fatal warning");
+
+    assert_eq!(result.core.version_prefix, "repo-v");
+    assert!(
+        result.group.is_none(),
+        "group field from group policy must not appear in the final result"
+    );
+    assert!(
+        logs_contain("`group` is only meaningful in repository dotfiles"),
+        "must warn when group policy file contains a group field"
+    );
+}
+
+/// After the full merge pipeline, `group` and `locked_fields` must always be
+/// absent from the returned config — they are pipeline-only metadata fields.
+#[tokio::test]
+async fn test_get_merged_config_metadata_fields_stripped_from_final_result() {
+    let gh = TestGitHub::new();
+    // Global locks a field (so locked_fields is non-empty during the pipeline).
+    let global_content =
+        "locked_fields = [\"versioning.allow_override\"]\n[core]\nversion_prefix = \"global-v\"\n";
+    seed_global(&gh, global_content).await;
+    // Dotfile declares a group (so group is non-None during the pipeline).
+    seed_dotfile(
+        &gh,
+        &repo_dotfile_yaml_with_group("repo-v", "unresolved-group"),
+    )
+    .await;
+    let provider = make_provider_with_app_config(gh).await;
+
+    let result = provider
+        .get_merged_config("myorg", "myrepo", server_options())
+        .await
+        .expect("should succeed");
+
+    assert!(
+        result.group.is_none(),
+        "group must be None in the final result regardless of dotfile contents"
+    );
+    assert!(
+        result.locked_fields.is_empty(),
+        "locked_fields must be empty in the final result regardless of policy file contents"
     );
 }
 

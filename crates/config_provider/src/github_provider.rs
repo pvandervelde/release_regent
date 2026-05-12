@@ -125,18 +125,22 @@ impl ConfigLocks {
 // Merge helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Unconditionally merge `incoming` over `base` (no lock checks).
+/// Apply the app-level config as the Level 2 baseline.
 ///
-/// Every field from `incoming` replaces the corresponding field in `base`.
-/// Used for the app-level baseline where no locks are active yet — the caller
-/// starts from `ReleaseRegentConfig::default()` and merges the app-config on
-/// top, which produces the app-level effective config.
+/// All fields from `incoming` replace the corresponding fields in `base`. The
+/// `_base` parameter is accepted for symmetry with [`merge_config_with_locks`]
+/// but is always discarded — each config level is a complete parsed document
+/// whose unspecified fields carry serde defaults, so the caller must supply the
+/// correct `base` before the first merge (see `get_merged_config`).
 ///
 /// # Spec reference
 ///
 /// `docs/specs/interfaces/github_operations_additions.md` §7
 #[must_use]
-fn merge_config(_base: ReleaseRegentConfig, incoming: ReleaseRegentConfig) -> ReleaseRegentConfig {
+fn apply_app_level_config(
+    _base: ReleaseRegentConfig,
+    incoming: ReleaseRegentConfig,
+) -> ReleaseRegentConfig {
     // All fields come from `incoming`; base is replaced entirely.
     // This is intentional: each config level is a complete parsed document whose
     // un-specified fields carry their defaults — the caller must start from the
@@ -415,6 +419,10 @@ where
     github: G,
     /// `org` → installation ID for `{org}/.release-regent`. Never evicted.
     metadata_installation_cache: RwLock<HashMap<String, u64>>,
+    /// `org` → `cached_at`. When the App is absent or the repo doesn't exist the lookup
+    /// result is negative-cached for [`REPO_GROUP_CACHE_TTL`] to suppress repeated API
+    /// calls and warn-spam on orgs that never install the App on the metadata repo.
+    negative_metadata_installation_cache: RwLock<HashMap<String, Instant>>,
     /// `org` → `(config_or_none, cached_at)`. TTL: [`GLOBAL_CACHE_TTL`].
     /// `None` means the global policy file is absent (valid operational state).
     global_cache: RwLock<HashMap<String, (Option<ReleaseRegentConfig>, Instant)>>,
@@ -444,6 +452,7 @@ impl<G: GitHubOperations + Clone + Send + Sync> GitHubConfigurationProvider<G> {
             inner,
             github,
             metadata_installation_cache: RwLock::default(),
+            negative_metadata_installation_cache: RwLock::default(),
             global_cache: RwLock::default(),
             group_cache: RwLock::default(),
             repo_cache: RwLock::default(),
@@ -462,11 +471,21 @@ impl<G: GitHubOperations + Clone + Send + Sync> GitHubConfigurationProvider<G> {
     ///
     /// `docs/specs/interfaces/github_operations_additions.md` §6 — `resolve_metadata_installation`
     async fn resolve_metadata_installation(&self, org: &str) -> Option<u64> {
-        // Fast path: permanent cache hit.
+        // Fast path: permanent positive-cache hit.
         {
             let cache = self.metadata_installation_cache.read().await;
             if let Some(&id) = cache.get(org) {
                 return Some(id);
+            }
+        }
+
+        // Fast path: still-live negative-cache hit — suppress repeated API calls.
+        {
+            let neg = self.negative_metadata_installation_cache.read().await;
+            if let Some(cached_at) = neg.get(org) {
+                if cached_at.elapsed() < REPO_GROUP_CACHE_TTL {
+                    return None;
+                }
             }
         }
 
@@ -490,6 +509,10 @@ impl<G: GitHubOperations + Clone + Send + Sync> GitHubConfigurationProvider<G> {
                     "metadata repository is not accessible; \
                      falling back to app-level config as effective top"
                 );
+                self.negative_metadata_installation_cache
+                    .write()
+                    .await
+                    .insert(org.to_string(), Instant::now());
                 None
             }
         }
@@ -695,6 +718,14 @@ impl<G: GitHubOperations + Clone + Send + Sync> GitHubConfigurationProvider<G> {
     ///
     /// Respects and populates the 300-second `repo_cache` (key: `"{owner}/{repo}"`).
     ///
+    /// # Branch assumption
+    ///
+    /// The cache key is `"{owner}/{repo}"` without the branch component. This is safe
+    /// because all production callers pass `default_branch` from the webhook payload,
+    /// so every event for a given repo hits the same branch. A future caller that passes
+    /// a non-default branch would receive a stale dotfile if another branch's entry is
+    /// already in the cache — document any such caller explicitly if one is ever added.
+    ///
     /// # Spec reference
     ///
     /// `docs/specs/interfaces/github_operations_additions.md` §6 — `fetch_repo_dotfile`
@@ -818,7 +849,7 @@ where
         let mut locks = ConfigLocks::default();
 
         // Level 2: App-level (local disk, always present).
-        result = merge_config(
+        result = apply_app_level_config(
             result,
             self.inner.load_global_config(options.clone()).await?,
         );
@@ -830,7 +861,16 @@ where
 
                 // Level 3: Global policy.
                 let metadata_reachable = match self.load_global_policy(owner, &meta).await {
-                    Ok(Some(g)) => {
+                    Ok(Some(mut g)) => {
+                        if g.group.is_some() {
+                            warn!(
+                                org = %owner,
+                                group = ?g.group,
+                                "global policy file contains a `group` field; \
+                                 `group` is only meaningful in repository dotfiles and will be ignored"
+                            );
+                            g.group = None;
+                        }
                         locks.extend_from(&g.locked_fields, "global");
                         result = merge_config_with_locks(result, g, &locks);
                         true
@@ -873,7 +913,16 @@ where
 
                     if let Some(ref g) = group {
                         match self.load_group_policy(owner, g, &meta).await {
-                            Ok(Some(gc)) => {
+                            Ok(Some(mut gc)) => {
+                                if gc.group.is_some() {
+                                    warn!(
+                                        org = %owner,
+                                        group = ?gc.group,
+                                        "group policy file contains a `group` field; \
+                                         `group` is only meaningful in repository dotfiles and will be ignored"
+                                    );
+                                    gc.group = None;
+                                }
                                 locks.extend_from(&gc.locked_fields, &format!("group:{g}"));
                                 result = merge_config_with_locks(result, gc, &locks);
                             }
@@ -928,6 +977,11 @@ where
                 }
             }
         }
+
+        // group and locked_fields are pipeline-only metadata fields; strip them from
+        // the final result so callers never observe values sourced from policy files.
+        result.group = None;
+        result.locked_fields = Vec::new();
 
         Ok(result)
     }

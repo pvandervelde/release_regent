@@ -1456,7 +1456,7 @@ impl GitHubOperations for MockGitHubOperations {
 
     async fn get_installation_id_for_repo(&self, _owner: &str, _repo: &str) -> CoreResult<u64> {
         if let Some(msg) = self.method_errors.get("get_installation_id_for_repo") {
-            return Err(CoreError::network(msg.clone()));
+            return Err(CoreError::not_found(msg.clone()));
         }
         Ok(0)
     }
