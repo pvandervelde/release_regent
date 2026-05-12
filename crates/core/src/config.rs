@@ -192,6 +192,24 @@ pub struct ReleaseRegentConfig {
     /// Core settings
     #[serde(default)]
     pub core: CoreConfig,
+    /// Repository group name declared by the repository itself.
+    ///
+    /// When set in a repository dotfile, the provider fetches the corresponding
+    /// group policy from `{org}/.release-regent/groups/{group}.toml`.
+    ///
+    /// Ignored (with `warn!`) if present in global or group policy files.
+    #[serde(default)]
+    pub group: Option<String>,
+    /// Field paths that cannot be overridden at lower configuration levels.
+    ///
+    /// Only valid in global policy and group policy files. Silently ignored
+    /// (with `warn!`) if present in repository dotfiles.
+    ///
+    /// Each entry is a dotted field path such as `"versioning.strategy"`.
+    /// Only policy fields are lockable; see ADR-007 for the complete list.
+    /// Non-lockable paths are silently dropped with `warn!`.
+    #[serde(default)]
+    pub locked_fields: Vec<String>,
     /// Release PR settings
     #[serde(default)]
     pub release_pr: ReleasePrConfig,
@@ -310,7 +328,7 @@ pub enum NotificationStrategy {
 }
 
 /// Versioning strategies
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum VersioningStrategy {
     /// Use conventional commits

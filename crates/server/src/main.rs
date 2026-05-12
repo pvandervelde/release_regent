@@ -75,7 +75,9 @@ use handler::WebhookSecretProvider;
 /// alias does not leak the concrete `GitHubVersionCalculator` type.
 type ServerProcessor = release_regent_core::ReleaseRegentProcessor<
     release_regent_github_client::GitHubClient,
-    release_regent_config_provider::FileConfigurationProvider,
+    release_regent_config_provider::GitHubConfigurationProvider<
+        release_regent_github_client::GitHubClient,
+    >,
     Arc<dyn VersionCalculator + Send + Sync>,
 >;
 
@@ -153,10 +155,12 @@ async fn build_server_processor(webhook_secret: String) -> Result<ServerProcesso
     };
     info!(config_dir = %config_dir.display(), "Using configuration directory");
 
-    let config_provider =
+    let config_provider = release_regent_config_provider::GitHubConfigurationProvider::new(
         release_regent_config_provider::FileConfigurationProvider::new(config_dir)
             .await
-            .map_err(|e| errors::Error::config_provider(e.to_string()))?;
+            .map_err(|e| errors::Error::config_provider(e.to_string()))?,
+        github_client.clone(),
+    );
 
     // The GitHubVersionCalculator is constructed with a clone of the (unscoped)
     // GitHub client and held as a trait object.  The processor calls

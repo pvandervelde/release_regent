@@ -487,6 +487,36 @@ impl Default for MockGitHubOperations {
     }
 }
 
+impl Clone for MockGitHubOperations {
+    /// Clone by sharing all `Arc`-wrapped state (call history, labels, file responses,
+    /// etc.) so that clone and original observe the same calls.  Non-`Arc` fields
+    /// (`repositories`, `commits`, etc.) are deep-copied, matching the behaviour of
+    /// [`scoped_to`](`MockGitHubOperations::scoped_to`).
+    fn clone(&self) -> Self {
+        Self {
+            state: Arc::clone(&self.state),
+            next_id: Arc::clone(&self.next_id),
+            next_sha: Arc::clone(&self.next_sha),
+            repositories: self.repositories.clone(),
+            commits: self.commits.clone(),
+            pull_requests: self.pull_requests.clone(),
+            tags: self.tags.clone(),
+            releases: self.releases.clone(),
+            branches: self.branches.clone(),
+            pr_labels: Arc::clone(&self.pr_labels),
+            collaborator_permission: self.collaborator_permission.clone(),
+            method_errors: self.method_errors.clone(),
+            upsert_file_calls: Arc::clone(&self.upsert_file_calls),
+            get_file_content_calls: Arc::clone(&self.get_file_content_calls),
+            get_file_content_responses: Arc::clone(&self.get_file_content_responses),
+            batch_commit_files_calls: Arc::clone(&self.batch_commit_files_calls),
+            issue_comments: Arc::clone(&self.issue_comments),
+            list_issue_comments_calls: Arc::clone(&self.list_issue_comments_calls),
+            update_issue_comment_calls: Arc::clone(&self.update_issue_comment_calls),
+        }
+    }
+}
+
 impl MockGitHubOperations {
     /// Generate a sequential mock ID for created resources (PRs, releases, etc.).
     ///
@@ -1425,6 +1455,9 @@ impl GitHubOperations for MockGitHubOperations {
     }
 
     async fn get_installation_id_for_repo(&self, _owner: &str, _repo: &str) -> CoreResult<u64> {
+        if let Some(msg) = self.method_errors.get("get_installation_id_for_repo") {
+            return Err(CoreError::not_found(msg.clone()));
+        }
         Ok(0)
     }
 

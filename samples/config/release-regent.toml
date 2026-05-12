@@ -1,8 +1,14 @@
 # =============================================================================
-# Release Regent — sample repository configuration
+# Release Regent — app-level configuration (Level 2 of 5 in the hierarchy)
 # =============================================================================
-# All fields shown here are optional — they match the built-in defaults.
-# You only need to include the fields you want to override.
+# This file is the APP-LEVEL baseline loaded from the local CONFIG_DIR.
+# It can be overridden by:
+#   3. global policy  — {org}/.release-regent/global.toml  (metadata repo)
+#   4. group policy   — {org}/.release-regent/groups/{group}.toml
+#   5. repo dotfile   — {repo}/.release-regent.yml
+#
+# Fields declared in locked_fields at a higher level cannot be overridden
+# by this file or any lower level.
 #
 # The server looks for a file named release-regent.toml (or .yaml) in
 # the CONFIG_DIR directory (default: /config inside the container).
@@ -16,7 +22,10 @@
 
 [core]
 # Prefix prepended to version numbers in tags and PR titles.
-version_prefix = "v"
+# NOTE: This is the app-level default. The global policy in the test metadata
+# repo overrides this to "vGLOBAL-" so you can see level 3 taking effect.
+# The repo dotfile further overrides it to "v" (the normal tag prefix).
+version_prefix = "vAPP-"
 
 [core.branches]
 # The default branch of the repository.
