@@ -12,13 +12,28 @@
     -----------------------
     After the script finishes you have a GitHub repository with:
 
-    main (tagged v0.1.0)
+    main (tagged v0.1.0, with .release-regent.yml dotfile declaring group = "backend")
     ├── fix/handle-empty-input       PATCH bump → v0.1.1
     ├── feat/add-greeting-styles     MINOR bump → v0.2.0
     ├── feat/add-language-support    MINOR bump → v0.2.0 (changelog only update)
     ├── docs/update-api-docs         no version bump
     ├── chore/update-ci              no version bump
     └── feat/breaking-rename-endpoint  MAJOR bump → v1.0.0
+
+    A companion metadata repository ({Owner}/.release-regent) is also created
+    with:
+      global.toml     — org-wide policy: version_prefix = "vGLOBAL-" (not locked)
+      groups/backend.toml — group policy for the "backend" group:
+                            version_prefix = "v" and locks versioning.strategy
+
+    This exercises the full five-level configuration hierarchy:
+      Level 2 (app)   → version_prefix = "vAPP-"   (samples/config/release-regent.toml)
+      Level 3 (global)→ version_prefix = "vGLOBAL-" (overrides app level)
+      Level 4 (group) → version_prefix = "v"        (overrides global)
+                        locks versioning.strategy = "conventional"
+      Level 5 (repo)  → inherits "v" from group (dotfile sets only allow_override)
+
+    Expected effective config: version_prefix = "v", strategy locked to "conventional".
 
     Suggested merge order
     ---------------------
@@ -60,6 +75,12 @@
     Skip creating the initial v0.1.0 Git tag. Release Regent will treat
     this as a brand-new project and use the configured initial_version.
 
+.PARAMETER SkipMetadataRepo
+    Skip creating the {Owner}/.release-regent metadata repository and its
+    global/group policy files. Use this when the metadata repo already exists
+    or when you want to test the two-level fallback path (app-level + repo
+    dotfile only).
+
 .EXAMPLE
     # Private repo, no PRs
     .\samples\create-test-repo.ps1
@@ -89,7 +110,9 @@ param (
 
     [switch]$CreatePRs,
 
-    [switch]$SkipTagV0
+    [switch]$SkipTagV0,
+
+    [switch]$SkipMetadataRepo
 )
 
 Set-StrictMode -Version Latest
@@ -264,6 +287,10 @@ $script:FullRepoName = $FullRepoName
 Write-Info "Repository : $FullRepoName ($Visibility)"
 Write-Info "Clone dir  : $WorkDir"
 
+# Metadata repo name — always {Owner}/.release-regent regardless of the test repo name.
+$MetaRepoName  = "$Owner/.release-regent"
+$script:MetaRepoName = $MetaRepoName
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 3. Create the GitHub repository
 # ─────────────────────────────────────────────────────────────────────────────
@@ -287,7 +314,135 @@ if ($LASTEXITCODE -ne 0)
 Write-Success "Repository created: https://github.com/$FullRepoName"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 4. Clone the (empty) repository locally
+# 4. Create (or reuse) the metadata repository
+# ─────────────────────────────────────────────────────────────────────────────
+
+if (-not $SkipMetadataRepo)
+{
+    Write-Step "Setting up metadata repository: $MetaRepoName"
+
+    $metaExists = gh repo view $MetaRepoName 2>&1
+    if ($LASTEXITCODE -eq 0)
+    {
+        Write-Info "Metadata repo '$MetaRepoName' already exists — reusing it."
+        Write-Info "Existing global.toml / group files will be overwritten."
+    }
+    else
+    {
+        $null = gh repo create $MetaRepoName --$Visibility `
+            --description 'Release Regent metadata repository (global and group policy)' 2>&1
+        if ($LASTEXITCODE -ne 0)
+        {
+            Write-Host "    WARN: Could not create metadata repo $MetaRepoName" -ForegroundColor Yellow
+            Write-Host "    The server will fall back to the app-level config (Level 2 only)." -ForegroundColor Yellow
+            $SkipMetadataRepo = $true
+        }
+        else
+        {
+            Write-Success "Metadata repo created: https://github.com/$MetaRepoName"
+        }
+    }
+
+    if (-not $SkipMetadataRepo)
+    {
+        # Clone the metadata repo into a sibling temp directory.
+        $MetaCloneDir = Join-Path $WorkDir '.release-regent'
+        if (Test-Path $MetaCloneDir) { Remove-Item -Recurse -Force $MetaCloneDir }
+
+        & git clone "https://github.com/$MetaRepoName.git" $MetaCloneDir 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0)
+        {
+            Write-Host "    WARN: Could not clone metadata repo — skipping policy files." -ForegroundColor Yellow
+            $SkipMetadataRepo = $true
+        }
+    }
+
+    if (-not $SkipMetadataRepo)
+    {
+        # Save current RepoDir and switch to the metadata clone.
+        $savedRepoDir   = $script:RepoDir
+        $script:RepoDir = $MetaCloneDir
+
+        # Configure git identity and disable signing in the meta clone.
+        $gitUserName  = (& git config --global user.name  2>&1) | Out-String
+        $gitUserEmail = (& git config --global user.email 2>&1) | Out-String
+        if (-not $gitUserName.Trim())  { Invoke-Git @('config', 'user.name',  'Release Regent Test') }
+        if (-not $gitUserEmail.Trim()) { Invoke-Git @('config', 'user.email', 'rr-test@example.com') }
+        Invoke-Git @('config', 'tag.gpgsign',    'false')
+        Invoke-Git @('config', 'commit.gpgsign', 'false')
+
+        # If the metadata repo was brand-new it will have an unborn HEAD;
+        # pin to main for consistency.
+        $headRef = (& git -C $MetaCloneDir symbolic-ref HEAD 2>&1) | Out-String
+        if ($LASTEXITCODE -ne 0 -or $headRef.Trim() -eq '')
+        {
+            Invoke-Git @('symbolic-ref', 'HEAD', 'refs/heads/main')
+        }
+
+        # ── global.toml (Level 3) ───────────────────────────────────────────
+        # Overrides the app-level version_prefix ("vAPP-") with "vGLOBAL-" so
+        # you can see Level 3 winning when the Group level is absent.
+        # Does NOT lock the field, allowing the group policy below to override it.
+        New-RepoFile 'global.toml' @"
+# ==========================================================================
+# Release Regent — global policy (Level 3 of 5)
+# Applies to ALL repositories in the $Owner organisation.
+# ==========================================================================
+
+[core]
+# Overrides the app-level version_prefix ("vAPP-") for all org repos.
+# The backend group policy below overrides this further to the real "v".
+version_prefix = "vGLOBAL-"
+"@
+
+        # ── groups/backend.toml (Level 4) ──────────────────────────────────
+        # The test repo's .release-regent.yml declares group = "backend",
+        # so this policy applies. It sets the real version_prefix and
+        # locks versioning.strategy so no per-repo override can change it.
+        New-RepoFile 'groups/backend.toml' @"
+# ==========================================================================
+# Release Regent — group policy for 'backend' (Level 4 of 5)
+# Applies to all repositories that declare group = "backend" in their dotfile.
+# ==========================================================================
+
+# Lock versioning.strategy for all backend repos so individual repos cannot
+# switch away from conventional commits.
+locked_fields = ["versioning.strategy"]
+
+[core]
+# Use the normal "v" prefix for all backend repos,
+# overriding the org-wide "vGLOBAL-" from global.toml.
+version_prefix = "v"
+
+[versioning]
+# Force conventional-commit versioning for every backend repo.
+# This value is locked by locked_fields above.
+strategy = "conventional"
+"@
+
+        Invoke-Git @('add', '--all')
+
+        # Detect whether there are any staged changes to avoid a no-op commit
+        # on an already-populated metadata repo.
+        $status = (& git -C $MetaCloneDir status --porcelain) | Out-String
+        if ($status.Trim())
+        {
+            Invoke-Git @('commit', '--message', 'chore: add global and backend group policy for Release Regent testing')
+            Invoke-Git @('push', '--set-upstream', 'origin', 'main')
+            Write-Success 'Metadata repo policy files committed and pushed.'
+        }
+        else
+        {
+            Write-Info 'Metadata repo already up to date — no new commit needed.'
+        }
+
+        # Restore the original repo directory for the remaining steps.
+        $script:RepoDir = $savedRepoDir
+    }
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 5. Clone the test repository
 # ─────────────────────────────────────────────────────────────────────────────
 
 $CloneDir = Join-Path $WorkDir $RepoName
@@ -335,7 +490,7 @@ Invoke-Git @('symbolic-ref', 'HEAD', 'refs/heads/main')
 Write-Success 'Repository cloned.'
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 5. Initial commit on main
+# 6. Initial commit on main
 # ─────────────────────────────────────────────────────────────────────────────
 
 Write-Step 'Creating initial commit on main'
@@ -350,19 +505,48 @@ A disposable test repository for [Release Regent](https://github.com/pvanderveld
 This repository was generated by `create-test-repo.ps1` so that the Release Regent
 webhook integration can be tested end-to-end without affecting real projects.
 
+## Configuration hierarchy in use
+
+This repo exercises the full five-level configuration hierarchy:
+
+| Level | Source | version_prefix | Notes |
+| :---: | :----- | :------------- | :---- |
+| 2 | App-level (`samples/config/release-regent.toml`) | `vAPP-` | Server baseline |
+| 3 | Global policy (`$Owner/.release-regent/global.toml`) | `vGLOBAL-` | Org-wide override |
+| 4 | Group policy (`$Owner/.release-regent/groups/backend.toml`) | `v` | Locks `versioning.strategy` |
+| 5 | Repo dotfile (`.release-regent.yml` in this repo) | *(inherits `v`)* | Sets `allow_override = true` |
+
+Effective config: `version_prefix = "v"`, `versioning.strategy = "conventional"` (locked).
+
 ## Suggested merge order
 
 Merge the branches in the following order to exercise each Release Regent code path:
 
 | Order | Branch | Conventional commit type | Expected outcome |
 | :---: | :----- | :----------------------- | :--------------- |
-| 1 | `fix/handle-empty-input` | `fix:` | `release/v0.1.1` PR created |
-| 2 | `feat/add-greeting-styles` | `feat:` | `release/v0.2.0` PR created, replaces v0.1.1 |
-| 3 | `feat/add-language-support` | `feat:` | `release/v0.2.0` changelog updated |
-| 4 | `docs/update-api-docs` | `docs:` | No version bump |
-| 5 | `chore/update-ci` | `chore:` | No version bump |
-|   | _Merge `release/v0.2.0` PR_ | — | GitHub release v0.2.0 created |
-| 6 | `feat/breaking-rename-endpoint` | `feat!:` | `release/v1.0.0` PR created |
+| 1 | \`fix/handle-empty-input\` | \`fix:\` | \`release/v0.1.1\` PR created |
+| 2 | \`feat/add-greeting-styles\` | \`feat:\` | \`release/v0.2.0\` PR created, replaces v0.1.1 |
+| 3 | \`feat/add-language-support\` | \`feat:\` | \`release/v0.2.0\` changelog updated |
+| 4 | \`docs/update-api-docs\` | \`docs:\` | No version bump |
+| 5 | \`chore/update-ci\` | \`chore:\` | No version bump |
+|   | _Merge \`release/v0.2.0\` PR_ | — | GitHub release v0.2.0 created |
+| 6 | \`feat/breaking-rename-endpoint\` | \`feat!:\` | \`release/v1.0.0\` PR created |
+"@
+
+New-RepoFile '.release-regent.yml' @"
+# ==========================================================================
+# Release Regent - repository dotfile (Level 5 of 5)
+# This file is specific to the $RepoName repository.
+# ==========================================================================
+
+# Assign this repo to the 'backend' group so that
+# groups/backend.toml (Level 4) is applied on top of global.toml (Level 3).
+group: "backend"
+
+versioning:
+  # Allow contributors to override the calculated bump via PR comments.
+  # versioning.strategy is locked by the group policy and cannot be changed here.
+  allow_override: true
 "@
 
 New-RepoFile 'release-regent.toml' @"
@@ -449,7 +633,7 @@ New-Commit -Message 'chore: initial repository setup'
 Write-Success 'Initial commit created.'
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 6. Tag v0.1.0 as the baseline release
+# 7. Tag v0.1.0 as the baseline release
 # ─────────────────────────────────────────────────────────────────────────────
 
 if (-not $SkipTagV0)
@@ -471,7 +655,7 @@ else
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 7. Feature branches
+# 8. Feature branches
 # ─────────────────────────────────────────────────────────────────────────────
 
 Write-Step 'Creating feature branches'
@@ -707,7 +891,7 @@ their base URL from /greet to /greeting immediately.'
 Write-Success 'All feature branches created and pushed.'
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 8. Summary
+# 9. Summary
 # ─────────────────────────────────────────────────────────────────────────────
 
 $repoWebUrl = "https://github.com/$FullRepoName"
@@ -717,18 +901,32 @@ Write-Host '  ┌─────────────────────
 Write-Host '  │  Test repository ready                                      │' -ForegroundColor Green
 Write-Host '  └─────────────────────────────────────────────────────────────┘' -ForegroundColor Green
 Write-Host ''
-Write-Host "  Repository : $repoWebUrl"
-Write-Host "  Local clone: $CloneDir"
+Write-Host "  Repository   : $repoWebUrl"
+Write-Host "  Metadata repo: https://github.com/$MetaRepoName"
+Write-Host "  Local clone  : $CloneDir"
+Write-Host ''
+Write-Host '  Config hierarchy' -ForegroundColor Yellow
+Write-Host '  ────────────────' -ForegroundColor Yellow
+Write-Host '  Level 2 (app)   version_prefix = "vAPP-"   ← samples/config/release-regent.toml'
+Write-Host '  Level 3 (global) version_prefix = "vGLOBAL-" ← global.toml in metadata repo'
+Write-Host '  Level 4 (group) version_prefix = "v"        ← groups/backend.toml (also locks strategy)'
+Write-Host '  Level 5 (repo)  (inherits "v")              ← .release-regent.yml in this repo'
+Write-Host '  ────────────────'
+Write-Host '  Effective config: version_prefix = "v", strategy = "conventional" (locked)'
 Write-Host ''
 Write-Host '  Next steps' -ForegroundColor Yellow
 Write-Host '  ──────────' -ForegroundColor Yellow
-Write-Host "  1. Install your Release Regent GitHub App on this repository:"
+Write-Host "  1. Install your Release Regent GitHub App on the TEST repository:"
 Write-Host "       $repoWebUrl/settings/installations"
 Write-Host ''
-Write-Host '  2. Start Release Regent locally (from the repository root):'
+Write-Host "  2. Install the same GitHub App on the METADATA repository:"
+Write-Host "       https://github.com/$MetaRepoName/settings/installations"
+Write-Host '     (without this the server falls back to the two-level hierarchy)'
+Write-Host ''
+Write-Host '  3. Start Release Regent locally (from the repository root):'
 Write-Host '       .\samples\run-local.ps1 -SmeeUrl https://smee.io/YOUR_CHANNEL'
 Write-Host ''
-Write-Host '  3. Merge branches in this order and watch the Release Regent logs:'
+Write-Host '  4. Merge branches in this order and watch the Release Regent logs:'
 Write-Host ''
 
 $scenarios = @(
@@ -754,7 +952,9 @@ if (-not $CreatePRs)
 }
 
 Write-Host ''
-Write-Host '  To delete the repository when you are done:' -ForegroundColor DarkGray
+Write-Host '  To delete both repositories when you are done:' -ForegroundColor DarkGray
 Write-Host "    gh repo delete $FullRepoName --yes" -ForegroundColor DarkGray
+Write-Host "    gh repo delete $MetaRepoName --yes" -ForegroundColor DarkGray
 Write-Host "    Remove-Item -Recurse -Force '$CloneDir'" -ForegroundColor DarkGray
+Write-Host "    Remove-Item -Recurse -Force '$(Join-Path $WorkDir '.release-regent')'" -ForegroundColor DarkGray
 Write-Host ''
