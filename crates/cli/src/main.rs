@@ -147,7 +147,7 @@ async fn execute_init(args: InitArgs) -> CliResult<()> {
     }
 
     // Generate sample configuration
-    let config_path = args.output_dir.join(".release-regent.yml");
+    let config_path = args.output_dir.join(".release-regent.toml");
 
     if config_path.exists() && !args.overwrite {
         return Err(CliError::config_file(
@@ -156,9 +156,9 @@ async fn execute_init(args: InitArgs) -> CliResult<()> {
     }
 
     let default_config = release_regent_core::config::ReleaseRegentConfig::default();
-    let config_yaml = serde_yaml::to_string(&default_config)?;
+    let config_toml = toml::to_string_pretty(&default_config)?;
 
-    tokio::fs::write(&config_path, config_yaml).await?;
+    tokio::fs::write(&config_path, config_toml).await?;
     info!("Generated configuration file: {}", config_path.display());
 
     // Generate sample webhook payload
@@ -390,7 +390,7 @@ async fn execute_generate(args: GenerateArgs) -> CliResult<()> {
     }
 
     if wants_config {
-        let path = args.output_dir.join("sample-config.yml");
+        let path = args.output_dir.join("sample-config.toml");
         if path.exists() && !args.overwrite {
             return Err(CliError::config_file(format!(
                 "{} already exists. Use --overwrite to replace it.",
@@ -398,8 +398,8 @@ async fn execute_generate(args: GenerateArgs) -> CliResult<()> {
             )));
         }
         let config = release_regent_core::config::ReleaseRegentConfig::default();
-        let yaml = serde_yaml::to_string(&config)?;
-        tokio::fs::write(&path, yaml).await?;
+        let toml_content = toml::to_string_pretty(&config)?;
+        tokio::fs::write(&path, toml_content).await?;
         info!("Generated config fixture: {}", path.display());
         println!("📄 Config fixture: {}", path.display());
     }
