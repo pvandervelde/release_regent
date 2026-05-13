@@ -528,7 +528,22 @@ impl GitHubOperations for TestGitHub {
         Ok(())
     }
 
-    async fn list_issue_comments(_repo: &str, _comment_id: u64, _body: &str) -> CoreResult<()> {
+    async fn list_issue_comments(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _issue_number: u64,
+    ) -> CoreResult<Vec<crate::traits::github_operations::IssueComment>> {
+        Ok(vec![])
+    }
+
+    async fn update_issue_comment(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _comment_id: u64,
+        _body: &str,
+    ) -> CoreResult<()> {
         Ok(())
     }
 

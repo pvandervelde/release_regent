@@ -33,8 +33,6 @@ type BatchCommitFilesRebasedCalls =
 type UpsertFileCalls = Arc<RwLock<Vec<(String, String, String, String, String, String)>>>;
 
 /// Mock implementation of `GitHubOperations` trait
-
-/// Mock implementation of `GitHubOperations` trait
 ///
 /// This mock supports:
 /// - Deterministic responses for reproducible testing
