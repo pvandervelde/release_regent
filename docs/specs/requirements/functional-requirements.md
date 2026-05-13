@@ -133,16 +133,15 @@ five hierarchical levels with per-field policy locks.
 Configuration is resolved in this order (later levels override earlier for unlocked fields):
 
 1. **Built-in defaults** — hard-coded in `ReleaseRegentConfig::default()`.
-2. **App-level** — `CONFIG_DIR/release-regent.yml` on local disk. Always present;
+2. **App-level** — `CONFIG_DIR/release-regent.toml` on local disk. Always present;
    acts as bootstrap and fallback if higher GitHub-sourced levels are unavailable.
 3. **Global policy** — `{org}/.release-regent/global.toml` in the metadata repository.
    Org-wide defaults and field locks set by platform teams. Optional.
 4. **Group policy** — `{org}/.release-regent/groups/{group}.toml` in the metadata
    repository. Applies to all repositories that declare `group = "{group}"` in their
    dotfile. Optional.
-5. **Repository config** — `.release-regent.yml` (or `.yaml` / `.toml`) in the target
-   repository root on its default branch. Optional; fetched via GitHub API at
-   event-processing time.
+5. **Repository config** — `.release-regent.toml` in the target repository root on its
+   default branch. Optional; fetched via GitHub API at event-processing time.
 
 **Per-field locks**:
 
@@ -171,13 +170,12 @@ Configuration is resolved in this order (later levels override earlier for unloc
 
 **Acceptance Criteria**:
 
-- App-level config always loaded from `CONFIG_DIR/release-regent.yml` (required at startup).
+- App-level config always loaded from `CONFIG_DIR/release-regent.toml` (required at startup).
 - Global policy fetched from `{org}/.release-regent/global.toml` via GitHub API when
   the App is installed on the metadata repository.
 - Group policy fetched from `{org}/.release-regent/groups/{group}.toml` when repo
   declares `group`; absence of the group file is a warn-and-skip, not an error.
-- Repository dotfile fetched in probe order: `.release-regent.yml` → `.release-regent.yaml`
-  → `.release-regent.toml`; absence is not an error.
+- Repository dotfile fetched from `.release-regent.toml`; absence is not an error.
 - Locked fields at global/group level cannot be overridden by lower levels; violation
   causes a `warn!`, not a failure.
 - Template variables supported: `${version}`, `${version_tag}`, `${changelog}`,

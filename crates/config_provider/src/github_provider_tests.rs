@@ -2045,7 +2045,7 @@ async fn test_get_merged_config_cli_mode_delegates_to_file_provider() {
         .await
         .expect("CLI mode must delegate to FileConfigurationProvider");
 
-    // FileConfigurationProvider with empty tempdir + release-regent.yml returns that file's config.
+    // FileConfigurationProvider with empty tempdir + release-regent.toml returns that file's config.
     assert_eq!(
         result.core.version_prefix, "app-v",
         "CLI mode must use FileConfigurationProvider result (app config)"

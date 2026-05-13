@@ -532,10 +532,10 @@ the testing crate) covering at minimum:
 `GitHubConfigurationProvider` resolves configuration across five levels in order:
 
 1. Built-in defaults (`ReleaseRegentConfig::default()`)
-2. App-level — local `CONFIG_DIR/release-regent.yml` (via `FileConfigurationProvider`)
+2. App-level — local `CONFIG_DIR/release-regent.toml` (via `FileConfigurationProvider`)
 3. Global policy — `{org}/.release-regent/global.toml` (metadata repo, GitHub API)
 4. Group policy — `{org}/.release-regent/groups/{group}.toml` (metadata repo, conditional)
-5. Repository config — `.release-regent.yml` in target repo root (GitHub API)
+5. Repository config — `.release-regent.toml` in target repo root (GitHub API)
 
 Each level can lock specific policy fields, preventing lower levels from overriding them.
 
@@ -795,19 +795,16 @@ async fn get_merged_config(
 | Method | Fetches from | Probe paths | Cache | TTL |
 |---|---|---|---|---|
 | `resolve_metadata_installation(org)` | GitHub App API | N/A (installation lookup) | `metadata_installation_cache` | ∞ |
-| `load_global_policy(org, client)` | `{org}/.release-regent` | `global.toml`, `global.yml`, `global.yaml` | `global_cache[org]` | 600 s |
-| `load_group_policy(org, group, client)` | `{org}/.release-regent` | `groups/{group}.toml/.yml/.yaml` | `group_cache["{org}/{group}"]` | 300 s |
-| `fetch_repo_dotfile(owner, repo, branch, client)` | `{owner}/{repo}` | `.release-regent.yml/.yaml/.toml` | `repo_cache["{owner}/{repo}"]` | 300 s |
+| `load_global_policy(org, client)` | `{org}/.release-regent` | `global.toml` | `global_cache[org]` | 600 s |
+| `load_group_policy(org, group, client)` | `{org}/.release-regent` | `groups/{group}.toml` | `group_cache["{org}/{group}"]` | 300 s |
+| `fetch_repo_dotfile(owner, repo, branch, client)` | `{owner}/{repo}` | `.release-regent.toml` | `repo_cache["{owner}/{repo}"]` | 300 s |
 
 All fetch helpers return `Ok(None)` for absent files, `Err(CoreError::Config)` for invalid
 content, and `Err(CoreError::GitHub)` for API errors. Parse/validation errors evict the
 relevant cache entry immediately.
 
-> **Probe order asymmetry (intentional)**: Metadata repo helpers probe TOML-first
-> (`global.toml`, `global.yml`, `global.yaml`) because TOML is the preferred format for
-> policy files authored by platform teams. The repo dotfile probes YAML-first
-> (`.release-regent.yml`, `.release-regent.yaml`, `.release-regent.toml`) because most
-> existing repository dotfiles in the wild use YAML. This asymmetry is deliberate.
+> **Single probe path**: All helpers probe exactly one TOML path. Multi-format probe
+> arrays and YAML-first ordering were removed when YAML support was dropped.
 
 > **Metadata installation scope**: The `meta` client is scoped to the metadata repo
 > installation (`meta_id` from `resolve_metadata_installation`). This installation must

@@ -574,7 +574,7 @@ fn extract_changelog_from_pr_body(body: &str) -> Result<String, ExtractionError>
 3. release_pr.title_template (INVALID_FORMAT): Template contains undefined variable
    Suggestion: Use {version} instead of {release_version}
 
-Fix these issues in your .release-regent.yml file and try again.
+Fix these issues in your .release-regent.toml file and try again.
 ```
 
 **Processing Errors**:
@@ -684,7 +684,7 @@ rr recover fix-pr --pr=42 --version=1.2.3 --repository=owner/repo
 rr recover cleanup-branches --dry-run --repository=owner/repo
 
 # Validate configuration before applying
-rr recover validate-config --file=.release-regent.yml
+rr recover validate-config --file=.release-regent.toml
 ```
 
 This comprehensive error handling design addresses all the gaps identified in the spec feedback, providing concrete implementation details for reliable operation of Release Regent.

@@ -127,25 +127,26 @@ rr init
 
 This creates two files:
 
-- `.release-regent.yml` — your configuration file
+- `.release-regent.toml` — your configuration file
 - `sample-webhook.json` — a sample webhook payload for local testing
 
-Open `.release-regent.yml`. You will see something like this (abbreviated — the actual file
+Open `.release-regent.toml`. You will see something like this (abbreviated — the actual file
 contains all available fields with their defaults):
 
-```yaml
-core:
-  version_prefix: "v"
-  branches:
-    main: "main"
+```toml
+[core]
+version_prefix = "v"
 
-versioning:
-  strategy: "conventional"
-  allow_override: true
+[core.branches]
+main = "main"
 
-release_pr:
-  title_template: "chore(release): ${version}"
-  draft: false
+[versioning]
+strategy = "conventional"
+allow_override = true
+
+[release_pr]
+title_template = "chore(release): ${version}"
+draft = false
 ```
 
 The defaults work for most repositories. You can leave the file as-is for now.

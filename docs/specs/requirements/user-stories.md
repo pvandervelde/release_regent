@@ -171,14 +171,14 @@ server re-deployment.
 
 **Acceptance Criteria**:
 
-- Adding a `.release-regent.yml` file to the root of a repository is sufficient to supply
+- Adding a `.release-regent.toml` file to the root of a repository is sufficient to supply
   per-repository configuration; no server re-deployment is required.
 - Repository config is read from the repository’s default branch on each webhook event
   (subject to a 5-minute TTL cache), so configuration changes take effect within
   5 minutes of merging them.
 - Repository-specific configuration overrides app-level and global policy defaults for
   fields that are not locked.
-- Absence of a `.release-regent.yml` in the repository is not an error; the resolved
+- Absence of a `.release-regent.toml` in the repository is not an error; the resolved
   defaults from higher levels (app / global / group) apply.
 - Template customisation for PR titles and bodies is always available at the repo level
   regardless of any locks set at higher levels.

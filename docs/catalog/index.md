@@ -8,7 +8,7 @@
 | Domain | Entries | Description |
 |--------|---------|-------------|
 | [cli](cli.md) | 3 | CLI binary — commands for manually triggering releases and running the event loop with mock or real processors |
-| [config-provider](config-provider.md) | 11 | Configuration loading — file-based provider, TOML/YAML format detection, schema validation, and config builder |
+| [config-provider](config-provider.md) | 11 | Configuration loading — file-based provider, TOML format parsing and validation, schema validation, and config builder |
 | [core](core.md) | 78 | Core release automation — orchestration, changelog generation, versioning, manifest updates, comment commands, and release PR/tag creation |
 | [github-client](github-client.md) | 6 | GitHub API client — App authentication (JWT, token exchange), webhook secret provider, and REST operations (PRs, releases, tags, files) |
 | [server](server.md) | 4 | Server binary — webhook ingress, event classification, channel-based event source, and startup wiring |
