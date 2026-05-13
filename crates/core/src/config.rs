@@ -409,7 +409,10 @@ impl ReleaseRegentConfig {
 
         let content = tokio::fs::read_to_string(path).await?;
         let config: Self = toml::from_str(&content).map_err(|e| {
-            CoreError::config(format!("Failed to parse TOML config at {}: {e}", path.display()))
+            CoreError::config(format!(
+                "Failed to parse TOML config at {}: {e}",
+                path.display()
+            ))
         })?;
 
         debug!("Configuration loaded successfully");
