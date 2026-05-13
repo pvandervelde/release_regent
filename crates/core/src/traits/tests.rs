@@ -108,9 +108,9 @@ fn test_configuration_provider_data_structures() {
 
     // Test ConfigurationSource serialization
     let source = configuration_provider::ConfigurationSource {
-        format: "yaml".to_string(),
+        format: "toml".to_string(),
         loaded_at: Utc::now(),
-        location: "/path/to/config.yaml".to_string(),
+        location: "/path/to/config.toml".to_string(),
         source_type: "file".to_string(),
     };
 

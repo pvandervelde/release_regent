@@ -15,7 +15,7 @@ You need:
 
 - The `rr` CLI installed (see [Your first automated release](01-first-release.md))
 - A Git repository with conventional commits
-- A `.release-regent.yml` configuration file (run `rr init` if you do not have one yet)
+- A `.release-regent.toml` configuration file (run `rr init` if you do not have one yet)
 
 ---
 
@@ -34,7 +34,7 @@ they are grouped, and whether there are any commits you would like to hide.
 
 ## Step 2: Change the grouping header labels
 
-Open `.release-regent.yml` and add a `commit_types` table to the `changelog` section. This
+Open `.release-regent.toml` and add a `commit_types` table to the `[changelog]` section. This
 overrides the display label for each conventional commit type.
 
 ```yaml
@@ -188,7 +188,7 @@ Available variables: `{version}`, `{version_tag}`, `{changelog}`, `{commit_count
 
 ## Verify the full configuration
 
-When you are happy with the output of `rr test`, commit `.release-regent.yml` to your
+When you are happy with the output of `rr test`, commit `.release-regent.toml` to your
 repository. The next time a PR is merged, Release Regent will use the updated configuration.
 
 ---

@@ -16,7 +16,7 @@
 //!     .with_default_branch("main");
 //!
 //! let config = TestingApi::mock_config()
-//!     .with_configuration("config.yaml", Default::default());
+//!     .with_configuration("config.toml", Default::default());
 //! ```
 //!
 //! ## Building Test Data
@@ -103,7 +103,7 @@ impl TestingApi {
     /// use release_regent_testing::TestingApi;
     ///
     /// let config = TestingApi::mock_config()
-    ///     .with_configuration("config.yaml", Default::default());
+    ///     .with_configuration("config.toml", Default::default());
     /// ```
     #[must_use]
     pub fn mock_config() -> MockConfigurationProvider {

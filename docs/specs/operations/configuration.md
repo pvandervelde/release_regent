@@ -26,8 +26,8 @@ Release Regent uses a hierarchical configuration system that merges settings fro
 
 **Repository-Specific Configuration**:
 
-- File: `.release-regent.yml` in repository root
-- GitHub: Configuration stored in `.github/release-regent.yml`
+- File: `.release-regent.toml` in repository root
+- GitHub: Configuration stored in `.github/release-regent.toml`
 - Fallback: No repository config means use application defaults
 
 ## Configuration Schema
@@ -44,18 +44,16 @@ Release Regent uses semantic versioning for configuration schema compatibility:
 
 **Migration Strategy**:
 
-```yaml
+```toml
 # Version 1.0 (current)
-version: "1.0"
+schema_version = "1.0"
 
 # Version 1.1 (future - new optional fields)
-version: "1.1"
-concurrency:  # New optional section
-  retry_policy:
-    max_attempts: 3
+schema_version = "1.1"
+# concurrency section added
 
 # Version 2.0 (future - breaking changes)
-version: "2.0"
+schema_version = "2.0"
 # Could require field renames, structure changes
 ```
 
@@ -68,75 +66,81 @@ version: "2.0"
 
 ### Root Configuration Structure
 
-```yaml
-version: "1.0"  # Configuration schema version (required)
+```toml
+schema_version = "1.0"  # Configuration schema version (required)
 
 # Core settings (required for basic operation)
-version_prefix: "v"           # Prefix for version tags and branches
-branches:
-  main: "main"               # Main branch name (required)
+[core]
+version_prefix = "v"           # Prefix for version tags and branches
+
+[core.branches]
+main = "main"               # Main branch name (required)
 
 # Release PR settings
-release_pr:
-  title_template: "chore(release): ${version}"
-  body_template: |
-    ## Release ${version}
+[release_pr]
+title_template = "chore(release): ${version}"
+body_template = """
+## Release ${version}
 
-    ${changelog}
+${changelog}
 
-    ### Metadata
-    - **Commits**: ${commit_count} changes since ${previous_version}
-    - **Generated**: ${date}
-    - **Correlation ID**: ${correlation_id}
-  draft: false
-  labels: ["release"]
-  assignees: []
+### Metadata
+- **Commits**: ${commit_count} changes since ${previous_version}
+- **Generated**: ${date}
+- **Correlation ID**: ${correlation_id}
+"""
+draft = false
+labels = ["release"]
+assignees = []
 
 # GitHub release settings
-releases:
-  draft: false
-  prerelease: false
-  generate_notes: true
-  cleanup_branches: true
+[releases]
+draft = false
+prerelease = false
+generate_notes = true
+cleanup_branches = true
 
 # Versioning strategy
-versioning:
-  strategy: "conventional"    # "conventional" | "external"
-  external:
-    command: "./scripts/calculate-version.sh"
-    timeout_ms: 30000
-    working_directory: "."
-  allow_override: true        # Allow PR comment overrides
-  fallback_strategy: "patch"  # "major" | "minor" | "patch"
+[versioning]
+strategy = "conventional"    # "conventional" | "external"
+allow_override = true        # Allow PR comment overrides
+
+[versioning.strategy.external]
+command = "./scripts/calculate-version.sh"
+timeout_ms = 30000
+working_directory = "."
 
 # Error handling
-error_handling:
-  max_retries: 5
-  backoff_multiplier: 2
-  initial_delay_ms: 100
-  max_delay_ms: 30000
-  jitter_percent: 0.25
+[error_handling]
+max_retries = 5
+backoff_multiplier = 2
+initial_delay_ms = 100
+max_delay_ms = 30000
+jitter_percent = 0.25
 
 # Notifications
-notifications:
-  enabled: false
-  strategy: "none"            # "none" | "github_issue" | "webhook" | "slack"
-  github_issue:
-    labels: ["release-regent", "bug"]
-    assignees: []
-  webhook:
-    url: "https://example.com/webhook"
-    headers: {}
-    timeout_ms: 5000
-  slack:
-    webhook_url: "https://hooks.slack.com/services/XXX/YYY/ZZZ"
-    channel: "#releases"
+[notifications]
+enabled = false
+strategy = "none"            # "none" | "github_issue" | "webhook" | "slack"
+
+[notifications.github_issue]
+labels = ["release-regent", "bug"]
+assignees = []
+
+[notifications.webhook]
+url = "https://example.com/webhook"
+headers = {}
+timeout_ms = 5000
+
+[notifications.slack]
+webhook_url = "https://hooks.slack.com/services/XXX/YYY/ZZZ"
+channel = "#releases"
 
 # Logging and observability
-logging:
-  level: "info"              # "debug" | "info" | "warn" | "error"
-  format: "json"             # "json" | "text"
-  correlation_ids: true
+[logging]
+level = "info"              # "debug" | "info" | "warn" | "error"
+format = "json"             # "json" | "text"
+correlation_ids = true
 ```
 
 ## Validation Rules
@@ -478,159 +482,165 @@ ${changelog}
 
 ### Minimal Configuration
 
-```yaml
+```toml
 # Minimal working configuration
-version_prefix: "v"
-branches:
-  main: "main"
+[core]
+version_prefix = "v"
+
+[core.branches]
+main = "main"
 ```
 
 ### Standard Configuration
 
-```yaml
+```toml
 # Standard configuration for most repositories
-version_prefix: "v"
-branches:
-  main: "main"
+[core]
+version_prefix = "v"
 
-release_pr:
-  title_template: "chore(release): ${version}"
-  body_template: |
-    ## Release ${version}
+[core.branches]
+main = "main"
 
-    ${changelog}
+[release_pr]
+title_template = "chore(release): ${version}"
+body_template = """
+## Release ${version}
 
-    ### Metadata
-    - **Commits**: ${commit_count} changes since ${previous_version}
-    - **Generated**: ${date}
-  draft: false
-  labels: ["release", "automated"]
+${changelog}
 
-releases:
-  draft: false
-  prerelease: false
-  generate_notes: true
-  cleanup_branches: true
+### Metadata
+- **Commits**: ${commit_count} changes since ${previous_version}
+- **Generated**: ${date}
+"""
+draft = false
+labels = ["release", "automated"]
 
-versioning:
-  strategy: "conventional"
-  allow_override: true
+[releases]
+draft = false
+prerelease = false
+generate_notes = true
+cleanup_branches = true
+
+[versioning]
+strategy = "conventional"
+allow_override = true
 ```
 
 ### Advanced Configuration
 
-```yaml
+```toml
 # Advanced configuration with external versioning and notifications
-version_prefix: "v"
-branches:
-  main: "develop"
+[core]
+version_prefix = "v"
 
-release_pr:
-  title_template: "[RELEASE] ${version} - ${commit_count} changes"
-  body_template: |
-    # 🚀 Release ${version}
+[core.branches]
+main = "develop"
 
-    This release contains ${commit_count} changes since ${previous_version}.
+[release_pr]
+title_template = "[RELEASE] ${version} - ${commit_count} changes"
+body_template = """
+# 🚀 Release ${version}
 
-    ## What's Changed
+This release contains ${commit_count} changes since ${previous_version}.
 
-    ${changelog}
+## What's Changed
 
-    ## Release Information
+${changelog}
 
-    - **Repository**: ${repository}
-    - **Branch**: ${branch}
-    - **Generated**: ${date}
-    - **Correlation ID**: ${correlation_id}
+## Release Information
 
-    ## Next Steps
+- **Repository**: ${repository}
+- **Branch**: ${branch}
+- **Generated**: ${date}
+- **Correlation ID**: ${correlation_id}
 
-    Once this PR is merged, the release will be automatically published to GitHub.
-  draft: false
-  labels: ["release", "automated", "v${version}"]
-  assignees: ["@release-team"]
+## Next Steps
 
-releases:
-  draft: false
-  prerelease: false
-  generate_notes: false  # Use our custom changelog instead
-  cleanup_branches: true
+Once this PR is merged, the release will be automatically published to GitHub.
+"""
+draft = false
+labels = ["release", "automated", "v${version}"]
+assignees = ["@release-team"]
 
-versioning:
-  strategy: "external"
-  external:
-    command: "./scripts/calculate-version.py"
-    timeout_ms: 15000
-    working_directory: "."
-  allow_override: true
-  fallback_strategy: "patch"
+[releases]
+draft = false
+prerelease = false
+generate_notes = false  # Use our custom changelog instead
+cleanup_branches = true
 
-error_handling:
-  max_retries: 3
-  backoff_multiplier: 1.5
-  initial_delay_ms: 200
-  max_delay_ms: 10000
+[versioning]
+allow_override = true
+fallback_strategy = "patch"
 
-notifications:
-  enabled: true
-  strategy: "slack"
-  slack:
-    webhook_url: "${SLACK_WEBHOOK_URL}"  # From environment
-    channel: "#releases"
+[versioning.strategy.external]
+command = "./scripts/calculate-version.py"
+timeout_ms = 15000
+working_directory = "."
 
-logging:
-  level: "info"
-  format: "json"
-  correlation_ids: true
+[error_handling]
+max_retries = 3
+backoff_multiplier = 1.5
+initial_delay_ms = 200
+max_delay_ms = 10000
+
+[notifications]
+enabled = true
+strategy = "slack"
+
+[notifications.slack]
+webhook_url = "${SLACK_WEBHOOK_URL}"  # From environment
+channel = "#releases"
+
+[logging]
+level = "info"
+format = "json"
+correlation_ids = true
 ```
 
 ### Repository-Specific Override Examples
 
 **Disable notifications for a specific repository**:
 
-```yaml
-# .release-regent.yml
-notifications:
-  strategy: "none"
+```toml
+# .release-regent.toml
+[notifications]
+strategy = "none"
 ```
 
 **Use external versioning for Rust crates**:
 
-```yaml
-# .release-regent.yml
-versioning:
-  strategy: "external"
-  external:
-    command: "./scripts/cargo-version.sh"
-    timeout_ms: 10000
+```toml
+# .release-regent.toml
+[versioning.strategy.external]
+command = "./scripts/cargo-version.sh"
+timeout_ms = 10000
 ```
 
 **Custom templates for documentation repositories**:
 
-```yaml
-# .release-regent.yml
-release_pr:
-  title_template: "docs(release): ${version} - Update documentation"
-  body_template: |
-    ## Documentation Release ${version}
+```toml
+# .release-regent.toml
+[release_pr]
+title_template = "docs(release): ${version} - Update documentation"
+body_template = """
+## Documentation Release ${version}
 
-    ${changelog}
+${changelog}
 
-    This release updates the documentation with the following changes.
+This release updates the documentation with the following changes.
+"""
 ```
 
 ## Environment Variable Support
 
 Configuration values can reference environment variables using `${VAR_NAME}` syntax:
 
-```yaml
-notifications:
-  slack:
-    webhook_url: "${SLACK_WEBHOOK_URL}"
+```toml
+[notifications.slack]
+webhook_url = "${SLACK_WEBHOOK_URL}"
 
-versioning:
-  external:
-    command: "${VERSION_SCRIPT_PATH}/calculate-version.sh"
+[versioning.strategy.external]
+command = "${VERSION_SCRIPT_PATH}/calculate-version.sh"
 ```
 
 **Variable Resolution**:
@@ -657,8 +667,8 @@ pub async fn load_configuration(
 
     // 3. Look for repository-specific configuration
     let repo_config_paths = [
-        repo_path.join(".release-regent.yml"),
-        repo_path.join(".github/release-regent.yml"),
+        repo_path.join(".release-regent.toml"),
+        repo_path.join(".github/release-regent.toml"),
     ];
 
     for repo_config_path in &repo_config_paths {
@@ -698,7 +708,7 @@ When configuration validation fails, provide clear, actionable error messages:
    Unknown template variable: release_version
    → Use ${version} instead of ${release_version}
 
-Configuration file: /path/to/.release-regent.yml
+Configuration file: /path/to/.release-regent.toml
 ```
 
 This comprehensive configuration reference addresses all the validation and template concerns raised in the spec feedback while providing practical examples and clear error handling guidance.

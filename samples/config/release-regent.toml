@@ -5,12 +5,12 @@
 # It can be overridden by:
 #   3. global policy  — {org}/.release-regent/global.toml  (metadata repo)
 #   4. group policy   — {org}/.release-regent/groups/{group}.toml
-#   5. repo dotfile   — {repo}/.release-regent.yml
+#   5. repo dotfile   — {repo}/.release-regent.toml
 #
 # Fields declared in locked_fields at a higher level cannot be overridden
 # by this file or any lower level.
 #
-# The server looks for a file named release-regent.toml (or .yaml) in
+# The server looks for a file named release-regent.toml in
 # the CONFIG_DIR directory (default: /config inside the container).
 #
 # Full reference: docs/user/reference/configuration.md

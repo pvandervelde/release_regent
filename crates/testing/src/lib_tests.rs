@@ -94,7 +94,7 @@ mod mock_tests {
         // Test that MockConfigurationProvider can be created and configured
         let config = ReleaseRegentConfig::default();
         let mock = TestMockConfigurationProvider::new()
-            .with_configuration("test.yaml", config.clone())
+            .with_configuration("test.toml", config.clone())
             .with_validation_success(true);
 
         // Test configuration loading

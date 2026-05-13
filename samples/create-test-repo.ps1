@@ -12,7 +12,7 @@
     -----------------------
     After the script finishes you have a GitHub repository with:
 
-    main (tagged v0.1.0, with .release-regent.yml dotfile declaring group = "backend")
+    main (tagged v0.1.0, with .release-regent.toml dotfile declaring group = "backend")
     ├── fix/handle-empty-input       PATCH bump → v0.1.1
     ├── feat/add-greeting-styles     MINOR bump → v0.2.0
     ├── feat/add-language-support    MINOR bump → v0.2.0 (changelog only update)
@@ -141,11 +141,37 @@ function Write-Success
     Write-Host "    OK  $Message" -ForegroundColor Green
 }
 
+# Delete GitHub repos and local clone dirs created by this script run.
+# Called automatically by Write-Fatal so the user never has to clean up manually.
+function Invoke-ScriptCleanup
+{
+    Write-Host '  Cleaning up resources created by this run ...' -ForegroundColor DarkGray
+    if ($script:_createdTestRepo -and $script:FullRepoName)
+    {
+        Write-Host "  Deleting $($script:FullRepoName) ..." -ForegroundColor DarkGray
+        & gh repo delete $script:FullRepoName --yes 2>&1 | Out-Null
+    }
+    if ($script:_createdMetaRepo -and $script:MetaRepoName)
+    {
+        Write-Host "  Deleting $($script:MetaRepoName) ..." -ForegroundColor DarkGray
+        & gh repo delete $script:MetaRepoName --yes 2>&1 | Out-Null
+    }
+    if ($script:_metaClonePath -and (Test-Path $script:_metaClonePath))
+    {
+        Remove-Item -Recurse -Force $script:_metaClonePath
+    }
+    if ($script:RepoDir -and (Test-Path $script:RepoDir))
+    {
+        Remove-Item -Recurse -Force $script:RepoDir
+    }
+}
+
 function Write-Fatal
 {
     param ([string]$Message)
     Write-Host ''
     Write-Host "ERROR: $Message" -ForegroundColor Red
+    Invoke-ScriptCleanup
     exit 1
 }
 
@@ -153,9 +179,12 @@ function Write-Fatal
 function Invoke-Git
 {
     param ([string[]]$Arguments)
-    & git -C $script:RepoDir @Arguments 2>&1 | ForEach-Object { Write-Verbose $_ }
+    $output = & git -C $script:RepoDir @Arguments 2>&1
+    $output | ForEach-Object { Write-Verbose $_ }
     if ($LASTEXITCODE -ne 0)
     {
+        # Show git's own output so the caller can see why it failed.
+        $output | ForEach-Object { Write-Host "    git: $_" -ForegroundColor DarkGray }
         Write-Fatal "git $($Arguments -join ' ') failed (exit $LASTEXITCODE)"
     }
 }
@@ -236,6 +265,15 @@ function New-Branch
     Invoke-Git @('checkout', 'main')
 }
 
+# Initialise all script-scope state before any step runs so that
+# Invoke-ScriptCleanup can reference them safely even if the script aborts early.
+$script:FullRepoName = ''
+$script:MetaRepoName = ''
+$script:RepoDir = ''
+$script:_createdTestRepo = $false
+$script:_createdMetaRepo = $false
+$script:_metaClonePath = ''
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 1. Prerequisites
 # ─────────────────────────────────────────────────────────────────────────────
@@ -288,7 +326,7 @@ Write-Info "Repository : $FullRepoName ($Visibility)"
 Write-Info "Clone dir  : $WorkDir"
 
 # Metadata repo name — always {Owner}/.release-regent regardless of the test repo name.
-$MetaRepoName  = "$Owner/.release-regent"
+$MetaRepoName = "$Owner/.release-regent"
 $script:MetaRepoName = $MetaRepoName
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -312,6 +350,7 @@ if ($LASTEXITCODE -ne 0)
 }
 
 Write-Success "Repository created: https://github.com/$FullRepoName"
+$script:_createdTestRepo = $true
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 4. Create (or reuse) the metadata repository
@@ -330,7 +369,8 @@ if (-not $SkipMetadataRepo)
     else
     {
         $null = gh repo create $MetaRepoName --$Visibility `
-            --description 'Release Regent metadata repository (global and group policy)' 2>&1
+            --description 'Release Regent metadata repository (global and group policy)' `
+            --add-readme 2>&1
         if ($LASTEXITCODE -ne 0)
         {
             Write-Host "    WARN: Could not create metadata repo $MetaRepoName" -ForegroundColor Yellow
@@ -340,6 +380,7 @@ if (-not $SkipMetadataRepo)
         else
         {
             Write-Success "Metadata repo created: https://github.com/$MetaRepoName"
+            $script:_createdMetaRepo = $true
         }
     }
 
@@ -347,7 +388,11 @@ if (-not $SkipMetadataRepo)
     {
         # Clone the metadata repo into a sibling temp directory.
         $MetaCloneDir = Join-Path $WorkDir '.release-regent'
-        if (Test-Path $MetaCloneDir) { Remove-Item -Recurse -Force $MetaCloneDir }
+        $script:_metaClonePath = $MetaCloneDir
+        if (Test-Path $MetaCloneDir)
+        {
+            Remove-Item -Recurse -Force $MetaCloneDir
+        }
 
         & git clone "https://github.com/$MetaRepoName.git" $MetaCloneDir 2>&1 | Out-Null
         if ($LASTEXITCODE -ne 0)
@@ -360,15 +405,21 @@ if (-not $SkipMetadataRepo)
     if (-not $SkipMetadataRepo)
     {
         # Save current RepoDir and switch to the metadata clone.
-        $savedRepoDir   = $script:RepoDir
+        $savedRepoDir = $script:RepoDir
         $script:RepoDir = $MetaCloneDir
 
         # Configure git identity and disable signing in the meta clone.
-        $gitUserName  = (& git config --global user.name  2>&1) | Out-String
+        $gitUserName = (& git config --global user.name  2>&1) | Out-String
         $gitUserEmail = (& git config --global user.email 2>&1) | Out-String
-        if (-not $gitUserName.Trim())  { Invoke-Git @('config', 'user.name',  'Release Regent Test') }
-        if (-not $gitUserEmail.Trim()) { Invoke-Git @('config', 'user.email', 'rr-test@example.com') }
-        Invoke-Git @('config', 'tag.gpgsign',    'false')
+        if (-not $gitUserName.Trim())
+        {
+            Invoke-Git @('config', 'user.name', 'Release Regent Test')
+        }
+        if (-not $gitUserEmail.Trim())
+        {
+            Invoke-Git @('config', 'user.email', 'rr-test@example.com')
+        }
+        Invoke-Git @('config', 'tag.gpgsign', 'false')
         Invoke-Git @('config', 'commit.gpgsign', 'false')
 
         # If the metadata repo was brand-new it will have an unborn HEAD;
@@ -396,7 +447,7 @@ version_prefix = "vGLOBAL-"
 "@
 
         # ── groups/backend.toml (Level 4) ──────────────────────────────────
-        # The test repo's .release-regent.yml declares group = "backend",
+        # The test repo's .release-regent.toml declares group = "backend",
         # so this policy applies. It sets the real version_prefix and
         # locks versioning.strategy so no per-repo override can change it.
         New-RepoFile 'groups/backend.toml' @"
@@ -428,7 +479,7 @@ strategy = "conventional"
         if ($status.Trim())
         {
             Invoke-Git @('commit', '--message', 'chore: add global and backend group policy for Release Regent testing')
-            Invoke-Git @('push', '--set-upstream', 'origin', 'main')
+            Invoke-Git @('push', '--set-upstream', 'origin', 'HEAD')
             Write-Success 'Metadata repo policy files committed and pushed.'
         }
         else
@@ -477,7 +528,7 @@ if (-not $gitUserEmail.Trim())
 # often have tag.gpgsign=true (or commit.gpgsign=true) in global git config;
 # if GPG is unavailable or misconfigured that causes `git tag --annotate` to
 # exit 128 (fatal). These local overrides ensure the script always works.
-Invoke-Git @('config', 'tag.gpgsign',    'false')
+Invoke-Git @('config', 'tag.gpgsign', 'false')
 Invoke-Git @('config', 'commit.gpgsign', 'false')
 
 # Cloning an empty repo leaves HEAD in an "unborn" state. The branch name used
@@ -514,7 +565,7 @@ This repo exercises the full five-level configuration hierarchy:
 | 2 | App-level (`samples/config/release-regent.toml`) | `vAPP-` | Server baseline |
 | 3 | Global policy (`$Owner/.release-regent/global.toml`) | `vGLOBAL-` | Org-wide override |
 | 4 | Group policy (`$Owner/.release-regent/groups/backend.toml`) | `v` | Locks `versioning.strategy` |
-| 5 | Repo dotfile (`.release-regent.yml` in this repo) | *(inherits `v`)* | Sets `allow_override = true` |
+| 5 | Repo dotfile (`.release-regent.toml` in this repo) | *(inherits `v`)* | Sets `allow_override = true` |
 
 Effective config: `version_prefix = "v"`, `versioning.strategy = "conventional"` (locked).
 
@@ -548,7 +599,7 @@ Post the command as a PR comment. Only users with **Write** or higher access on 
 repository can issue commands — comments from Read-only users are silently ignored.
 "@
 
-New-RepoFile '.release-regent.yml' @"
+New-RepoFile '.release-regent.toml' @"
 # ==========================================================================
 # Release Regent - repository dotfile (Level 5 of 5)
 # This file is specific to the $RepoName repository.
@@ -556,60 +607,12 @@ New-RepoFile '.release-regent.yml' @"
 
 # Assign this repo to the 'backend' group so that
 # groups/backend.toml (Level 4) is applied on top of global.toml (Level 3).
-group: "backend"
-
-versioning:
-  # Allow contributors to override the calculated bump via PR comments.
-  # versioning.strategy is locked by the group policy and cannot be changed here.
-  allow_override: true
-"@
-
-New-RepoFile 'release-regent.toml' @"
-# Release Regent configuration for this test repository.
-# See https://github.com/pvandervelde/release_regent/blob/master/docs/configuration-reference.md
-
-[repository]
-remote_url = "https://github.com/$FullRepoName"
-main_branch = "main"
-release_branch_pattern = "release/v{version}"
-tag_pattern = "v{version}"
+group = "backend"
 
 [versioning]
-prefix = "v"
-allow_prerelease = false
-initial_version = "0.1.0"
-
-[release_pr]
-title_template = "chore(release): prepare version {version}"
-draft = false
-auto_detect_manifests = false
-
-[[release_pr.manifest_files]]
-path = "package.json"
-format = "json"
-version_key = "version"
-
-[[release_pr.manifest_files]]
-path = "version.txt"
-format = "plain_text"
-version_key = 'version = "([^"]+)"'
-
-[changelog]
-include_authors = false
-include_commit_links = true
-include_pr_links = true
-group_by = "type"
-sort_commits = "date"
-
-[changelog.commit_types]
-feat     = "Features"
-fix      = "Bug Fixes"
-docs     = "Documentation"
-refactor = "Code Refactoring"
-perf     = "Performance Improvements"
-test     = "Tests"
-chore    = "Chores"
-ci       = "Continuous Integration"
+# Allow contributors to override the calculated bump via PR comments.
+# versioning.strategy is locked by the group policy and cannot be changed here.
+allow_override = true
 "@
 
 New-RepoFile 'src/greeting.md' @"
@@ -925,7 +928,7 @@ Write-Host '  ────────────────' -ForegroundColor
 Write-Host '  Level 2 (app)   version_prefix = "vAPP-"   ← samples/config/release-regent.toml'
 Write-Host '  Level 3 (global) version_prefix = "vGLOBAL-" ← global.toml in metadata repo'
 Write-Host '  Level 4 (group) version_prefix = "v"        ← groups/backend.toml (also locks strategy)'
-Write-Host '  Level 5 (repo)  (inherits "v")              ← .release-regent.yml in this repo'
+Write-Host '  Level 5 (repo)  (inherits "v")              ← .release-regent.toml in this repo'
 Write-Host '  ────────────────'
 Write-Host '  Effective config: version_prefix = "v", strategy = "conventional" (locked)'
 Write-Host ''

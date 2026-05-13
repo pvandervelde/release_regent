@@ -43,11 +43,18 @@ pub enum CliError {
         source: std::io::Error,
     },
 
-    /// YAML parsing errors
-    #[error("YAML parsing failed: {source}")]
-    YamlParsing {
+    /// TOML parsing errors
+    #[error("TOML parsing failed: {source}")]
+    TomlParsing {
         #[from]
-        source: serde_yaml::Error,
+        source: toml::de::Error,
+    },
+
+    /// TOML serialization errors
+    #[error("TOML serialization failed: {source}")]
+    TomlSerializing {
+        #[from]
+        source: toml::ser::Error,
     },
 
     /// Invalid command arguments

@@ -30,13 +30,13 @@ merges over the previous for unlocked fields only):
 ```
 Built-in defaults
       ↓
-App-level config     CONFIG_DIR/release-regent.yml  (local disk — bootstrap + fallback)
+App-level config     CONFIG_DIR/release-regent.toml  (local disk — bootstrap + fallback)
       ↓
 Global policy        {org}/.release-regent/global.toml  (metadata repo)
       ↓
 Group policy         {org}/.release-regent/groups/{group}.toml  (metadata repo)
       ↓
-Repository config    {repo-root}/.release-regent.yml  (target repository)
+Repository config    {repo-root}/.release-regent.toml  (target repository)
 ```
 
 ### Metadata repository
@@ -70,10 +70,6 @@ group = "platform"
 [release_pr]
 title_template = "chore(release): ${version} [platform-api]"
 ```
-
-> **Note**: The `group` field and section-based config both use TOML syntax here. Use
-> `.release-regent.toml` for TOML content and `.release-regent.yml` / `.release-regent.yaml`
-> for YAML content — the parser is selected by file extension.
 
 The `group` field is added to `ReleaseRegentConfig`. It is only meaningful in repository
 dotfiles; if present in global or group config files it is ignored with a `warn!`.
@@ -183,8 +179,8 @@ corrected file is picked up on the next event.
   audit within the metadata repository.
 - Compatible with single-repository or simple deployments — metadata repository is
   optional; app-level config is the fallback.
-- Backwards compatible: existing deployments with only a local `CONFIG_DIR/release-regent.yml`
-  continue to work unchanged.
+- Backwards compatible: existing deployments with only a local `CONFIG_DIR/release-regent.toml`
+  continue to work—older YAML-format deployments must migrate to TOML.
 
 **Forbids:**
 

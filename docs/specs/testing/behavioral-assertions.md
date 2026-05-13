@@ -494,52 +494,39 @@ resolves configuration across five levels. See
 
 ### Config File Resolution
 
-**BA-36**: A repository that contains `.release-regent.yml` in its root on the default
+**BA-36**: A repository that contains `.release-regent.toml` in its root on the default
 branch must have that file used as its per-repository configuration, overriding global
 defaults.
 
-*Preconditions*: `.release-regent.yml` exists at the root of the default branch of
+*Preconditions*: `.release-regent.toml` exists at the root of the default branch of
 `myorg/my-repo`; its content specifies `versioning.strategy = "external"`.
 
 *Sequence*: A merge event arrives for `myorg/my-repo`.
 
 *Expected*:
 
-- `get_file_content("myorg", "my-repo", ".release-regent.yml", default_branch)` is called.
-- The returned content is parsed as YAML.
+- `get_file_content("myorg", "my-repo", ".release-regent.toml", default_branch)` is called.
+- The returned content is parsed as TOML.
 - `get_merged_config` returns a config with `versioning.strategy = External`.
 - The global default strategy is **not** used.
 
-**BA-37**: When none of `.release-regent.yml`, `.release-regent.yaml`, or
-`.release-regent.toml` exist in the repository root, the global defaults must be used
-without raising an error.
+**BA-37**: When `.release-regent.toml` does not exist in the repository root, the global
+defaults must be used without raising an error.
 
-*Preconditions*: None of the three probe paths return a file for `myorg/vanilla-repo`.
+*Preconditions*: `.release-regent.toml` does not exist for `myorg/vanilla-repo`.
 
 *Expected*:
 
-- `get_file_content` is called for `.release-regent.yml`, then `.release-regent.yaml`,
-  then `.release-regent.toml` in that order; each returns `Ok(None)`.
+- `get_file_content` is called for `.release-regent.toml` and returns `Ok(None)`.
 - `load_repository_config` returns `Ok(None)`.
 - `get_merged_config` returns the global config unchanged.
 - No error is propagated; the event is processed normally.
 
-**BA-38**: Probe order must be strictly: `.release-regent.yml` → `.release-regent.yaml`
-→ `.release-regent.toml`. The first file found wins; remaining probes are skipped.
-
-*Preconditions*: Both `.release-regent.yml` and `.release-regent.toml` exist in the repo.
-
-*Expected*:
-
-- `get_file_content` is called for `.release-regent.yml` and returns `Ok(Some(…))`.
-- `get_file_content` is **not** called for `.release-regent.yaml` or `.release-regent.toml`.
-- The `.release-regent.yml` content is used.
-
-**BA-39**: A repository dotfile with a parse error (invalid YAML/TOML) must fail the event
+**BA-39**: A repository dotfile with a parse error (invalid TOML) must fail the event
 with `CoreError::Config`; it must **not** silently fall back to global defaults.
 
-*Preconditions*: `.release-regent.yml` in `myorg/broken-repo` contains invalid YAML
-(e.g., `versioning: : bad`).
+*Preconditions*: `.release-regent.toml` in `myorg/broken-repo` contains invalid TOML
+(e.g., `versioning = : bad`).
 
 *Expected*:
 
@@ -553,7 +540,7 @@ with `CoreError::Config`; it must **not** silently fall back to global defaults.
 value out of range) must fail the event with `CoreError::Config`, not fall back to
 global defaults.
 
-*Preconditions*: `.release-regent.yml` in `myorg/invalid-config-repo` is valid YAML but
+*Preconditions*: `.release-regent.toml` in `myorg/invalid-config-repo` is valid TOML but
 specifies an unknown versioning strategy (`versioning.strategy = "magic"`).
 
 *Expected*:
@@ -569,7 +556,7 @@ specifies an unknown versioning strategy (`versioning.strategy = "magic"`).
 timeout) must propagate as `CoreError::GitHub` and fail the event. The standard retry
 policy applies.
 
-*Preconditions*: GitHub API returns HTTP 503 when fetching `.release-regent.yml`.
+*Preconditions*: GitHub API returns HTTP 503 when fetching `.release-regent.toml`.
 
 *Expected*:
 
@@ -582,7 +569,7 @@ policy applies.
 repository so that a corrected dotfile is picked up on the very next event.
 
 *Preconditions*: A valid cache entry exists for `myorg/my-repo` (from a previous event).
-Then the dotfile is changed to contain invalid YAML.
+Then the dotfile is changed to contain invalid TOML.
 
 *Sequence*: A new event arrives after the TTL has expired and the invalidated file is
 fetched.
@@ -590,10 +577,10 @@ fetched.
 *Expected*:
 
 - The stale cache entry is not used after TTL expiry.
-- The new fetch sees the invalid YAML.
+- The new fetch sees the invalid TOML.
 - The event fails with `CoreError::Config`.
 - The cache entry for `myorg/my-repo` is cleared (not updated with the invalid result).
-- A subsequent event, once the YAML is fixed, fetches and caches the corrected config.
+- A subsequent event, once the TOML is fixed, fetches and caches the corrected config.
 
 ### Caching
 
@@ -622,7 +609,7 @@ re-fetch the dotfile via the GitHub API.
 
 **BA-45**: When `LoadOptions.installation_id` is `None` (CLI mode), `load_repository_config`
 must not make any GitHub API call. It must fall back to searching `CONFIG_DIR` for a
-local file named `{owner}-{repo}.yaml` (or `.yml` / `.toml`).
+local file named `{owner}-{repo}.toml`.
 
 *Preconditions*: CLI invokes `get_merged_config("myorg", "my-repo", LoadOptions::default())`;
 no local file exists in `CONFIG_DIR`.
@@ -659,7 +646,7 @@ available; this fallback exists only as a safety net.
 
 **BA-48**: When no metadata repository is accessible for an org (App not installed,
 network error, or repository absent), the provider must use only the app-level config
-(local `CONFIG_DIR/release-regent.yml`) as the effective top of the hierarchy, emit a
+(local `CONFIG_DIR/release-regent.toml`) as the effective top of the hierarchy, emit a
 `warn!`, and continue processing the event.
 
 *Preconditions*: `myorg/.release-regent` does not exist or the App is not installed on it.
@@ -671,10 +658,10 @@ network error, or repository absent), the provider must use only the app-level c
 - The merge proceeds using only app-level + repo dotfile (if present).
 - The event is **not** failed.
 
-**BA-49**: The app-level config (local `CONFIG_DIR/release-regent.yml`) must always be
+**BA-49**: The app-level config (local `CONFIG_DIR/release-regent.toml`) must always be
 loaded as the second level in the merge, regardless of metadata repo availability.
 
-*Preconditions*: Both `CONFIG_DIR/release-regent.yml` and `myorg/.release-regent/global.toml`
+*Preconditions*: Both `CONFIG_DIR/release-regent.toml` and `myorg/.release-regent/global.toml`
 exist and are valid.
 
 *Expected*:
@@ -694,7 +681,7 @@ settings applied to all repositories in the org that do not have conflicting loc
 *Expected for `myorg/repo-a`*: effective strategy is `external` (global policy applied).
 *Expected for `myorg/repo-b`*: effective strategy is `conventional` (repo overrides unlocked field).
 
-**BA-51**: A valid `global.toml` that cannot be parsed (invalid TOML/YAML) must hard-fail
+**BA-51**: A valid `global.toml` that cannot be parsed (invalid TOML) must hard-fail
 all events for repositories in that org.
 
 *Preconditions*: `myorg/.release-regent/global.toml` contains a syntax error.
@@ -754,7 +741,7 @@ fetch `{org}/.release-regent/groups/platform.toml` and apply it between global p
 and the repo dotfile.
 
 *Preconditions*: `myorg/.release-regent/groups/platform.toml` exists and sets
-`releases.draft = true`. `myorg/platform-api/.release-regent.yml` declares
+`releases.draft = true`. `myorg/platform-api/.release-regent.toml` declares
 `group = "platform"` and does not set `releases.draft`.
 
 *Expected*:
@@ -778,7 +765,7 @@ continue processing normally.
 **BA-56**: A repository dotfile that does not declare `group` must not trigger any group
 policy fetch.
 
-*Preconditions*: `myorg/ungrouped-repo/.release-regent.yml` has no `group` field.
+*Preconditions*: `myorg/ungrouped-repo/.release-regent.toml` has no `group` field.
 
 *Expected*:
 
@@ -788,7 +775,7 @@ policy fetch.
 for repositories in that group.
 
 *Preconditions*: `myorg/.release-regent/groups/broken.toml` contains invalid TOML.
-`myorg/repo-x/.release-regent.yml` declares `group = "broken"`.
+`myorg/repo-x/.release-regent.toml` declares `group = "broken"`.
 
 *Expected*:
 
@@ -815,7 +802,7 @@ group policy.
 - `global.toml` sets `versioning.strategy = "conventional"` with
   `locked_fields = ["versioning.strategy"]`.
 - `groups/mobile.toml` sets `versioning.strategy = "external"`.
-- `myorg/mobile-app/.release-regent.yml` declares `group = "mobile"`.
+- `myorg/mobile-app/.release-regent.toml` declares `group = "mobile"`.
 
 *Expected*:
 
@@ -831,7 +818,7 @@ a repository dotfile.
 
 - `global.toml` has `locked_fields = ["versioning.allow_override"]` and
   `versioning.allow_override = false`.
-- `myorg/some-repo/.release-regent.yml` sets `versioning.allow_override = true`.
+- `myorg/some-repo/.release-regent.toml` sets `versioning.allow_override = true`.
 
 *Expected*:
 
@@ -847,7 +834,7 @@ a repository dotfile, provided global did not already lock a different value.
 - `global.toml` does **not** lock `releases.draft`.
 - `groups/platform.toml` sets `releases.draft = true` with
   `locked_fields = ["releases.draft"]`.
-- `myorg/platform-api/.release-regent.yml` declares `group = "platform"` and sets
+- `myorg/platform-api/.release-regent.toml` declares `group = "platform"` and sets
   `releases.draft = false`.
 
 *Expected*:
@@ -876,7 +863,7 @@ as a real lock.
 *Preconditions*:
 
 - `global.toml` sets `locked_fields = ["release_pr.title_template"]`.
-- `myorg/some-repo/.release-regent.yml` sets
+- `myorg/some-repo/.release-regent.toml` sets
   `release_pr.title_template = "custom: ${version}"`.
 
 *Expected*:
@@ -890,7 +877,7 @@ ignored with a `warn!`; it must not affect the active lock set.
 
 *Preconditions*:
 
-- `myorg/some-repo/.release-regent.yml` contains
+- `myorg/some-repo/.release-regent.toml` contains
   `locked_fields = ["versioning.strategy"]`.
 
 *Expected*:
@@ -906,7 +893,7 @@ global did not lock; the combined lock set applies for the repo dotfile step.
 
 - `global.toml` has `locked_fields = ["versioning.strategy"]`.
 - `groups/backend.toml` has `locked_fields = ["releases.draft"]` (a different field).
-- `myorg/backend-api/.release-regent.yml` declares `group = "backend"` and sets
+- `myorg/backend-api/.release-regent.toml` declares `group = "backend"` and sets
   both `versioning.strategy = "external"` and `releases.draft = false`.
 
 *Expected*:

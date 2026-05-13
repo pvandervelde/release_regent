@@ -162,14 +162,13 @@ fn test_not_found_error_creation() {
 }
 
 #[test]
-fn test_yaml_error_conversion() {
-    let yaml_error =
-        serde_yaml::from_str::<serde_yaml::Value>("invalid: yaml: content:").unwrap_err();
-    let core_error = CoreError::from(yaml_error);
+fn test_toml_error_conversion() {
+    let toml_error = toml::from_str::<toml::Value>("invalid toml content [[[").unwrap_err();
+    let core_error = CoreError::from(toml_error);
 
     match core_error {
-        CoreError::YamlParsing { .. } => {}
-        _ => panic!("Expected YamlParsing error from serde_yaml::Error"),
+        CoreError::TomlParsing { .. } => {}
+        _ => panic!("Expected TomlParsing error from toml::de::Error"),
     }
 }
 
@@ -364,13 +363,6 @@ fn test_is_retryable_versioning_not_retryable() {
 #[test]
 fn test_is_retryable_webhook_not_retryable() {
     assert!(!CoreError::webhook("signature_validation", "HMAC mismatch").is_retryable());
-}
-
-#[test]
-fn test_is_retryable_yaml_parsing_not_retryable() {
-    let yaml_err =
-        serde_yaml::from_str::<serde_yaml::Value>("invalid: yaml: content:").unwrap_err();
-    assert!(!CoreError::from(yaml_err).is_retryable());
 }
 
 // ============================================================================

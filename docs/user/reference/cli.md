@@ -26,7 +26,7 @@ rr --verbose test --commits 5
 
 ### `-c, --config <PATH>`
 
-Path to a configuration file. Defaults to `.release-regent.yml` in the current directory.
+Path to a configuration file. Defaults to `.release-regent.toml` in the current directory.
 
 ```bash
 rr --config /path/to/release-regent.toml test
@@ -79,7 +79,7 @@ rr init [OPTIONS]
 
 | File | Description |
 | :--- | :--- |
-| `.release-regent.yml` | Main configuration file |
+| `.release-regent.toml` | Main configuration file |
 | `sample-webhook.json` | Sample pull request merged webhook payload for local testing |
 
 ### Examples
@@ -216,7 +216,7 @@ rr generate [OPTIONS]
 | Kind | Files created |
 | :--- | :--- |
 | `webhook` | `sample-webhook.json` |
-| `config` | `sample-config.yml` |
+| `config` | `sample-config.toml` |
 | `all` | Both of the above |
 
 ### Examples

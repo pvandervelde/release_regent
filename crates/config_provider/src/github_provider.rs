@@ -4,10 +4,10 @@
 //! ADR-007. Configuration is resolved across five levels, in this merge order:
 //!
 //! 1. Built-in defaults (`ReleaseRegentConfig::default()`)
-//! 2. App-level — local `CONFIG_DIR/release-regent.yml` (via [`FileConfigurationProvider`])
+//! 2. App-level — local `CONFIG_DIR/release-regent.toml` (via [`FileConfigurationProvider`])
 //! 3. Global policy — `{org}/.release-regent/global.toml` (metadata repo, GitHub API)
 //! 4. Group policy — `{org}/.release-regent/groups/{group}.toml` (metadata repo, conditional)
-//! 5. Repository config — `.release-regent.yml` in target repo root (GitHub API)
+//! 5. Repository config — `.release-regent.toml` in target repo root (GitHub API)
 //!
 //! Global and group policy files may lock specific fields so that lower levels cannot
 //! override them. See [`ConfigLocks`] and [`LOCKABLE_FIELDS`] for lock semantics, and
@@ -41,7 +41,7 @@ use release_regent_core::{
 };
 
 use crate::{
-    file_provider::FileConfigurationProvider, formats::ConfigFormat, validation::ConfigValidator,
+    file_provider::FileConfigurationProvider, formats::parse_config, validation::ConfigValidator,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -124,29 +124,6 @@ impl ConfigLocks {
 // ─────────────────────────────────────────────────────────────────────────────
 // Merge helpers
 // ─────────────────────────────────────────────────────────────────────────────
-
-/// Apply the app-level config as the Level 2 baseline.
-///
-/// All fields from `incoming` replace the corresponding fields in `base`. The
-/// `_base` parameter is accepted for symmetry with [`merge_config_with_locks`]
-/// but is always discarded — each config level is a complete parsed document
-/// whose unspecified fields carry serde defaults, so the caller must supply the
-/// correct `base` before the first merge (see `get_merged_config`).
-///
-/// # Spec reference
-///
-/// `docs/specs/interfaces/github_operations_additions.md` §7
-#[must_use]
-fn apply_app_level_config(
-    _base: ReleaseRegentConfig,
-    incoming: ReleaseRegentConfig,
-) -> ReleaseRegentConfig {
-    // All fields come from `incoming`; base is replaced entirely.
-    // This is intentional: each config level is a complete parsed document whose
-    // un-specified fields carry their defaults — the caller must start from the
-    // correct baseline before calling this function (see get_merged_config).
-    incoming
-}
 
 /// Merge `incoming` into `base`, keeping locked fields from `base` unchanged.
 ///
@@ -518,17 +495,16 @@ impl<G: GitHubOperations + Clone + Send + Sync> GitHubConfigurationProvider<G> {
         }
     }
 
-    /// Parse raw file content with the given format and run schema validation.
+    /// Parse raw TOML content and run schema validation.
     ///
     /// Returns `Err(CoreError::Config)` when parsing fails or when the parsed
     /// config does not satisfy the validator's rules.
     fn parse_and_validate_content(
         &self,
-        format: ConfigFormat,
         content: &str,
         source_desc: &str,
     ) -> CoreResult<ReleaseRegentConfig> {
-        let config = format.parse(content).map_err(|e| {
+        let config = parse_config(content).map_err(|e| {
             release_regent_core::CoreError::config(format!(
                 "Failed to parse config at {source_desc}: {e}"
             ))
@@ -550,8 +526,8 @@ impl<G: GitHubOperations + Clone + Send + Sync> GitHubConfigurationProvider<G> {
         Ok(config)
     }
 
-    /// Probe the metadata repository for `global.toml` (then `.yml`, then `.yaml`) and
-    /// return the parsed, validated policy config.
+    /// Probe the metadata repository for `global.toml` and return the parsed,
+    /// validated policy config.
     ///
     /// Returns `Ok(None)` when no global policy file exists (absent is not an error).
     /// Returns `Err(CoreError::Config)` when the file exists but is invalid.
@@ -578,44 +554,38 @@ impl<G: GitHubOperations + Clone + Send + Sync> GitHubConfigurationProvider<G> {
             }
         }
 
-        // TOML-first probe order for the metadata repo.
+        // TOML-only probe for the metadata repo.
         // "main" is the conventional default branch for the metadata repository.
         const META_BRANCH: &str = "main";
         const META_REPO: &str = ".release-regent";
-        let probes: &[(&str, ConfigFormat)] = &[
-            ("global.toml", ConfigFormat::Toml),
-            ("global.yml", ConfigFormat::Yaml),
-            ("global.yaml", ConfigFormat::Yaml),
-        ];
+        const GLOBAL_PROBE: &str = "global.toml";
 
-        for (path, format) in probes {
-            match client
-                .get_file_content(org, META_REPO, path, META_BRANCH)
-                .await
-            {
-                Ok(Some(content)) => {
-                    let source = format!("{org}/{META_REPO}/{path}");
-                    match self.parse_and_validate_content(*format, &content, &source) {
-                        Ok(config) => {
-                            self.global_cache
-                                .write()
-                                .await
-                                .insert(org.to_string(), (Some(config.clone()), Instant::now()));
-                            return Ok(Some(config));
-                        }
-                        Err(e) => {
-                            // Evict on parse/validation error so the next event re-probes.
-                            self.global_cache.write().await.remove(org);
-                            return Err(e);
-                        }
+        match client
+            .get_file_content(org, META_REPO, GLOBAL_PROBE, META_BRANCH)
+            .await
+        {
+            Ok(Some(content)) => {
+                let source = format!("{org}/{META_REPO}/{GLOBAL_PROBE}");
+                match self.parse_and_validate_content(&content, &source) {
+                    Ok(config) => {
+                        self.global_cache
+                            .write()
+                            .await
+                            .insert(org.to_string(), (Some(config.clone()), Instant::now()));
+                        return Ok(Some(config));
+                    }
+                    Err(e) => {
+                        // Evict on parse/validation error so the next event re-probes.
+                        self.global_cache.write().await.remove(org);
+                        return Err(e);
                     }
                 }
-                Ok(None) => continue, // file absent; try next candidate
-                Err(api_err) => {
-                    // Transient API failure: propagate; caller decides whether to warn-and-skip
-                    // or hard-fail.
-                    return Err(api_err);
-                }
+            }
+            Ok(None) => {} // file absent
+            Err(api_err) => {
+                // Transient API failure: propagate; caller decides whether to warn-and-skip
+                // or hard-fail.
+                return Err(api_err);
             }
         }
 
@@ -627,8 +597,8 @@ impl<G: GitHubOperations + Clone + Send + Sync> GitHubConfigurationProvider<G> {
         Ok(None)
     }
 
-    /// Probe the metadata repository for `groups/{group}.toml` (then `.yml`, `.yaml`) and
-    /// return the parsed, validated group policy config.
+    /// Probe the metadata repository for `groups/{group}.toml` and return the
+    /// parsed, validated group policy config.
     ///
     /// Returns `Ok(None)` when no group policy file exists (absent is not an error).
     /// Returns `Err(CoreError::Config)` when the file exists but cannot be parsed or
@@ -659,39 +629,31 @@ impl<G: GitHubOperations + Clone + Send + Sync> GitHubConfigurationProvider<G> {
 
         const META_BRANCH: &str = "main";
         const META_REPO: &str = ".release-regent";
-        // Build owned probe paths so that format! can embed the group name.
-        let probe_paths = [
-            format!("groups/{group}.toml"),
-            format!("groups/{group}.yml"),
-            format!("groups/{group}.yaml"),
-        ];
-        let probe_formats = [ConfigFormat::Toml, ConfigFormat::Yaml, ConfigFormat::Yaml];
+        let probe_path = format!("groups/{group}.toml");
 
-        for (path, format) in probe_paths.iter().zip(probe_formats.iter()) {
-            match client
-                .get_file_content(org, META_REPO, path, META_BRANCH)
-                .await
-            {
-                Ok(Some(content)) => {
-                    let source = format!("{org}/{META_REPO}/{path}");
-                    match self.parse_and_validate_content(*format, &content, &source) {
-                        Ok(config) => {
-                            self.group_cache
-                                .write()
-                                .await
-                                .insert(cache_key, (Some(config.clone()), Instant::now()));
-                            return Ok(Some(config));
-                        }
-                        Err(e) => {
-                            self.group_cache.write().await.remove(&cache_key);
-                            return Err(e);
-                        }
+        match client
+            .get_file_content(org, META_REPO, &probe_path, META_BRANCH)
+            .await
+        {
+            Ok(Some(content)) => {
+                let source = format!("{org}/{META_REPO}/{probe_path}");
+                match self.parse_and_validate_content(&content, &source) {
+                    Ok(config) => {
+                        self.group_cache
+                            .write()
+                            .await
+                            .insert(cache_key, (Some(config.clone()), Instant::now()));
+                        return Ok(Some(config));
+                    }
+                    Err(e) => {
+                        self.group_cache.write().await.remove(&cache_key);
+                        return Err(e);
                     }
                 }
-                Ok(None) => continue,
-                Err(api_err) => {
-                    return Err(api_err);
-                }
+            }
+            Ok(None) => {} // file absent
+            Err(api_err) => {
+                return Err(api_err);
             }
         }
 
@@ -703,12 +665,8 @@ impl<G: GitHubOperations + Clone + Send + Sync> GitHubConfigurationProvider<G> {
         Ok(None)
     }
 
-    /// Probe the target repository for `.release-regent.yml` (then `.yaml`, then `.toml`)
-    /// and return the parsed, validated repository dotfile config.
-    ///
-    /// Probe order is YAML-first (`.yml` → `.yaml` → `.toml`) to match existing
-    /// installations. This is intentionally asymmetric with the metadata repo helpers
-    /// which probe TOML-first; see the spec note on probe-order asymmetry.
+    /// Probe the target repository for `.release-regent.toml` and return the
+    /// parsed, validated repository dotfile config.
     ///
     /// Returns `Ok(None)` when no dotfile exists (valid operational state).
     /// Returns `Err(CoreError::Config)` when the file exists but is invalid.
@@ -748,37 +706,34 @@ impl<G: GitHubOperations + Clone + Send + Sync> GitHubConfigurationProvider<G> {
             }
         }
 
-        // YAML-first probe order (matches existing installations that use .yml).
-        let probes: &[(&str, ConfigFormat)] = &[
-            (".release-regent.yml", ConfigFormat::Yaml),
-            (".release-regent.yaml", ConfigFormat::Yaml),
-            (".release-regent.toml", ConfigFormat::Toml),
-        ];
+        // TOML-only probe for the repo dotfile.
+        const DOTFILE_PROBE: &str = ".release-regent.toml";
 
-        for (path, format) in probes {
-            match client.get_file_content(owner, repo, path, branch).await {
-                Ok(Some(content)) => {
-                    let source = format!("{owner}/{repo}/{path}@{branch}");
-                    match self.parse_and_validate_content(*format, &content, &source) {
-                        Ok(config) => {
-                            self.repo_cache
-                                .write()
-                                .await
-                                .insert(cache_key, (Some(config.clone()), Instant::now()));
-                            return Ok(Some(config));
-                        }
-                        Err(e) => {
-                            // Evict on error; hard-fail the event.
-                            self.repo_cache.write().await.remove(&cache_key);
-                            return Err(e);
-                        }
+        match client
+            .get_file_content(owner, repo, DOTFILE_PROBE, branch)
+            .await
+        {
+            Ok(Some(content)) => {
+                let source = format!("{owner}/{repo}/{DOTFILE_PROBE}@{branch}");
+                match self.parse_and_validate_content(&content, &source) {
+                    Ok(config) => {
+                        self.repo_cache
+                            .write()
+                            .await
+                            .insert(cache_key, (Some(config.clone()), Instant::now()));
+                        return Ok(Some(config));
+                    }
+                    Err(e) => {
+                        // Evict on error; hard-fail the event.
+                        self.repo_cache.write().await.remove(&cache_key);
+                        return Err(e);
                     }
                 }
-                Ok(None) => continue, // try next filename
-                Err(api_err) => {
-                    // API errors on the target repo dotfile are always hard failures.
-                    return Err(api_err);
-                }
+            }
+            Ok(None) => {} // dotfile absent
+            Err(api_err) => {
+                // API errors on the target repo dotfile are always hard failures.
+                return Err(api_err);
             }
         }
 
@@ -813,7 +768,7 @@ where
     /// 2. App-level (local disk — always present)
     /// 3. Global policy (`{org}/.release-regent/global.toml`)
     /// 4. Group policy (`{org}/.release-regent/groups/{group}.toml`)
-    /// 5. Repository dotfile (`.release-regent.yml` in target repo)
+    /// 5. Repository dotfile (`.release-regent.toml` in target repo)
     ///
     /// Each level may only override unlocked fields. Per-field lock semantics are
     /// documented in [`merge_config_with_locks`] and ADR-007.
@@ -844,15 +799,11 @@ where
         let installation_id = options.installation_id.unwrap();
         let default_branch = options.default_branch.as_deref().unwrap_or("main");
 
-        // Level 1: Built-in defaults.
-        let mut result = ReleaseRegentConfig::default();
+        // Level 1 + 2: Start from app-level config (local disk, always present).
+        // Each config level is a complete parsed document whose unspecified fields carry
+        // serde defaults, so the app-level config replaces built-in defaults entirely.
+        let mut result = self.inner.load_global_config(options.clone()).await?;
         let mut locks = ConfigLocks::default();
-
-        // Level 2: App-level (local disk, always present).
-        result = apply_app_level_config(
-            result,
-            self.inner.load_global_config(options.clone()).await?,
-        );
 
         // Levels 3, 4, 5: Metadata repo path vs. no-metadata fallback.
         match self.resolve_metadata_installation(owner).await {

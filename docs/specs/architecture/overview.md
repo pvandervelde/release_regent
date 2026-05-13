@@ -48,12 +48,12 @@ C4Container
     Container(function, "Server", "Docker / OCI container", "Long-running Axum HTTP server")
     Container(core, "Core Engine", "Rust", "Business logic and workflow orchestration")
     Container(github_client, "GitHub Client", "Rust", "GitHub API integration")
-    ContainerDb(app_config, "App Config", "YAML / TOML", "Bootstrap defaults in CONFIG_DIR (local disk)")
+    ContainerDb(app_config, "App Config", "TOML", "Bootstrap defaults in CONFIG_DIR (local disk)")
 
     Container_Ext(github_api, "GitHub API", "REST API", "Repository operations + config file fetch")
     Container_Ext(github_webhooks, "GitHub Webhooks", "HTTP", "Event notifications")
     ContainerDb_Ext(metadata_repo, "Metadata Repo", "{org}/.release-regent", "Global policy + group policies (GitHub)")
-    ContainerDb_Ext(repo_config, "Repo Dotfile", ".release-regent.yml", "Per-repository config in each managed repo")
+    ContainerDb_Ext(repo_config, "Repo Dotfile", ".release-regent.toml", "Per-repository config in each managed repo")
     ContainerDb_Ext(secrets, "Secret Store", "Key Vault / Secrets Manager", "Credentials storage")
 
     Rel(github_webhooks, function, "POST webhook events", "HTTPS")
@@ -189,10 +189,10 @@ flowchart TD
 | # | Level | Source | Required? |
 |---|---|---|---|
 | 1 | Built-in defaults | Hard-coded `ReleaseRegentConfig::default()` | Always |
-| 2 | App-level | `CONFIG_DIR/release-regent.yml` — local disk | Required (bootstrap + fallback) |
+| 2 | App-level | `CONFIG_DIR/release-regent.toml` — local disk | Required (bootstrap + fallback) |
 | 3 | Global policy | `{org}/.release-regent/global.toml` — metadata repo | Optional |
 | 4 | Group policy | `{org}/.release-regent/groups/{group}.toml` — metadata repo | Optional |
-| 5 | Repository config | `.release-regent.yml` in target repo root | Optional |
+| 5 | Repository config | `.release-regent.toml` in target repo root | Optional |
 
 **Per-field locks**:
 
@@ -342,7 +342,7 @@ sequenceDiagram
 
 #### Configuration Management
 
-**Storage**: YAML files in repository or centralized configuration
+**Storage**: TOML files in repository or centralized configuration
 **Loading**: Hierarchical loading (app defaults → repo overrides)
 **Validation**: Schema-based validation with clear error messages
 **Hot Reload**: Configuration changes applied without restart

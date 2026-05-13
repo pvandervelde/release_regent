@@ -17,8 +17,7 @@ tokio = { workspace = true }
 
 # Serialization and configuration formats
 serde = { workspace = true }
-serde_yaml = { workspace = true, optional = true }
-toml = { workspace = true, optional = true }
+toml = { workspace = true }
 
 # Time and date
 chrono = { workspace = true }
@@ -42,6 +41,4 @@ tracing-test = { workspace = true }
 release_regent_testing = { path = "../testing" }
 
 [features]
-default = ["yaml", "toml"]
-yaml = ["dep:serde_yaml"]
-toml = ["dep:toml"]
+default = []

@@ -16,12 +16,12 @@ fn test_configuration_builder_creation() {
 #[test]
 fn test_configuration_builder_with_paths() {
     let builder = ConfigurationBuilder::new()
-        .with_global_config_path("/path/to/global.yaml")
+        .with_global_config_path("/path/to/global.toml")
         .with_repository_config_path("/path/to/repo.toml");
 
     assert_eq!(
         builder.global_config_path.unwrap(),
-        PathBuf::from("/path/to/global.yaml")
+        PathBuf::from("/path/to/global.toml")
     );
     assert_eq!(
         builder.repository_config_path.unwrap(),
@@ -71,7 +71,6 @@ fn test_configuration_builder_presets() {
     let dev_builder = ConfigurationBuilder::for_development();
     assert_eq!(dev_builder.search_directories.len(), 2);
     assert!(dev_builder.create_missing);
-    assert_eq!(dev_builder.default_format, Some(ConfigFormat::Yaml));
 
     let prod_builder = ConfigurationBuilder::for_production();
     assert!(prod_builder.strict_validation);
@@ -83,7 +82,7 @@ fn test_configuration_builder_presets() {
 #[tokio::test]
 async fn test_determine_base_directory() {
     let temp_dir = TempDir::new().unwrap();
-    let config_path = temp_dir.path().join("config.yaml");
+    let config_path = temp_dir.path().join("config.toml");
 
     let builder = ConfigurationBuilder::new().with_global_config_path(&config_path);
 

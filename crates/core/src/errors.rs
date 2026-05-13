@@ -193,13 +193,6 @@ pub enum CoreError {
         #[source]
         source: Option<Box<dyn std::error::Error + Send + Sync>>,
     },
-
-    /// YAML parsing errors
-    #[error("YAML parsing failed: {source}")]
-    YamlParsing {
-        #[from]
-        source: serde_yaml::Error,
-    },
 }
 
 impl CoreError {

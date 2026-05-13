@@ -33,7 +33,7 @@ use tokio::sync::RwLock;
 ///
 /// let config = ReleaseRegentConfig::default();
 /// let mock = MockConfigurationProvider::new()
-///     .with_configuration("test.yaml", config)
+///     .with_configuration("test.toml", config)
 ///     .with_validation_success(true);
 /// ```
 #[derive(Debug)]
