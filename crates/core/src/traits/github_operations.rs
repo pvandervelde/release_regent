@@ -720,6 +720,67 @@ pub trait GitHubOperations: GitOperations + Send + Sync {
         files: &[FileUpdate],
         message: &str,
     ) -> CoreResult<()>;
+
+    /// Atomically commit multiple file changes to a branch, rebasing onto an
+    /// explicit parent commit rather than the current branch HEAD.
+    ///
+    /// Creates a new commit whose parent is `parent_sha`, then force-updates
+    /// the branch ref to that commit.  Because the branch is never set to
+    /// `parent_sha` itself, this avoids the race where a temporary
+    /// branch == base-branch state causes GitHub to auto-close an open PR
+    /// whose head and base become identical.
+    ///
+    /// ## When to use this instead of [`batch_commit_files`]
+    ///
+    /// Use `batch_commit_files_rebased` whenever you want to rebase the
+    /// release branch onto the latest base-branch tip *and* keep any open PR
+    /// alive.  The sequence `force_update_branch(base_sha)` →
+    /// `batch_commit_files(…)` is subject to the race described above;
+    /// `batch_commit_files_rebased` eliminates it by making the branch
+    /// transition atomic at the commit level.
+    ///
+    /// # Parameters
+    /// - `owner`: Repository owner name
+    /// - `repo`: Repository name
+    /// - `branch`: Branch to update (must already exist)
+    /// - `files`: Slice of [`FileUpdate`] describing each file path and its
+    ///   new content
+    /// - `message`: Commit message for the batch commit
+    /// - `parent_sha`: The commit SHA to use as the single parent of the new
+    ///   commit.  The branch is force-updated to the new commit after it is
+    ///   created, so the branch moves from wherever it currently points to
+    ///   exactly one commit ahead of `parent_sha`.
+    ///
+    /// # Returns
+    /// `Ok(())` on success.
+    ///
+    /// # Errors
+    /// - `CoreError::GitHub` — any step in the Trees/Commits/Refs pipeline
+    ///   failed
+    /// - `CoreError::InvalidInput` — `files` is empty
+    ///
+    /// # Default implementation
+    ///
+    /// Falls back to [`batch_commit_files`], which uses the current branch
+    /// HEAD as the parent commit and does not force-update the branch.
+    /// Override in production clients for correct rebase semantics.
+    async fn batch_commit_files_rebased(
+        &self,
+        owner: &str,
+        repo: &str,
+        branch: &str,
+        files: &[FileUpdate],
+        message: &str,
+        parent_sha: &str,
+    ) -> CoreResult<()> {
+        // Default: ignore parent_sha, commit on top of current branch HEAD.
+        // Production clients should override with an implementation that reads
+        // the tree from parent_sha and creates the commit with parent_sha as
+        // the explicit parent, then force-updates the branch ref.
+        let _ = parent_sha;
+        self.batch_commit_files(owner, repo, branch, files, message)
+            .await
+    }
 }
 
 // Note: Git commit information is now provided by GitOperations trait

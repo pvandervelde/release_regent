@@ -48,6 +48,8 @@ struct TestState {
     upserted_files: Vec<(String, String)>,
     /// Recorded `batch_commit_files` calls: (branch, paths, message).
     batch_commits: Vec<(String, Vec<String>, String)>,
+    /// Recorded `batch_commit_files_rebased` calls: (branch, paths, message, parent_sha).
+    rebased_batch_commits: Vec<(String, Vec<String>, String, String)>,
     /// Pre-loaded file contents for `get_file_content`: (path, branch) → content.
     file_contents: std::collections::HashMap<(String, String), String>,
     /// Sequential PR number to return from `create_pull_request`.
@@ -119,6 +121,10 @@ impl TestGitHub {
 
     async fn batch_commits(&self) -> Vec<(String, Vec<String>, String)> {
         self.state.lock().await.batch_commits.clone()
+    }
+
+    async fn rebased_batch_commits(&self) -> Vec<(String, Vec<String>, String, String)> {
+        self.state.lock().await.rebased_batch_commits.clone()
     }
 
     /// Pre-load a file content so `get_file_content` returns it.
@@ -498,6 +504,25 @@ impl GitHubOperations for TestGitHub {
         Ok(())
     }
 
+    async fn batch_commit_files_rebased(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        branch: &str,
+        files: &[FileUpdate],
+        message: &str,
+        parent_sha: &str,
+    ) -> CoreResult<()> {
+        let paths: Vec<String> = files.iter().map(|f| f.path.clone()).collect();
+        self.state.lock().await.rebased_batch_commits.push((
+            branch.to_string(),
+            paths,
+            message.to_string(),
+            parent_sha.to_string(),
+        ));
+        Ok(())
+    }
+
     async fn list_issue_comments(
         &self,
         _owner: &str,
@@ -641,14 +666,26 @@ async fn test_orchestrate_no_existing_pr_creates_branch_and_pr() {
         .unwrap_or("")
         .contains("## Changelog"));
 
-    let commits = github.batch_commits().await;
+    // `create_release_branch_and_pr` uses `batch_commit_files_rebased` to avoid
+    // the race where setting branch tip == base_sha first would auto-close the PR.
+    let rebased = github.rebased_batch_commits().await;
     assert_eq!(
-        commits.len(),
+        rebased.len(),
         1,
-        "CHANGELOG.md should be committed to the release branch"
+        "CHANGELOG.md should be committed to the release branch via batch_commit_files_rebased"
     );
-    assert!(commits[0].1.contains(&"CHANGELOG.md".to_string()));
-    assert_eq!(commits[0].0, "release/v1.2.3");
+    assert!(rebased[0].1.contains(&"CHANGELOG.md".to_string()));
+    assert_eq!(rebased[0].0, "release/v1.2.3");
+    assert_eq!(
+        rebased[0].3, "sha001",
+        "rebased commit must use base_sha as parent"
+    );
+
+    // No plain batch_commit_files should have been called.
+    assert!(
+        github.batch_commits().await.is_empty(),
+        "create path should use batch_commit_files_rebased, not batch_commit_files"
+    );
 }
 
 /// Existing PR has the same version → changelog is merged (Updated).
@@ -694,21 +731,80 @@ async fn test_orchestrate_existing_equal_version_pr_updates_changelog() {
     assert!(body.contains("old fix"), "should keep existing entry");
     assert!(body.contains("new feature"), "should add new entry");
 
-    // CHANGELOG.md should be committed to the existing branch.
-    let commits = github.batch_commits().await;
+    // CHANGELOG.md should be committed to the existing branch, rebased onto base SHA.
+    let rebased = github.rebased_batch_commits().await;
     assert_eq!(
-        commits.len(),
+        rebased.len(),
         1,
-        "CHANGELOG.md should be updated on the existing branch"
+        "CHANGELOG.md should be committed via batch_commit_files_rebased"
     );
-    assert!(commits[0].1.contains(&"CHANGELOG.md".to_string()));
-    assert_eq!(commits[0].0, "release/v1.0.0");
+    assert!(rebased[0].1.contains(&"CHANGELOG.md".to_string()));
+    assert_eq!(rebased[0].0, "release/v1.0.0");
+    assert_eq!(
+        rebased[0].3, "sha002",
+        "rebased commit must use the new base SHA as parent"
+    );
 
-    // The release branch should be force-reset to the latest base SHA before the commit.
-    let force_updated = github.force_updated_branches().await;
-    assert_eq!(force_updated.len(), 1, "branch should be force-reset once");
-    assert_eq!(force_updated[0].0, "release/v1.0.0");
-    assert_eq!(force_updated[0].1, "sha002");
+    // No regular force-update should have been issued on the update path.
+    assert!(
+        github.force_updated_branches().await.is_empty(),
+        "update path must not force-reset the branch to base_sha (would close PR)"
+    );
+
+    // No plain batch_commit_files should have been issued on the update path.
+    assert!(
+        github.batch_commits().await.is_empty(),
+        "update path should use batch_commit_files_rebased, not batch_commit_files"
+    );
+}
+
+/// The update path must never set the branch tip equal to base_sha.
+///
+/// This is the regression test for the GitHub auto-close race: when
+/// `force_update_branch(base_sha)` was called before `batch_commit_files`,
+/// the release branch momentarily equalled the base branch and GitHub
+/// auto-closed the open PR.  The fix uses `batch_commit_files_rebased` which
+/// creates the commit atomically with `base_sha` as the parent, never going
+/// through an intermediate state where branch == base.
+#[tokio::test]
+async fn test_orchestrate_update_does_not_force_reset_branch_to_base_sha() {
+    let existing_pr = make_open_release_pr(99, "release/v2.0.0", None);
+
+    let github = TestGitHub::new()
+        .with_search_results(vec![existing_pr.clone()])
+        .await
+        .with_pr_by_number(existing_pr)
+        .await;
+
+    let orchestrator = ReleaseOrchestrator::new(default_config(), &github);
+
+    let _ = orchestrator
+        .orchestrate(
+            "testorg",
+            "testrepo",
+            &ver(2, 0, 0),
+            "- fix: patch entry [abcdef0123456789abcdef0123456789abcdef01]",
+            "main",
+            "new-master-sha",
+            "corr-race",
+        )
+        .await
+        .expect("orchestrate should succeed");
+
+    // The branch must never have been set to the base SHA directly;
+    // doing so would make branch == base and auto-close the PR.
+    assert!(
+        github.force_updated_branches().await.is_empty(),
+        "force_update_branch must not be called on the update path"
+    );
+
+    // The rebased commit must target the new master SHA as its parent.
+    let rebased = github.rebased_batch_commits().await;
+    assert_eq!(rebased.len(), 1, "exactly one rebased commit expected");
+    assert_eq!(
+        rebased[0].3, "new-master-sha",
+        "rebased commit parent must be the new base SHA, not an intermediate state"
+    );
 }
 
 /// Existing PR has a lower version → rename (Renamed).
@@ -763,15 +859,25 @@ async fn test_orchestrate_existing_lower_version_pr_renames() {
         "old branch not deleted; {deleted:?}"
     );
 
-    // CHANGELOG.md should be committed to the new release branch.
-    let commits = github.batch_commits().await;
+    // CHANGELOG.md should be committed to the new release branch via rebased commit.
+    let rebased = github.rebased_batch_commits().await;
     assert_eq!(
-        commits.len(),
+        rebased.len(),
         1,
-        "CHANGELOG.md should be committed to the new release branch"
+        "CHANGELOG.md should be committed to the new release branch via batch_commit_files_rebased"
     );
-    assert!(commits[0].1.contains(&"CHANGELOG.md".to_string()));
-    assert_eq!(commits[0].0, "release/v1.1.0");
+    assert!(rebased[0].1.contains(&"CHANGELOG.md".to_string()));
+    assert_eq!(rebased[0].0, "release/v1.1.0");
+    assert_eq!(
+        rebased[0].3, "sha003",
+        "rebased commit must use base_sha as parent"
+    );
+
+    // No plain batch_commit_files should have been called on the create path.
+    assert!(
+        github.batch_commits().await.is_empty(),
+        "rename path should use batch_commit_files_rebased, not batch_commit_files"
+    );
 }
 
 /// Existing PR has a *higher* version → NoOp (never downgrade).
@@ -855,25 +961,33 @@ async fn test_orchestrate_branch_already_exists_reuses_it() {
     assert_eq!(prs.len(), 1);
     assert_eq!(prs[0].head, "release/v1.0.0");
 
-    // CHANGELOG.md should be committed to the canonical branch.
-    let commits = github.batch_commits().await;
+    // CHANGELOG.md should be committed via batch_commit_files_rebased so the branch
+    // tip never passes through base_sha (which would auto-close the open PR).
+    let rebased = github.rebased_batch_commits().await;
     assert_eq!(
-        commits.len(),
+        rebased.len(),
         1,
-        "CHANGELOG.md should be committed to the existing branch"
+        "CHANGELOG.md should be committed via batch_commit_files_rebased on the conflict path"
     );
-    assert!(commits[0].1.contains(&"CHANGELOG.md".to_string()));
-    assert_eq!(commits[0].0, "release/v1.0.0");
+    assert!(rebased[0].1.contains(&"CHANGELOG.md".to_string()));
+    assert_eq!(rebased[0].0, "release/v1.0.0");
+    assert_eq!(
+        rebased[0].3, "sha005",
+        "rebased commit must use base_sha as parent, not an intermediate state"
+    );
 
-    // The existing branch should be force-reset to the current base SHA before the commit.
-    let force_updated = github.force_updated_branches().await;
-    assert_eq!(
-        force_updated.len(),
-        1,
-        "existing branch should be force-reset to base SHA"
+    // No plain batch_commit_files should have been called.
+    assert!(
+        github.batch_commits().await.is_empty(),
+        "conflict path should use batch_commit_files_rebased, not batch_commit_files"
     );
-    assert_eq!(force_updated[0].0, "release/v1.0.0");
-    assert_eq!(force_updated[0].1, "sha005");
+
+    // force_update_branch must NOT have been called: it would set branch tip ==
+    // base_sha, making head == base of any open PR and causing GitHub to auto-close it.
+    assert!(
+        github.force_updated_branches().await.is_empty(),
+        "force_update_branch must not be called on the conflict path (would close open PR)"
+    );
 }
 
 /// `search_pull_requests` returns an error → propagated to caller.
@@ -938,15 +1052,26 @@ async fn test_orchestrate_changelog_merge_deduplicates_commits() {
         "duplicate SHA should be deduplicated; body:\n{body}"
     );
 
-    // CHANGELOG.md should be committed to the existing branch.
-    let commits = github.batch_commits().await;
+    // CHANGELOG.md should be committed via batch_commit_files_rebased (same-version
+    // update path goes through update_release_pr which uses the rebased variant).
+    let rebased = github.rebased_batch_commits().await;
     assert_eq!(
-        commits.len(),
+        rebased.len(),
         1,
-        "CHANGELOG.md should be updated on the existing branch"
+        "CHANGELOG.md should be committed via batch_commit_files_rebased on the update path"
     );
-    assert!(commits[0].1.contains(&"CHANGELOG.md".to_string()));
-    assert_eq!(commits[0].0, "release/v1.0.0");
+    assert!(rebased[0].1.contains(&"CHANGELOG.md".to_string()));
+    assert_eq!(rebased[0].0, "release/v1.0.0");
+    assert_eq!(
+        rebased[0].3, "sha007",
+        "rebased commit must use base_sha as parent"
+    );
+
+    // No plain batch_commit_files should have been called on the update path.
+    assert!(
+        github.batch_commits().await.is_empty(),
+        "update path should use batch_commit_files_rebased, not batch_commit_files"
+    );
 }
 
 /// Branch name helper: `make_branch_name` formats as `"release/v{major}.{minor}.{patch}"`.

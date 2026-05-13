@@ -335,9 +335,11 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
     /// On a `CoreError::Conflict` (branch already exists) the method retries once
     /// with a timestamped fallback branch name.
     ///
-    /// All file changes (CHANGELOG.md plus any version manifest files) are made
-    /// in a **single atomic Git commit** via [`GitHubOperations::batch_commit_files`]
-    /// so the release branch always shows exactly one commit on top of the base branch.
+    /// All file changes (CHANGELOG.md plus any version manifest files) are committed
+    /// via [`GitHubOperations::batch_commit_files_rebased`] with `base_sha` as the
+    /// explicit parent commit.  This guarantees the branch tip **never passes through
+    /// a state where it equals `base_sha`**, which would cause GitHub to auto-close
+    /// any open release PR (head == base → no diff to merge).
     async fn create_release_branch_and_pr(
         &self,
         owner: &str,
@@ -357,16 +359,19 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
             Ok(()) => branch_name,
             Err(CoreError::Conflict { .. }) => {
                 // The branch already exists — most likely from a previous run that
-                // created the branch but failed before opening the PR. Reuse it,
-                // but force-reset it to the current base SHA so the PR diff stays
-                // clean (exactly one commit ahead of the base branch).
+                // created the branch but failed before opening the PR, or because an
+                // open release PR was active when this orchestration ran.
+                //
+                // Do NOT call `force_update_branch(base_sha)` here: that would
+                // temporarily set the branch tip equal to `base_sha`, making head
+                // and base of any open PR identical and causing GitHub to auto-close
+                // it.  Instead, `batch_commit_files_rebased` below creates the
+                // release-files commit directly on top of `base_sha` and then
+                // force-updates the branch ref to that new commit atomically.
                 info!(
                     branch = %branch_name,
-                    "Release branch already exists; reusing it"
+                    "Release branch already exists; reusing it via rebased commit"
                 );
-                self.github
-                    .force_update_branch(owner, repo, &branch_name, base_sha)
-                    .await?;
                 branch_name
             }
             Err(other) => return Err(other),
@@ -392,8 +397,21 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
             "chore(release): update release files for {}",
             version.to_string_with_prefix(true)
         );
+
+        // Use `batch_commit_files_rebased` (not `batch_commit_files`) so the new
+        // commit's parent is always `base_sha` regardless of whatever the current
+        // branch tip is.  The branch ref is then force-updated to the new commit.
+        // This ensures the branch tip never equals `base_sha` at any point during
+        // the operation, preventing GitHub from auto-closing the open release PR.
         self.github
-            .batch_commit_files(owner, repo, &actual_branch, &file_updates, &commit_message)
+            .batch_commit_files_rebased(
+                owner,
+                repo,
+                &actual_branch,
+                &file_updates,
+                &commit_message,
+                base_sha,
+            )
             .await?;
 
         let pr = self
@@ -449,14 +467,18 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
             Some(new_title)
         };
 
-        // Force-reset the release branch to the latest base SHA so the PR always
-        // shows exactly one commit on top of main.
+        // Rebase the release branch onto the latest base SHA and commit the
+        // updated release files in a single atomic operation.
+        //
+        // `batch_commit_files_rebased` creates the new commit with `base_sha`
+        // as its parent and then force-updates the branch ref to that commit.
+        // This keeps the release branch exactly one commit ahead of the base
+        // branch without ever passing through a state where the branch tip
+        // equals `base_sha` — which would cause GitHub to auto-close the open
+        // PR because head and base would temporarily be identical.
         //
         // Files are committed BEFORE the PR metadata is updated so that, if the
         // commit step fails, the PR body never drifts ahead of the branch content.
-        self.github
-            .force_update_branch(owner, repo, &fresh_pr.head.ref_name, base_sha)
-            .await?;
 
         // Build batch: CHANGELOG.md plus manifest files — all in one atomic commit.
         let mut file_updates = vec![FileUpdate {
@@ -480,12 +502,13 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
             version.to_string_with_prefix(true)
         );
         self.github
-            .batch_commit_files(
+            .batch_commit_files_rebased(
                 owner,
                 repo,
                 &fresh_pr.head.ref_name,
                 &file_updates,
                 &commit_message,
+                base_sha,
             )
             .await?;
 

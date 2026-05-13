@@ -1331,6 +1331,183 @@ impl GitHubOperations for GitHubClient {
         Ok(())
     }
 
+    #[instrument(skip(self, files))]
+    async fn batch_commit_files_rebased(
+        &self,
+        owner: &str,
+        repo: &str,
+        branch: &str,
+        files: &[FileUpdate],
+        message: &str,
+        parent_sha: &str,
+    ) -> CoreResult<()> {
+        // Creates a commit whose parent is `parent_sha` (not the current
+        // branch HEAD), then force-updates the branch to that new commit.
+        // This avoids the race where setting branch = base_sha first makes
+        // head == base of the open release PR, causing GitHub to auto-close it.
+
+        if files.is_empty() {
+            return Err(CoreError::invalid_input(
+                "batch_commit_files_rebased",
+                "files slice must not be empty".to_string(),
+            ));
+        }
+
+        info!(
+            owner,
+            repo,
+            branch,
+            parent_sha,
+            file_count = files.len(),
+            "Committing files via Git Trees API (rebased onto explicit parent)"
+        );
+
+        let installation = self.installation().await?;
+
+        // Step 1: Get the tree SHA from the explicit parent commit (not branch HEAD).
+        let commit_url = format!("/repos/{owner}/{repo}/git/commits/{parent_sha}");
+        let commit_resp = installation.get(&commit_url).await.map_err(map_sdk_error)?;
+        let commit_json: serde_json::Value = commit_resp.json().await.map_err(CoreError::github)?;
+        let base_tree_sha = commit_json["tree"]["sha"]
+            .as_str()
+            .ok_or_else(|| {
+                CoreError::github(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "parent commit response missing tree.sha",
+                ))
+            })?
+            .to_owned();
+
+        // Step 2: Create a blob for each file.
+        let mut tree_entries = Vec::with_capacity(files.len());
+        for file in files {
+            let encoded = base64::engine::general_purpose::STANDARD.encode(file.content.as_bytes());
+            let blob_body = serde_json::json!({
+                "content": encoded,
+                "encoding": "base64",
+            });
+            let blob_url = format!("/repos/{owner}/{repo}/git/blobs");
+            let blob_resp = installation
+                .post(&blob_url, &blob_body)
+                .await
+                .map_err(map_sdk_error)?;
+            let blob_status = blob_resp.status().as_u16();
+            let blob_json: serde_json::Value = blob_resp.json().await.map_err(CoreError::github)?;
+            if blob_status != 201 {
+                return Err(CoreError::github(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!(
+                        "POST /git/blobs failed with status {blob_status} for {}",
+                        file.path
+                    ),
+                )));
+            }
+            let blob_sha = blob_json["sha"]
+                .as_str()
+                .ok_or_else(|| {
+                    CoreError::github(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        format!("blob response missing sha for {}", file.path),
+                    ))
+                })?
+                .to_owned();
+            tree_entries.push(serde_json::json!({
+                "path": file.path,
+                "mode": "100644",
+                "type": "blob",
+                "sha": blob_sha,
+            }));
+        }
+
+        // Step 3: Create a new tree based on the parent commit's tree.
+        let tree_body = serde_json::json!({
+            "base_tree": base_tree_sha,
+            "tree": tree_entries,
+        });
+        let tree_url = format!("/repos/{owner}/{repo}/git/trees");
+        let tree_resp = installation
+            .post(&tree_url, &tree_body)
+            .await
+            .map_err(map_sdk_error)?;
+        let tree_status = tree_resp.status().as_u16();
+        let tree_json: serde_json::Value = tree_resp.json().await.map_err(CoreError::github)?;
+        if tree_status != 201 {
+            return Err(CoreError::github(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("POST /git/trees failed with status {tree_status}"),
+            )));
+        }
+        let new_tree_sha = tree_json["sha"]
+            .as_str()
+            .ok_or_else(|| {
+                CoreError::github(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "tree response missing sha",
+                ))
+            })?
+            .to_owned();
+
+        // Step 4: Create a new commit with parent_sha as the explicit parent.
+        let new_commit_body = serde_json::json!({
+            "message": message,
+            "tree": new_tree_sha,
+            "parents": [parent_sha],
+        });
+        let new_commit_url = format!("/repos/{owner}/{repo}/git/commits");
+        let new_commit_resp = installation
+            .post(&new_commit_url, &new_commit_body)
+            .await
+            .map_err(map_sdk_error)?;
+        let new_commit_status = new_commit_resp.status().as_u16();
+        let new_commit_json: serde_json::Value =
+            new_commit_resp.json().await.map_err(CoreError::github)?;
+        if new_commit_status != 201 {
+            return Err(CoreError::github(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("POST /git/commits failed with status {new_commit_status}"),
+            )));
+        }
+        let new_commit_sha = new_commit_json["sha"]
+            .as_str()
+            .ok_or_else(|| {
+                CoreError::github(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "new commit response missing sha",
+                ))
+            })?
+            .to_owned();
+
+        // Step 5: Force-update the branch ref to the new commit.
+        // force=true is required because the new commit's history (parent_sha)
+        // does not include the current branch HEAD as an ancestor.
+        let patch_ref_url = format!("/repos/{owner}/{repo}/git/refs/heads/{branch}");
+        let patch_body = serde_json::json!({
+            "sha": new_commit_sha,
+            "force": true,
+        });
+        let patch_resp = installation
+            .patch(&patch_ref_url, &patch_body)
+            .await
+            .map_err(map_sdk_error)?;
+        let patch_status = patch_resp.status().as_u16();
+        if patch_status != 200 {
+            let body = patch_resp.text().await.unwrap_or_default();
+            return Err(CoreError::github(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("PATCH /git/refs failed with status {patch_status}: {body}"),
+            )));
+        }
+
+        info!(
+            owner,
+            repo,
+            branch,
+            commit_sha = %new_commit_sha,
+            "Files committed successfully (rebased onto explicit parent)"
+        );
+        Ok(())
+    }
+
     #[instrument(skip(self))]
     async fn get_installation_id_for_repo(&self, owner: &str, repo: &str) -> CoreResult<u64> {
         info!(owner, repo, "Looking up installation ID for repository");
