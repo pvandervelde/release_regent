@@ -23,12 +23,14 @@
 | `CliError` | enum | `crates/cli/src/errors.rs:10` | Enumerates CLI execution errors and failure conditions. | cli |
 | `MockProcessor` | type | `crates/cli/src/factory.rs:33` | Type alias for mock processor implementation used in testing. | cli |
 | `ProductionProcessor` | type | `crates/cli/src/factory.rs:37` | Type alias for production-grade release regent processor. | cli |
-| `ConfigFormat` | enum | `crates/config_provider/src/formats.rs:9` | Enumerates supported configuration file formats. | config |
+| `parse_config` | fn | `crates/config_provider/src/formats.rs` | Parses TOML content into a `ReleaseRegentConfig`. | config |
+| `serialize_config` | fn | `crates/config_provider/src/formats.rs` | Serializes a `ReleaseRegentConfig` to a TOML string. | config |
+| `is_toml_path` | fn | `crates/config_provider/src/formats.rs` | Returns `true` when a path has a `.toml` extension. | config |
+| `validate_toml_path` | fn | `crates/config_provider/src/formats.rs` | Validates a path ends with `.toml`, erroring otherwise. | config |
 | `ConfigProviderError` | enum | `crates/config_provider/src/errors.rs:12` | Enumerates configuration loading and validation errors. | config |
 | `ConfigurationBuilder` | struct | `crates/config_provider/src/builder.rs:15` | Constructs configuration objects with fluent API and validation. | config |
 | `ConfigValidator` | struct | `crates/config_provider/src/validation.rs:72` | Validates configuration objects against defined rules and constraints. | config |
 | `FileConfigurationProvider` | struct | `crates/config_provider/src/file_provider.rs:23` | Loads and parses configuration from local or remote files. | config |
-| `FormatDetector` | struct | `crates/config_provider/src/formats.rs:94` | Detects configuration file formats from content or file extensions. | config |
 | `GitHubConfigurationProvider` | struct | `crates/config_provider/src/github_provider.rs:404` | struct in crates/config_provider/src/github_provider.rs | config |
 | `GitHubRepositoryRule` | struct | `crates/config_provider/src/validation.rs:224` | Validates GitHub repository URLs match expected format and accessibility. | config |
 | `ValidationResult` | struct | `crates/config_provider/src/validation.rs:9` | Stores validation outcome including errors, warnings, and validation status. | config |
