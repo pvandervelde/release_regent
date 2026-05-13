@@ -408,7 +408,9 @@ impl ReleaseRegentConfig {
         info!("Loading configuration from: {}", path.display());
 
         let content = tokio::fs::read_to_string(path).await?;
-        let config: Self = serde_yaml::from_str(&content)?;
+        let config: Self = toml::from_str(&content).map_err(|e| {
+            CoreError::config(format!("Failed to parse TOML config at {}: {e}", path.display()))
+        })?;
 
         debug!("Configuration loaded successfully");
         config.validate()?;

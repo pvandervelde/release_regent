@@ -97,6 +97,11 @@ fn test_default_configuration() {
 
 #[test]
 fn test_notification_strategy_serialization() {
+    #[derive(serde::Serialize, serde::Deserialize, Debug)]
+    struct Wrapper {
+        strategy: NotificationStrategy,
+    }
+
     let strategies = vec![
         NotificationStrategy::GitHubIssue,
         NotificationStrategy::Webhook,
@@ -105,10 +110,13 @@ fn test_notification_strategy_serialization() {
     ];
 
     for strategy in strategies {
-        let serialized = serde_yaml::to_string(&strategy).unwrap();
-        let deserialized: NotificationStrategy = serde_yaml::from_str(&serialized).unwrap();
+        let wrapper = Wrapper {
+            strategy: strategy.clone(),
+        };
+        let serialized = toml::to_string_pretty(&wrapper).unwrap();
+        let deserialized: Wrapper = toml::from_str::<Wrapper>(&serialized).unwrap();
 
-        match (strategy, deserialized) {
+        match (strategy, deserialized.strategy) {
             (NotificationStrategy::GitHubIssue, NotificationStrategy::GitHubIssue) => {}
             (NotificationStrategy::Webhook, NotificationStrategy::Webhook) => {}
             (NotificationStrategy::Slack, NotificationStrategy::Slack) => {}
@@ -120,19 +128,33 @@ fn test_notification_strategy_serialization() {
 
 #[test]
 fn test_versioning_strategy_serialization() {
+    #[derive(serde::Serialize, serde::Deserialize, Debug)]
+    struct Wrapper {
+        strategy: VersioningStrategy,
+    }
+
     let conventional = VersioningStrategy::Conventional;
-    let serialized = serde_yaml::to_string(&conventional).unwrap();
-    let deserialized: VersioningStrategy = serde_yaml::from_str(&serialized).unwrap();
-    assert!(matches!(deserialized, VersioningStrategy::Conventional));
+    let serialized = toml::to_string_pretty(&Wrapper {
+        strategy: conventional,
+    })
+    .unwrap();
+    let deserialized = toml::from_str::<Wrapper>(&serialized).unwrap();
+    assert!(matches!(
+        deserialized.strategy,
+        VersioningStrategy::Conventional
+    ));
 
     let external = VersioningStrategy::External {
         command: "/usr/bin/version".to_string(),
         env_vars: std::collections::HashMap::new(),
         timeout_ms: 30_000,
     };
-    let serialized = serde_yaml::to_string(&external).unwrap();
-    let deserialized: VersioningStrategy = serde_yaml::from_str(&serialized).unwrap();
-    assert!(matches!(deserialized, VersioningStrategy::External { .. }));
+    let serialized = toml::to_string_pretty(&Wrapper { strategy: external }).unwrap();
+    let deserialized = toml::from_str::<Wrapper>(&serialized).unwrap();
+    assert!(matches!(
+        deserialized.strategy,
+        VersioningStrategy::External { .. }
+    ));
 }
 
 #[test]
@@ -188,16 +210,16 @@ fn test_from_versioning_strategy_external() {
 fn test_github_issue_config_partial_labels_only() {
     // When a user provides `github_issue:` with only `labels`, `assignees` must
     // default to `[]` rather than causing a deserialization error.
-    let yaml = r#"
-notifications:
-  strategy: "github_issue"
-  github_issue:
-    labels:
-      - "my-label"
+    let input = r#"
+[notifications]
+strategy = "github_issue"
+
+[notifications.github_issue]
+labels = ["my-label"]
 "#;
 
     let config: ReleaseRegentConfig =
-        serde_yaml::from_str(yaml).expect("should deserialize with only labels");
+        toml::from_str(input).expect("should deserialize with only labels");
     let gh = config
         .notifications
         .github_issue
@@ -210,16 +232,16 @@ notifications:
 fn test_github_issue_config_partial_assignees_only() {
     // When a user provides `github_issue:` with only `assignees`, `labels` must
     // default to `["release-regent", "bug"]` rather than causing a deserialization error.
-    let yaml = r#"
-notifications:
-  strategy: "github_issue"
-  github_issue:
-    assignees:
-      - "alice"
+    let input = r#"
+[notifications]
+strategy = "github_issue"
+
+[notifications.github_issue]
+assignees = ["alice"]
 "#;
 
     let config: ReleaseRegentConfig =
-        serde_yaml::from_str(yaml).expect("should deserialize with only assignees");
+        toml::from_str(input).expect("should deserialize with only assignees");
     let gh = config
         .notifications
         .github_issue
@@ -232,15 +254,16 @@ notifications:
 fn test_webhook_config_without_headers() {
     // When a user provides `webhook:` with only `url`, `headers` must default to
     // an empty map rather than causing a deserialization error.
-    let yaml = r#"
-notifications:
-  strategy: "webhook"
-  webhook:
-    url: "https://hooks.example.com/release-regent"
+    let input = r#"
+[notifications]
+strategy = "webhook"
+
+[notifications.webhook]
+url = "https://hooks.example.com/release-regent"
 "#;
 
     let config: ReleaseRegentConfig =
-        serde_yaml::from_str(yaml).expect("should deserialize without headers");
+        toml::from_str(input).expect("should deserialize without headers");
     let webhook = config
         .notifications
         .webhook
@@ -254,19 +277,20 @@ fn test_webhook_config_headers_round_trip() {
     // headers must survive a serialize → deserialize round-trip.
     // skip_serializing_if suppresses empty maps on serialisation, but adding
     // #[serde(default)] ensures an absent key deserialises to an empty map.
-    let yaml = r#"
-notifications:
-  strategy: "webhook"
-  webhook:
-    url: "https://hooks.example.com/release-regent"
+    let input = r#"
+[notifications]
+strategy = "webhook"
+
+[notifications.webhook]
+url = "https://hooks.example.com/release-regent"
 "#;
 
-    let config: ReleaseRegentConfig = serde_yaml::from_str(yaml).unwrap();
-    let serialized = serde_yaml::to_string(&config).unwrap();
+    let config: ReleaseRegentConfig = toml::from_str(input).unwrap();
+    let serialized = toml::to_string_pretty(&config).unwrap();
     // `headers` is omitted when empty (skip_serializing_if)
     assert!(!serialized.contains("headers"));
     // Re-loading must not fail even though `headers` is absent in the YAML
-    let reloaded: ReleaseRegentConfig = serde_yaml::from_str(&serialized).unwrap();
+    let reloaded: ReleaseRegentConfig = toml::from_str::<ReleaseRegentConfig>(&serialized).unwrap();
     assert!(reloaded.notifications.webhook.unwrap().headers.is_empty());
 }
 
@@ -285,49 +309,47 @@ fn test_release_regent_config_locked_fields_empty_by_default() {
 }
 
 #[test]
-fn test_release_regent_config_group_yaml_round_trip() {
-    let yaml = r#"
-group: platform
+fn test_release_regent_config_group_round_trip() {
+    let input = r#"
+group = "platform"
 "#;
     let config: ReleaseRegentConfig =
-        serde_yaml::from_str(yaml).expect("should deserialize group field");
+        toml::from_str(input).expect("should deserialize group field");
     assert_eq!(config.group.as_deref(), Some("platform"));
 
-    let serialized = serde_yaml::to_string(&config).expect("should serialize");
+    let serialized = toml::to_string_pretty(&config).expect("should serialize");
     let reloaded: ReleaseRegentConfig =
-        serde_yaml::from_str(&serialized).expect("should re-deserialize");
+        toml::from_str::<ReleaseRegentConfig>(&serialized).expect("should re-deserialize");
     assert_eq!(reloaded.group.as_deref(), Some("platform"));
 }
 
 #[test]
-fn test_release_regent_config_group_absent_yaml_deserializes_to_none() {
-    // A YAML document without the `group` key must silently default to None.
-    let yaml = r#"
-core:
-  version_prefix: v
+fn test_release_regent_config_group_absent_deserializes_to_none() {
+    // A TOML document without the `group` key must silently default to None.
+    let input = r#"
+[core]
+version_prefix = "v"
 "#;
     let config: ReleaseRegentConfig =
-        serde_yaml::from_str(yaml).expect("should deserialize without group key");
+        toml::from_str(input).expect("should deserialize without group key");
     assert!(config.group.is_none());
 }
 
 #[test]
-fn test_release_regent_config_locked_fields_yaml_round_trip() {
-    let yaml = r#"
-locked_fields:
-  - versioning.strategy
-  - releases.draft
+fn test_release_regent_config_locked_fields_round_trip() {
+    let input = r#"
+locked_fields = ["versioning.strategy", "releases.draft"]
 "#;
     let config: ReleaseRegentConfig =
-        serde_yaml::from_str(yaml).expect("should deserialize locked_fields");
+        toml::from_str(input).expect("should deserialize locked_fields");
     assert_eq!(
         config.locked_fields,
         vec!["versioning.strategy", "releases.draft"]
     );
 
-    let serialized = serde_yaml::to_string(&config).expect("should serialize");
+    let serialized = toml::to_string_pretty(&config).expect("should serialize");
     let reloaded: ReleaseRegentConfig =
-        serde_yaml::from_str(&serialized).expect("should re-deserialize");
+        toml::from_str::<ReleaseRegentConfig>(&serialized).expect("should re-deserialize");
     assert_eq!(
         reloaded.locked_fields,
         vec!["versioning.strategy", "releases.draft"]
@@ -335,14 +357,14 @@ locked_fields:
 }
 
 #[test]
-fn test_release_regent_config_locked_fields_absent_yaml_deserializes_to_empty() {
-    // A YAML document without `locked_fields` must silently default to [].
-    let yaml = r#"
-core:
-  version_prefix: v
+fn test_release_regent_config_locked_fields_absent_deserializes_to_empty() {
+    // A TOML document without `locked_fields` must silently default to [].
+    let input = r#"
+[core]
+version_prefix = "v"
 "#;
     let config: ReleaseRegentConfig =
-        serde_yaml::from_str(yaml).expect("should deserialize without locked_fields key");
+        toml::from_str(input).expect("should deserialize without locked_fields key");
     assert!(config.locked_fields.is_empty());
 }
 
@@ -356,8 +378,8 @@ group = "backend"
     assert_eq!(config.group.as_deref(), Some("backend"));
 
     let serialized = toml::to_string(&config).expect("should serialize to TOML");
-    let reloaded: ReleaseRegentConfig =
-        toml::from_str(&serialized).expect("should re-deserialize from TOML");
+    let reloaded: ReleaseRegentConfig = toml::from_str::<ReleaseRegentConfig>(&serialized)
+        .expect("should re-deserialize from TOML");
     assert_eq!(reloaded.group.as_deref(), Some("backend"));
 }
 
@@ -374,8 +396,8 @@ locked_fields = ["versioning.strategy", "core.version_prefix"]
     );
 
     let serialized = toml::to_string(&config).expect("should serialize to TOML");
-    let reloaded: ReleaseRegentConfig =
-        toml::from_str(&serialized).expect("should re-deserialize from TOML");
+    let reloaded: ReleaseRegentConfig = toml::from_str::<ReleaseRegentConfig>(&serialized)
+        .expect("should re-deserialize from TOML");
     assert_eq!(
         reloaded.locked_fields,
         vec!["versioning.strategy", "core.version_prefix"]
