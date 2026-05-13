@@ -1,7 +1,7 @@
 //! File-based configuration provider implementation.
 
 use crate::errors::{ConfigProviderError, ConfigProviderResult};
-use crate::formats::{ConfigFormat, FormatDetector};
+use crate::formats::{is_toml_path, parse_config, serialize_config, validate_toml_path};
 use crate::validation::ConfigValidator;
 use async_trait::async_trait;
 use release_regent_core::{
@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use tokio::fs;
 use tracing::{debug, info, warn};
 
-/// File-based configuration provider with YAML and TOML support
+/// File-based configuration provider with TOML support
 pub struct FileConfigurationProvider {
     /// Base directory for configuration files
     base_directory: PathBuf,
@@ -29,8 +29,6 @@ pub struct FileConfigurationProvider {
     validator: ConfigValidator,
     /// Configuration overrides
     overrides: HashMap<String, String>,
-    /// Default format for files without clear extensions
-    default_format: Option<ConfigFormat>,
     /// Specific global configuration file path
     global_config_path: Option<PathBuf>,
     /// Specific repository configuration file path
@@ -76,7 +74,6 @@ impl FileConfigurationProvider {
             search_directories: Vec::new(),
             validator: ConfigValidator::new(),
             overrides: HashMap::new(),
-            default_format: None,
             global_config_path: None,
             repository_config_path: None,
             create_missing: false,
@@ -98,11 +95,6 @@ impl FileConfigurationProvider {
     /// Set configuration overrides
     pub fn set_overrides(&mut self, overrides: HashMap<String, String>) {
         self.overrides = overrides;
-    }
-
-    /// Set the default format for files without clear extensions
-    pub fn set_default_format(&mut self, format: ConfigFormat) {
-        self.default_format = Some(format);
     }
 
     /// Set specific global configuration file path
@@ -138,22 +130,12 @@ impl FileConfigurationProvider {
         // Common configuration file variations
         let variations = if filename == "global" {
             vec![
-                "release-regent.yaml".to_string(),
-                "release-regent.yml".to_string(),
-                "release_regent.yaml".to_string(),
-                "release_regent.yml".to_string(),
                 "release-regent.toml".to_string(),
                 "release_regent.toml".to_string(),
-                "config.yaml".to_string(),
-                "config.yml".to_string(),
                 "config.toml".to_string(),
             ]
         } else {
-            vec![
-                format!("{}.yaml", filename),
-                format!("{}.yml", filename),
-                format!("{}.toml", filename),
-            ]
+            vec![format!("{}.toml", filename)]
         };
 
         for dir in search_dirs {
@@ -198,22 +180,13 @@ impl FileConfigurationProvider {
             .await
             .map_err(|e| ConfigProviderError::io_error("Failed to read configuration file", e))?;
 
-        // Detect format
-        let format = FormatDetector::detect_from_path(path)
-            .or_else(|_| {
-                if let Some(default_format) = self.default_format {
-                    Ok::<ConfigFormat, ConfigProviderError>(default_format)
-                } else {
-                    FormatDetector::detect_from_content(&content)
-                }
-            })
-            .map_err(|e| ConfigProviderError::InvalidFormat {
-                path: path.to_path_buf(),
-                reason: format!("Could not detect format: {e}"),
-            })?;
+        // Validate extension and parse
+        validate_toml_path(path).map_err(|e| ConfigProviderError::InvalidFormat {
+            path: path.to_path_buf(),
+            reason: format!("Could not detect format: {e}"),
+        })?;
 
-        // Parse content
-        let mut config = format.parse(&content).map_err(|mut e| {
+        let mut config = parse_config(&content).map_err(|mut e| {
             // Update error with correct path if it's empty
             match &mut e {
                 ConfigProviderError::ParseError {
@@ -246,14 +219,7 @@ impl FileConfigurationProvider {
         let default_config = self.get_default_config().await?;
 
         // Detect format from path or use default
-        let format = FormatDetector::detect_from_path(path).or_else(|_| {
-            Ok::<ConfigFormat, ConfigProviderError>(
-                self.default_format.unwrap_or(ConfigFormat::Yaml),
-            )
-        })?;
-
-        // Serialize configuration
-        let content = format.serialize(&default_config)?;
+        let content = serialize_config(&default_config)?;
 
         // Ensure parent directory exists
         if let Some(parent) = path.parent() {
@@ -405,7 +371,7 @@ impl ConfigurationProvider for FileConfigurationProvider {
             Some(path) => path,
             None => {
                 if self.create_missing {
-                    self.base_directory.join("release-regent.yaml")
+                    self.base_directory.join("release-regent.toml")
                 } else {
                     return Err(CoreError::config("Global configuration file not found"));
                 }
@@ -460,7 +426,7 @@ impl ConfigurationProvider for FileConfigurationProvider {
                 if let Some(repo_path) = &self.repository_config_path {
                     repo_path.clone()
                 } else if self.create_missing {
-                    self.base_directory.join(format!("{filename}.yaml"))
+                    self.base_directory.join(format!("{filename}.toml"))
                 } else {
                     // No repository config found - return None instead of error
                     return Ok(None);
@@ -557,22 +523,18 @@ impl ConfigurationProvider for FileConfigurationProvider {
         repo: Option<&str>,
         global: bool,
     ) -> Result<(), CoreError> {
-        // Determine the file path and format
-        let (file_path, config_format) = if global {
-            let path = self
-                .global_config_path
+        // Determine the file path
+        let file_path = if global {
+            self.global_config_path
                 .clone()
-                .unwrap_or_else(|| self.base_directory.join("release-regent.yaml"));
-            (path, "yaml")
+                .unwrap_or_else(|| self.base_directory.join("release-regent.toml"))
         } else {
             match (owner, repo) {
                 (Some(o), Some(r)) => {
                     let filename = format!("{o}-{r}");
-                    let path = self
-                        .repository_config_path
+                    self.repository_config_path
                         .clone()
-                        .unwrap_or_else(|| self.base_directory.join(format!("{filename}.yaml")));
-                    (path, "yaml")
+                        .unwrap_or_else(|| self.base_directory.join(format!("{filename}.toml")))
                 }
                 _ => {
                     return Err(CoreError::config(
@@ -582,21 +544,8 @@ impl ConfigurationProvider for FileConfigurationProvider {
             }
         };
 
-        // Parse format
-        let format = match config_format.to_lowercase().as_str() {
-            "yaml" | "yml" => ConfigFormat::Yaml,
-            "toml" => ConfigFormat::Toml,
-            _ => {
-                return Err(CoreError::config(format!(
-                    "Unsupported format: {config_format}"
-                )))
-            }
-        };
-
         // Serialize configuration
-        let content = format
-            .serialize(config)
-            .map_err(|e| CoreError::config(e.to_string()))?;
+        let content = serialize_config(config).map_err(|e| CoreError::config(e.to_string()))?;
 
         // Ensure parent directory exists
         if let Some(parent) = file_path.parent() {
@@ -640,12 +589,10 @@ impl ConfigurationProvider for FileConfigurationProvider {
                 let mut entries = entries;
                 while let Ok(Some(entry)) = entries.next_entry().await {
                     if let Some(file_name) = entry.file_name().to_str() {
-                        // Look for files matching pattern: owner-repo.{yaml,yml,toml}
+                        // Look for files matching pattern: owner-repo.toml
                         if let Some(stem) = file_name.split('.').next() {
                             if let Some((owner, repo)) = stem.split_once('-') {
-                                if FormatDetector::is_supported_extension(
-                                    file_name.split('.').next_back().unwrap_or(""),
-                                ) {
+                                if is_toml_path(&entry.path()) {
                                     // Try to load the configuration to create a RepositoryConfig
                                     if let Ok(config) =
                                         self.load_config_from_file(&entry.path()).await
@@ -683,19 +630,12 @@ impl ConfigurationProvider for FileConfigurationProvider {
         };
 
         match self.find_config_file(&filename) {
-            Some(path) => {
-                let format = FormatDetector::detect_from_path(&path)
-                    .unwrap_or(ConfigFormat::Yaml)
-                    .name()
-                    .to_string();
-
-                Ok(ConfigurationSource {
-                    location: path.to_string_lossy().to_string(),
-                    source_type: "file".to_string(),
-                    format,
-                    loaded_at: chrono::Utc::now(),
-                })
-            }
+            Some(path) => Ok(ConfigurationSource {
+                location: path.to_string_lossy().to_string(),
+                source_type: "file".to_string(),
+                format: "toml".to_string(),
+                loaded_at: chrono::Utc::now(),
+            }),
             None => Err(CoreError::config("Configuration file not found")),
         }
     }
@@ -732,10 +672,7 @@ impl ConfigurationProvider for FileConfigurationProvider {
     }
 
     fn supported_formats(&self) -> Vec<String> {
-        FormatDetector::supported_formats()
-            .iter()
-            .map(|f| f.name().to_string())
-            .collect()
+        vec!["toml".to_string()]
     }
 
     async fn get_default_config(&self) -> Result<ReleaseRegentConfig, CoreError> {

@@ -2,7 +2,7 @@
 
 use crate::errors::{ConfigProviderError, ConfigProviderResult};
 use crate::file_provider::FileConfigurationProvider;
-use crate::formats::{ConfigFormat, FormatDetector};
+use crate::formats::is_toml_path;
 use crate::validation::{ConfigValidator, ValidationRule};
 use release_regent_core::{
     config::ReleaseRegentConfig,
@@ -25,8 +25,6 @@ pub struct ConfigurationBuilder {
     validator: Option<ConfigValidator>,
     /// Whether to enable strict validation
     strict_validation: bool,
-    /// Custom format for files without clear extensions
-    default_format: Option<ConfigFormat>,
     /// Whether to create missing configuration files
     create_missing: bool,
 }
@@ -42,7 +40,6 @@ impl ConfigurationBuilder {
             overrides: HashMap::new(),
             validator: None,
             strict_validation: false,
-            default_format: None,
             create_missing: false,
         }
     }
@@ -122,13 +119,6 @@ impl ConfigurationBuilder {
         self
     }
 
-    /// Set the default format for files without clear extensions
-    #[must_use]
-    pub fn with_default_format(mut self, format: ConfigFormat) -> Self {
-        self.default_format = Some(format);
-        self
-    }
-
     /// Enable creation of missing configuration files
     #[must_use]
     pub fn with_create_missing(mut self) -> Self {
@@ -152,11 +142,6 @@ impl ConfigurationBuilder {
         // Configure search directories
         for dir in self.search_directories {
             provider.add_search_directory(dir);
-        }
-
-        // Set default format if specified
-        if let Some(format) = self.default_format {
-            provider.set_default_format(format);
         }
 
         // Configure validator
@@ -273,24 +258,19 @@ impl ConfigurationBuilder {
         Self::new()
             .with_search_directory("./config")
             .with_search_directory(".")
-            .with_default_format(ConfigFormat::Yaml)
             .with_create_missing()
     }
 
     /// Create a builder for production with strict validation
     #[must_use]
     pub fn for_production() -> Self {
-        Self::new()
-            .with_strict_validation()
-            .with_default_format(ConfigFormat::Yaml)
+        Self::new().with_strict_validation()
     }
 
     /// Create a builder for testing with minimal configuration
     #[must_use]
     pub fn for_testing() -> Self {
-        Self::new()
-            .with_default_format(ConfigFormat::Yaml)
-            .with_create_missing()
+        Self::new().with_create_missing()
     }
 
     /// Create a builder with automatic directory detection
@@ -333,10 +313,8 @@ impl ConfigurationBuilder {
                         // Look for common configuration file names
                         if (file_name.starts_with("release-regent")
                             || file_name.starts_with("release_regent")
-                            || file_name == "config.yaml"
-                            || file_name == "config.yml"
                             || file_name == "config.toml")
-                            && FormatDetector::detect_from_path(&path).is_ok()
+                            && is_toml_path(&path)
                         {
                             builder = builder.with_global_config_path(path);
                             break;
@@ -346,7 +324,7 @@ impl ConfigurationBuilder {
             }
         }
 
-        Ok(builder.with_default_format(ConfigFormat::Yaml))
+        Ok(builder)
     }
 }
 

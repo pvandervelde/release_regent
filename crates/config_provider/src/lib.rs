@@ -49,7 +49,7 @@ pub mod validation;
 pub use builder::ConfigurationBuilder;
 pub use errors::{ConfigProviderError, ConfigProviderResult};
 pub use file_provider::FileConfigurationProvider;
-pub use formats::{ConfigFormat, FormatDetector};
+pub use formats::{is_toml_path, parse_config, serialize_config, validate_toml_path};
 pub use github_provider::GitHubConfigurationProvider;
 pub use validation::{ConfigValidator, ValidationResult as ConfigValidationResult};
 

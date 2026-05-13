@@ -71,7 +71,6 @@ fn test_configuration_builder_presets() {
     let dev_builder = ConfigurationBuilder::for_development();
     assert_eq!(dev_builder.search_directories.len(), 2);
     assert!(dev_builder.create_missing);
-    assert_eq!(dev_builder.default_format, Some(ConfigFormat::Yaml));
 
     let prod_builder = ConfigurationBuilder::for_production();
     assert!(prod_builder.strict_validation);

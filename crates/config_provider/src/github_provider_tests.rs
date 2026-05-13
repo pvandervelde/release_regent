@@ -986,11 +986,6 @@ async fn make_github_provider(
     super::GitHubConfigurationProvider::new(inner, github)
 }
 
-/// Minimal valid YAML config content (overrides version_prefix for traceability).
-fn yaml_config(version_prefix: &str) -> String {
-    format!("core:\n  version_prefix: \"{version_prefix}\"\n")
-}
-
 /// Minimal valid TOML config content (overrides version_prefix for traceability).
 fn toml_config(version_prefix: &str) -> String {
     format!("[core]\nversion_prefix = \"{version_prefix}\"\n")
@@ -1080,59 +1075,8 @@ async fn test_fetch_repo_dotfile_absent_returns_ok_none() {
 }
 
 #[tokio::test]
-async fn test_fetch_repo_dotfile_yml_found_returns_parsed_config() {
+async fn test_fetch_repo_dotfile_toml_found_returns_parsed_config() {
     let gh = TestGitHub::new();
-    gh.add_file(
-        "owner",
-        "repo",
-        ".release-regent.yml",
-        "main",
-        &yaml_config("yml-prefix"),
-    )
-    .await;
-    let client = gh.clone();
-    let provider = make_github_provider(gh).await;
-
-    let result = provider
-        .fetch_repo_dotfile("owner", "repo", "main", &client)
-        .await
-        .expect("should succeed");
-
-    assert!(result.is_some());
-    assert_eq!(
-        result.unwrap().core.version_prefix,
-        "yml-prefix",
-        "content of .yml file must be reflected in the parsed config"
-    );
-}
-
-#[tokio::test]
-async fn test_fetch_repo_dotfile_yaml_found_when_yml_absent() {
-    let gh = TestGitHub::new();
-    // .yml absent, .yaml present
-    gh.add_file(
-        "owner",
-        "repo",
-        ".release-regent.yaml",
-        "main",
-        &yaml_config("yaml-prefix"),
-    )
-    .await;
-    let client = gh.clone();
-    let provider = make_github_provider(gh).await;
-
-    let result = provider
-        .fetch_repo_dotfile("owner", "repo", "main", &client)
-        .await
-        .expect("should succeed");
-
-    assert_eq!(result.unwrap().core.version_prefix, "yaml-prefix");
-}
-
-#[tokio::test]
-async fn test_fetch_repo_dotfile_toml_found_when_yml_and_yaml_absent() {
-    let gh = TestGitHub::new();
-    // .yml and .yaml absent, .toml present
     gh.add_file(
         "owner",
         "repo",
@@ -1149,40 +1093,11 @@ async fn test_fetch_repo_dotfile_toml_found_when_yml_and_yaml_absent() {
         .await
         .expect("should succeed");
 
-    assert_eq!(result.unwrap().core.version_prefix, "toml-prefix");
-}
-
-#[tokio::test]
-async fn test_fetch_repo_dotfile_yml_takes_precedence_over_yaml() {
-    let gh = TestGitHub::new();
-    gh.add_file(
-        "owner",
-        "repo",
-        ".release-regent.yml",
-        "main",
-        &yaml_config("from-yml"),
-    )
-    .await;
-    gh.add_file(
-        "owner",
-        "repo",
-        ".release-regent.yaml",
-        "main",
-        &yaml_config("from-yaml"),
-    )
-    .await;
-    let client = gh.clone();
-    let provider = make_github_provider(gh).await;
-
-    let result = provider
-        .fetch_repo_dotfile("owner", "repo", "main", &client)
-        .await
-        .expect("should succeed");
-
+    assert!(result.is_some());
     assert_eq!(
         result.unwrap().core.version_prefix,
-        "from-yml",
-        ".yml must be tried before .yaml"
+        "toml-prefix",
+        "content of .toml file must be reflected in the parsed config"
     );
 }
 
@@ -1192,9 +1107,9 @@ async fn test_fetch_repo_dotfile_invalid_content_returns_err_config() {
     gh.add_file(
         "owner",
         "repo",
-        ".release-regent.yml",
+        ".release-regent.toml",
         "main",
-        ": this is not valid yaml {{{{ ]]]]",
+        ": this is not valid toml {{{{ ]]]]",
     )
     .await;
     let client = gh.clone();
@@ -1214,7 +1129,7 @@ async fn test_fetch_repo_dotfile_invalid_content_returns_err_config() {
 #[tokio::test]
 async fn test_fetch_repo_dotfile_api_error_returns_err_github() {
     let gh = TestGitHub::new();
-    gh.add_file_error("owner", "repo", ".release-regent.yml", "main")
+    gh.add_file_error("owner", "repo", ".release-regent.toml", "main")
         .await;
     let client = gh.clone();
     let provider = make_github_provider(gh).await;
@@ -1237,9 +1152,9 @@ async fn test_fetch_repo_dotfile_cache_hit_within_ttl_skips_api() {
     gh.add_file(
         "owner",
         "repo",
-        ".release-regent.yml",
+        ".release-regent.toml",
         "main",
-        &yaml_config("v1"),
+        &toml_config("v1"),
     )
     .await;
     let client = gh.clone();
@@ -1305,63 +1220,6 @@ async fn test_load_global_policy_toml_found_returns_parsed_config() {
 }
 
 #[tokio::test]
-async fn test_load_global_policy_yml_found_when_toml_absent() {
-    let gh = TestGitHub::new();
-    // toml absent, yml present
-    gh.add_file(
-        "myorg",
-        ".release-regent",
-        "global.yml",
-        "main",
-        &yaml_config("global-yml"),
-    )
-    .await;
-    let client = gh.clone();
-    let provider = make_github_provider(gh).await;
-
-    let result = provider
-        .load_global_policy("myorg", &client)
-        .await
-        .expect("should succeed");
-
-    assert_eq!(result.unwrap().core.version_prefix, "global-yml");
-}
-
-#[tokio::test]
-async fn test_load_global_policy_toml_takes_precedence_over_yml() {
-    let gh = TestGitHub::new();
-    gh.add_file(
-        "myorg",
-        ".release-regent",
-        "global.toml",
-        "main",
-        &toml_config("from-toml"),
-    )
-    .await;
-    gh.add_file(
-        "myorg",
-        ".release-regent",
-        "global.yml",
-        "main",
-        &yaml_config("from-yml"),
-    )
-    .await;
-    let client = gh.clone();
-    let provider = make_github_provider(gh).await;
-
-    let result = provider
-        .load_global_policy("myorg", &client)
-        .await
-        .expect("should succeed");
-
-    assert_eq!(
-        result.unwrap().core.version_prefix,
-        "from-toml",
-        "TOML must be tried first for global policy"
-    );
-}
-
-#[tokio::test]
 async fn test_load_global_policy_invalid_content_returns_err_config() {
     let gh = TestGitHub::new();
     gh.add_file(
@@ -1384,11 +1242,9 @@ async fn test_load_global_policy_invalid_content_returns_err_config() {
 #[tokio::test]
 async fn test_load_global_policy_api_error_propagates() {
     let gh = TestGitHub::new();
-    // All three probe paths return an error.
-    for path in &["global.toml", "global.yml", "global.yaml"] {
-        gh.add_file_error("myorg", ".release-regent", path, "main")
-            .await;
-    }
+    // The single probe path returns an error.
+    gh.add_file_error("myorg", ".release-regent", "global.toml", "main")
+        .await;
     let client = gh.clone();
     let provider = make_github_provider(gh).await;
 
@@ -1467,40 +1323,6 @@ async fn test_load_group_policy_toml_found_returns_parsed_config() {
 }
 
 #[tokio::test]
-async fn test_load_group_policy_toml_takes_precedence_over_yml() {
-    let gh = TestGitHub::new();
-    gh.add_file(
-        "myorg",
-        ".release-regent",
-        "groups/backend.toml",
-        "main",
-        &toml_config("from-toml"),
-    )
-    .await;
-    gh.add_file(
-        "myorg",
-        ".release-regent",
-        "groups/backend.yml",
-        "main",
-        &yaml_config("from-yml"),
-    )
-    .await;
-    let client = gh.clone();
-    let provider = make_github_provider(gh).await;
-
-    let result = provider
-        .load_group_policy("myorg", "backend", &client)
-        .await
-        .expect("should succeed");
-
-    assert_eq!(
-        result.unwrap().core.version_prefix,
-        "from-toml",
-        "TOML must be tried first for group policy"
-    );
-}
-
-#[tokio::test]
 async fn test_load_group_policy_invalid_content_returns_err_config() {
     let gh = TestGitHub::new();
     gh.add_file(
@@ -1574,17 +1396,17 @@ use release_regent_core::traits::{configuration_provider::LoadOptions, Configura
 /// Minimal valid app-level config seeded onto disk.
 /// Uses a distinctive `version_prefix` so tests can verify the app level ran.
 fn app_config_yaml() -> &'static str {
-    "core:\n  version_prefix: \"app-v\"\n"
+    "[core]\nversion_prefix = \"app-v\"\n"
 }
 
 /// Create a `GitHubConfigurationProvider<TestGitHub>` backed by a real temp-dir
-/// baseline that contains a valid app-level `release-regent.yml`.
+/// baseline that contains a valid app-level `release-regent.toml`.
 async fn make_provider_with_app_config(
     github: TestGitHub,
 ) -> super::GitHubConfigurationProvider<TestGitHub> {
     use crate::file_provider::FileConfigurationProvider;
     let tmp = tempfile::tempdir().expect("tempdir");
-    std::fs::write(tmp.path().join("release-regent.yml"), app_config_yaml())
+    std::fs::write(tmp.path().join("release-regent.toml"), app_config_yaml())
         .expect("write app config");
     let inner = FileConfigurationProvider::new(tmp.path())
         .await
@@ -1617,10 +1439,9 @@ fn group_toml(version_prefix: &str) -> String {
     format!("[core]\nversion_prefix = \"{version_prefix}\"\n")
 }
 
-/// YAML content for a repo dotfile, setting only group declaration.
-/// `version_prefix` is set to the given value for easy assertion.
-fn repo_dotfile_yaml_with_group(version_prefix: &str, group: &str) -> String {
-    format!("group: \"{group}\"\ncore:\n  version_prefix: \"{version_prefix}\"\n")
+/// TOML content for a repo dotfile, declaring a group and setting version_prefix.
+fn repo_dotfile_toml_with_group(version_prefix: &str, group: &str) -> String {
+    format!("group = \"{group}\"\n[core]\nversion_prefix = \"{version_prefix}\"\n")
 }
 
 /// Seed the standard metadata repo global policy file.
@@ -1638,7 +1459,7 @@ async fn seed_group(gh: &TestGitHub, group_name: &str, content: &str) {
 
 /// Seed the repo dotfile in the target repository.
 async fn seed_dotfile(gh: &TestGitHub, content: &str) {
-    gh.add_file("myorg", "myrepo", ".release-regent.yml", "main", content)
+    gh.add_file("myorg", "myrepo", ".release-regent.toml", "main", content)
         .await;
 }
 
@@ -1655,9 +1476,9 @@ async fn test_get_merged_config_no_metadata_access_uses_app_plus_repo_dotfile() 
     gh.add_file(
         "myorg",
         "myrepo",
-        ".release-regent.yml",
+        ".release-regent.toml",
         "main",
-        &yaml_config("repo-v"),
+        &toml_config("repo-v"),
     )
     .await;
     let provider = make_provider_with_app_config(gh).await;
@@ -1697,7 +1518,7 @@ async fn test_get_merged_config_global_only_no_repo_dotfile() {
 async fn test_get_merged_config_no_global_no_group_repo_dotfile_applies() {
     let gh = TestGitHub::new();
     // No global policy → Ok(None).
-    seed_dotfile(&gh, &yaml_config("repo-v")).await;
+    seed_dotfile(&gh, &toml_config("repo-v")).await;
     let provider = make_provider_with_app_config(gh).await;
 
     let result = provider
@@ -1715,7 +1536,7 @@ async fn test_get_merged_config_full_five_level_stack_repo_dotfile_wins() {
     let gh = TestGitHub::new();
     seed_global(&gh, &global_toml("global-v")).await;
     seed_group(&gh, "mygroup", &group_toml("group-v")).await;
-    seed_dotfile(&gh, &repo_dotfile_yaml_with_group("repo-v", "mygroup")).await;
+    seed_dotfile(&gh, &repo_dotfile_toml_with_group("repo-v", "mygroup")).await;
     let provider = make_provider_with_app_config(gh).await;
 
     let result = provider
@@ -1736,7 +1557,7 @@ async fn test_get_merged_config_group_declared_but_file_absent_warns_and_skips()
     let gh = TestGitHub::new();
     seed_global(&gh, &global_toml("global-v")).await;
     // Group "missing" has no file seeded.
-    seed_dotfile(&gh, &repo_dotfile_yaml_with_group("repo-v", "missing")).await;
+    seed_dotfile(&gh, &repo_dotfile_toml_with_group("repo-v", "missing")).await;
     let provider = make_provider_with_app_config(gh).await;
 
     let result = provider
@@ -1761,13 +1582,11 @@ async fn test_get_merged_config_group_declared_but_file_absent_warns_and_skips()
 #[traced_test]
 async fn test_get_merged_config_api_error_on_global_uses_app_plus_repo_dotfile() {
     let gh = TestGitHub::new();
-    // All three global probe paths return an API error.
-    for path in &["global.toml", "global.yml", "global.yaml"] {
-        gh.add_file_error("myorg", ".release-regent", path, "main")
-            .await;
-    }
+    // All three global probe paths return an API error → one probe path.
+    gh.add_file_error("myorg", ".release-regent", "global.toml", "main")
+        .await;
     // Repo dotfile fetched via meta client (same state due to scoped_to clone).
-    seed_dotfile(&gh, &yaml_config("repo-v")).await;
+    seed_dotfile(&gh, &toml_config("repo-v")).await;
     let provider = make_provider_with_app_config(gh).await;
 
     let result = provider
@@ -1802,7 +1621,7 @@ async fn test_get_merged_config_global_locks_field_group_cannot_override() {
     seed_group(&gh, "mygroup", group_toml_content).await;
 
     // Repo dotfile declares group; no draft setting (defaults to false).
-    seed_dotfile(&gh, &repo_dotfile_yaml_with_group("repo-v", "mygroup")).await;
+    seed_dotfile(&gh, &repo_dotfile_toml_with_group("repo-v", "mygroup")).await;
     let provider = make_provider_with_app_config(gh).await;
 
     let result = provider
@@ -1830,9 +1649,9 @@ async fn test_get_merged_config_group_locks_field_repo_dotfile_cannot_override()
     let group_content = "locked_fields = [\"releases.draft\"]\n[releases]\ndraft = false\n";
     seed_group(&gh, "mygroup", group_content).await;
 
-    // Repo dotfile: tries to set draft = true (YAML format, file is .release-regent.yml).
+    // Repo dotfile: tries to set draft = true (TOML format, file is .release-regent.toml).
     let repo_content =
-        "group: \"mygroup\"\nreleases:\n  draft: true\ncore:\n  version_prefix: \"repo-v\"\n";
+        "group = \"mygroup\"\n[releases]\ndraft = true\n[core]\nversion_prefix = \"repo-v\"\n";
     seed_dotfile(&gh, repo_content).await;
 
     let provider = make_provider_with_app_config(gh).await;
@@ -1856,9 +1675,9 @@ async fn test_get_merged_config_locked_fields_in_repo_dotfile_are_cleared() {
     let gh = TestGitHub::new();
     seed_global(&gh, &global_toml("global-v")).await;
 
-    // YAML format (file is .release-regent.yml).
+    // TOML format (file is .release-regent.toml).
     let repo_content =
-        "locked_fields:\n  - \"versioning.strategy\"\ncore:\n  version_prefix: \"repo-v\"\n";
+        "locked_fields = [\"versioning.strategy\"]\n[core]\nversion_prefix = \"repo-v\"\n";
     seed_dotfile(&gh, repo_content).await;
 
     let provider = make_provider_with_app_config(gh).await;
@@ -1892,7 +1711,7 @@ async fn test_get_merged_config_non_lockable_path_in_global_locked_fields_is_ign
         "locked_fields = [\"release_pr.title_template\"]\n[core]\nversion_prefix = \"global-v\"\n";
     seed_global(&gh, global_content).await;
 
-    seed_dotfile(&gh, &yaml_config("repo-v")).await;
+    seed_dotfile(&gh, &toml_config("repo-v")).await;
 
     let provider = make_provider_with_app_config(gh).await;
 
@@ -1949,7 +1768,7 @@ async fn test_get_merged_config_group_policy_group_field_is_warned_and_stripped(
     // Group file contains `group = "other"` which is invalid at this level.
     let group_content = "group = \"other\"\n[core]\nversion_prefix = \"group-v\"\n";
     seed_group(&gh, "mygroup", group_content).await;
-    seed_dotfile(&gh, &repo_dotfile_yaml_with_group("repo-v", "mygroup")).await;
+    seed_dotfile(&gh, &repo_dotfile_toml_with_group("repo-v", "mygroup")).await;
     let provider = make_provider_with_app_config(gh).await;
 
     let result = provider
@@ -1980,7 +1799,7 @@ async fn test_get_merged_config_metadata_fields_stripped_from_final_result() {
     // Dotfile declares a group (so group is non-None during the pipeline).
     seed_dotfile(
         &gh,
-        &repo_dotfile_yaml_with_group("repo-v", "unresolved-group"),
+        &repo_dotfile_toml_with_group("repo-v", "unresolved-group"),
     )
     .await;
     let provider = make_provider_with_app_config(gh).await;
@@ -2035,7 +1854,7 @@ async fn test_get_merged_config_group_policy_invalid_returns_err_config() {
         "definitely not toml {{",
     )
     .await;
-    seed_dotfile(&gh, &repo_dotfile_yaml_with_group("repo-v", "mygroup")).await;
+    seed_dotfile(&gh, &repo_dotfile_toml_with_group("repo-v", "mygroup")).await;
     let provider = make_provider_with_app_config(gh).await;
 
     let result = provider
@@ -2053,9 +1872,9 @@ async fn test_get_merged_config_repo_dotfile_invalid_returns_err_config() {
     gh.add_file(
         "myorg",
         "myrepo",
-        ".release-regent.yml",
+        ".release-regent.toml",
         "main",
-        ": this is not valid yaml {{{{",
+        ": this is not valid toml {{{{",
     )
     .await;
     let provider = make_provider_with_app_config(gh).await;
@@ -2104,7 +1923,7 @@ async fn test_get_merged_config_group_cache_hit_skips_api_on_second_call() {
     let gh = TestGitHub::new();
     seed_global(&gh, &global_toml("global-v")).await;
     seed_group(&gh, "mygroup", &group_toml("group-v")).await;
-    seed_dotfile(&gh, &repo_dotfile_yaml_with_group("repo-v", "mygroup")).await;
+    seed_dotfile(&gh, &repo_dotfile_toml_with_group("repo-v", "mygroup")).await;
     let provider = make_provider_with_app_config(gh.clone()).await;
 
     let first = provider
@@ -2127,7 +1946,7 @@ async fn test_get_merged_config_group_cache_hit_skips_api_on_second_call() {
 async fn test_get_merged_config_repo_dotfile_cache_hit_skips_api_on_second_call() {
     let gh = TestGitHub::new();
     seed_global(&gh, &global_toml("global-v")).await;
-    seed_dotfile(&gh, &yaml_config("repo-v")).await;
+    seed_dotfile(&gh, &toml_config("repo-v")).await;
     let provider = make_provider_with_app_config(gh.clone()).await;
 
     let first = provider
@@ -2177,7 +1996,7 @@ async fn test_get_merged_config_cli_mode_delegates_to_file_provider() {
 #[tokio::test]
 async fn test_load_repository_config_server_mode_returns_repo_dotfile_wrapped() {
     let gh = TestGitHub::new();
-    seed_dotfile(&gh, &yaml_config("repo-v")).await;
+    seed_dotfile(&gh, &toml_config("repo-v")).await;
     let provider = make_provider_with_app_config(gh).await;
 
     let result = provider
@@ -2234,14 +2053,14 @@ async fn test_load_repository_config_cli_mode_delegates_to_inner() {
 use release_regent_testing::mocks::MockGitHubOperations;
 
 /// Create a `GitHubConfigurationProvider<MockGitHubOperations>` backed by a real
-/// temp-dir baseline containing a valid app-level `release-regent.yml` (identical
-/// to `make_provider_with_app_config` but for `MockGitHubOperations`).
+/// temp-dir baseline containing a valid app-level `release-regent.toml`
+/// (identical to `make_provider_with_app_config` but for `MockGitHubOperations`).
 async fn make_provider_with_mock(
     mock: MockGitHubOperations,
 ) -> super::GitHubConfigurationProvider<MockGitHubOperations> {
     use crate::file_provider::FileConfigurationProvider;
     let tmp = tempfile::tempdir().expect("tempdir");
-    std::fs::write(tmp.path().join("release-regent.yml"), app_config_yaml())
+    std::fs::write(tmp.path().join("release-regent.toml"), app_config_yaml())
         .expect("write app config");
     let inner = FileConfigurationProvider::new(tmp.path())
         .await
@@ -2267,7 +2086,7 @@ async fn seed_mock_dotfile(mock: &MockGitHubOperations, content: &str) {
     mock.with_file_content(
         "myorg",
         "myrepo",
-        ".release-regent.yml",
+        ".release-regent.toml",
         "main",
         Some(content.to_string()),
     )
@@ -2287,7 +2106,7 @@ async fn test_g5_global_locks_strategy_prevents_repo_override() {
         "locked_fields = [\"versioning.strategy\"]\n[versioning]\nstrategy = \"conventional\"\n";
     seed_mock_global(&mock, global_content).await;
     // Repo dotfile tries to switch to the `external` strategy.
-    let dotfile_content = "versioning:\n  strategy: !external\n    command: \"./my-version.sh\"\n    env_vars: {}\n    timeout_ms: 30000\n";
+    let dotfile_content = "[versioning]\nstrategy = { external = { command = \"./my-version.sh\", env_vars = {}, timeout_ms = 30000 } }\n";
     seed_mock_dotfile(&mock, dotfile_content).await;
     let provider = make_provider_with_mock(mock).await;
 
@@ -2318,7 +2137,7 @@ async fn test_g5_metadata_absent_uses_app_and_repo_dotfile_no_global_api_call() 
         "get_installation_id_for_repo",
         "App not installed on metadata repo",
     );
-    seed_mock_dotfile(&mock, &yaml_config("repo-v")).await;
+    seed_mock_dotfile(&mock, &toml_config("repo-v")).await;
     let provider = make_provider_with_mock(mock.clone()).await;
 
     let result = provider
@@ -2394,7 +2213,7 @@ async fn test_g5_absent_repo_dotfile_uses_global_defaults() {
 ///
 /// Expected: `get_merged_config` delegates entirely to `FileConfigurationProvider`
 /// without making any GitHub API calls.  The result reflects the app-level config
-/// (the temp-dir `release-regent.yml` seeded by `make_provider_with_mock`).
+/// (the temp-dir `release-regent.toml` seeded by `make_provider_with_mock`).
 #[tokio::test]
 async fn test_g5_cli_mode_delegates_to_file_provider_no_github_calls() {
     let mock = MockGitHubOperations::new();

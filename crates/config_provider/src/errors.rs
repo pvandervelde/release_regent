@@ -142,17 +142,6 @@ impl From<std::io::Error> for ConfigProviderError {
     }
 }
 
-impl From<serde_yaml::Error> for ConfigProviderError {
-    fn from(error: serde_yaml::Error) -> Self {
-        let message = format!("YAML parsing error: {error}");
-        Self::ParseError {
-            path: PathBuf::new(), // Will be set by caller if available
-            reason: message,
-            source: Some(Box::new(error)),
-        }
-    }
-}
-
 impl From<toml::de::Error> for ConfigProviderError {
     fn from(error: toml::de::Error) -> Self {
         let message = format!("TOML parsing error: {error}");
