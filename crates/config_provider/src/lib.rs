@@ -1,12 +1,12 @@
 //! # Configuration Provider Crate
 //!
 //! This crate provides file-based configuration loading and management for Release Regent.
-//! It implements the `ConfigurationProvider` trait with support for YAML and TOML formats,
+//! It implements the `ConfigurationProvider` trait with support for TOML configuration files,
 //! comprehensive validation, and a builder pattern for complex setups.
 //!
 //! ## Features
 //!
-//! - File-based configuration loading (YAML and TOML)
+//! - File-based configuration loading (TOML only)
 //! - Configuration validation with JSON Schema
 //! - Builder pattern for complex configuration setups
 //! - Comprehensive error handling
@@ -31,7 +31,7 @@
 //!
 //! // Use builder for complex setups
 //! let config = ConfigurationBuilder::new()
-//!     .with_global_config_path("/path/to/global.yaml")
+//!     .with_global_config_path("/path/to/global.toml")
 //!     .with_repository_config_path("/path/to/repo.toml")
 //!     .build()
 //!     .await?;
