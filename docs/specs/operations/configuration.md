@@ -26,8 +26,8 @@ Release Regent uses a hierarchical configuration system that merges settings fro
 
 **Repository-Specific Configuration**:
 
-- File: `.release-regent.yml` in repository root
-- GitHub: Configuration stored in `.github/release-regent.yml`
+- File: `.release-regent.toml` in repository root
+- GitHub: Configuration stored in `.github/release-regent.toml`
 - Fallback: No repository config means use application defaults
 
 ## Configuration Schema
@@ -588,35 +588,34 @@ logging:
 
 **Disable notifications for a specific repository**:
 
-```yaml
-# .release-regent.yml
-notifications:
-  strategy: "none"
+```toml
+# .release-regent.toml
+[notifications]
+strategy = "none"
 ```
 
 **Use external versioning for Rust crates**:
 
-```yaml
-# .release-regent.yml
-versioning:
-  strategy: "external"
-  external:
-    command: "./scripts/cargo-version.sh"
-    timeout_ms: 10000
+```toml
+# .release-regent.toml
+[versioning.strategy.external]
+command = "./scripts/cargo-version.sh"
+timeout_ms = 10000
 ```
 
 **Custom templates for documentation repositories**:
 
-```yaml
-# .release-regent.yml
-release_pr:
-  title_template: "docs(release): ${version} - Update documentation"
-  body_template: |
-    ## Documentation Release ${version}
+```toml
+# .release-regent.toml
+[release_pr]
+title_template = "docs(release): ${version} - Update documentation"
+body_template = """
+## Documentation Release ${version}
 
-    ${changelog}
+${changelog}
 
-    This release updates the documentation with the following changes.
+This release updates the documentation with the following changes.
+"""
 ```
 
 ## Environment Variable Support
@@ -657,8 +656,8 @@ pub async fn load_configuration(
 
     // 3. Look for repository-specific configuration
     let repo_config_paths = [
-        repo_path.join(".release-regent.yml"),
-        repo_path.join(".github/release-regent.yml"),
+        repo_path.join(".release-regent.toml"),
+        repo_path.join(".github/release-regent.toml"),
     ];
 
     for repo_config_path in &repo_config_paths {
@@ -698,7 +697,7 @@ When configuration validation fails, provide clear, actionable error messages:
    Unknown template variable: release_version
    → Use ${version} instead of ${release_version}
 
-Configuration file: /path/to/.release-regent.yml
+Configuration file: /path/to/.release-regent.toml
 ```
 
 This comprehensive configuration reference addresses all the validation and template concerns raised in the spec feedback while providing practical examples and clear error handling guidance.

@@ -35,6 +35,14 @@ pub enum ConfigProviderError {
         source: Option<Box<dyn std::error::Error + Send + Sync>>,
     },
 
+    /// Configuration serialization errors
+    #[error("Failed to serialize configuration: {reason}")]
+    SerializeError {
+        reason: String,
+        #[source]
+        source: Option<Box<dyn std::error::Error + Send + Sync>>,
+    },
+
     /// Configuration validation errors
     #[error("Configuration validation failed for {path}: {errors:?}")]
     ValidationError { path: PathBuf, errors: Vec<String> },
@@ -114,6 +122,17 @@ impl ConfigProviderError {
         }
     }
 
+    /// Create a new serialize error with source
+    pub fn serialize_error_with_source(
+        reason: impl Into<String>,
+        source: impl std::error::Error + Send + Sync + 'static,
+    ) -> Self {
+        Self::SerializeError {
+            reason: reason.into(),
+            source: Some(Box::new(source)),
+        }
+    }
+
     /// Create a new validation error
     #[must_use]
     pub fn validation_error(path: PathBuf, errors: Vec<String>) -> Self {
@@ -147,6 +166,16 @@ impl From<toml::de::Error> for ConfigProviderError {
         let message = format!("TOML parsing error: {error}");
         Self::ParseError {
             path: PathBuf::new(), // Will be set by caller if available
+            reason: message,
+            source: Some(Box::new(error)),
+        }
+    }
+}
+
+impl From<toml::ser::Error> for ConfigProviderError {
+    fn from(error: toml::ser::Error) -> Self {
+        let message = format!("TOML serialization error: {error}");
+        Self::SerializeError {
             reason: message,
             source: Some(Box::new(error)),
         }

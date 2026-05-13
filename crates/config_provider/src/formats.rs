@@ -25,12 +25,11 @@ pub fn parse_config(content: &str) -> ConfigProviderResult<ReleaseRegentConfig> 
 /// Serialize a [`ReleaseRegentConfig`] to a TOML string.
 ///
 /// # Errors
-/// - `ConfigProviderError::ParseError` — configuration could not be serialized
+/// - `ConfigProviderError::SerializeError` — configuration could not be serialized
 #[allow(clippy::result_large_err)] // ConfigProviderError is intentionally large
 pub fn serialize_config(config: &ReleaseRegentConfig) -> ConfigProviderResult<String> {
     toml::to_string_pretty(config).map_err(|e| {
-        ConfigProviderError::parse_error_with_source(
-            std::path::PathBuf::new(),
+        ConfigProviderError::serialize_error_with_source(
             format!("Failed to serialize to TOML: {e}"),
             e,
         )

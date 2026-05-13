@@ -125,29 +125,6 @@ impl ConfigLocks {
 // Merge helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Apply the app-level config as the Level 2 baseline.
-///
-/// All fields from `incoming` replace the corresponding fields in `base`. The
-/// `_base` parameter is accepted for symmetry with [`merge_config_with_locks`]
-/// but is always discarded — each config level is a complete parsed document
-/// whose unspecified fields carry serde defaults, so the caller must supply the
-/// correct `base` before the first merge (see `get_merged_config`).
-///
-/// # Spec reference
-///
-/// `docs/specs/interfaces/github_operations_additions.md` §7
-#[must_use]
-fn apply_app_level_config(
-    _base: ReleaseRegentConfig,
-    incoming: ReleaseRegentConfig,
-) -> ReleaseRegentConfig {
-    // All fields come from `incoming`; base is replaced entirely.
-    // This is intentional: each config level is a complete parsed document whose
-    // un-specified fields carry their defaults — the caller must start from the
-    // correct baseline before calling this function (see get_merged_config).
-    incoming
-}
-
 /// Merge `incoming` into `base`, keeping locked fields from `base` unchanged.
 ///
 /// For each of the ten lockable fields (see [`LOCKABLE_FIELDS`]):
@@ -822,15 +799,11 @@ where
         let installation_id = options.installation_id.unwrap();
         let default_branch = options.default_branch.as_deref().unwrap_or("main");
 
-        // Level 1: Built-in defaults.
-        let mut result = ReleaseRegentConfig::default();
+        // Level 1 + 2: Start from app-level config (local disk, always present).
+        // Each config level is a complete parsed document whose unspecified fields carry
+        // serde defaults, so the app-level config replaces built-in defaults entirely.
+        let mut result = self.inner.load_global_config(options.clone()).await?;
         let mut locks = ConfigLocks::default();
-
-        // Level 2: App-level (local disk, always present).
-        result = apply_app_level_config(
-            result,
-            self.inner.load_global_config(options.clone()).await?,
-        );
 
         // Levels 3, 4, 5: Metadata repo path vs. no-metadata fallback.
         match self.resolve_metadata_installation(owner).await {

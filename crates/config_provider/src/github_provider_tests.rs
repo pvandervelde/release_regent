@@ -1,4 +1,4 @@
-use super::{apply_app_level_config, merge_config_with_locks, ConfigLocks, LOCKABLE_FIELDS};
+use super::{merge_config_with_locks, ConfigLocks, LOCKABLE_FIELDS};
 use release_regent_core::config::{
     BranchConfig, CoreConfig, ErrorHandlingConfig, ReleasesConfig, VersioningConfig,
     VersioningStrategy,
@@ -178,71 +178,6 @@ fn test_config_locks_is_locked_returns_false_for_absent_path() {
 fn test_config_locks_is_locked_returns_false_on_empty_set() {
     let locks = ConfigLocks::default();
     assert!(!locks.is_locked("versioning.strategy"));
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// apply_app_level_config — unconditional app-level baseline application
-// ─────────────────────────────────────────────────────────────────────────────
-
-#[test]
-fn test_apply_app_level_config_takes_all_incoming_fields_unconditionally() {
-    let base = make_config(
-        VersioningStrategy::Conventional,
-        true,
-        false,
-        false,
-        true,
-        "main",
-        "v",
-        5,
-        2.0,
-        1000,
-    );
-    let incoming = make_config(
-        VersioningStrategy::Conventional,
-        false, // allow_override changed
-        true,  // draft changed
-        true,  // prerelease changed
-        false, // generate_notes changed
-        "master",
-        "release-",
-        3,
-        1.5,
-        500,
-    );
-
-    let result = apply_app_level_config(base, incoming.clone());
-
-    assert!(!result.versioning.allow_override);
-    assert!(result.releases.draft);
-    assert!(result.releases.prerelease);
-    assert!(!result.releases.generate_notes);
-    assert_eq!(result.core.branches.main, "master");
-    assert_eq!(result.core.version_prefix, "release-");
-    assert_eq!(result.error_handling.max_retries, 3);
-    assert_eq!(result.error_handling.initial_delay_ms, 500);
-}
-
-#[test]
-fn test_apply_app_level_config_ignores_base_when_incoming_differs() {
-    // When there are no locks the base is always discarded.
-    let base = make_config(
-        VersioningStrategy::Conventional,
-        true,
-        false,
-        false,
-        true,
-        "main",
-        "v",
-        5,
-        2.0,
-        1000,
-    );
-    let mut incoming = default_config();
-    incoming.core.version_prefix = "nightly-".to_string();
-
-    let result = apply_app_level_config(base, incoming);
-    assert_eq!(result.core.version_prefix, "nightly-");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1127,6 +1062,49 @@ async fn test_fetch_repo_dotfile_invalid_content_returns_err_config() {
 }
 
 #[tokio::test]
+async fn test_fetch_repo_dotfile_parse_error_evicts_cache_so_corrected_file_is_re_fetched() {
+    let gh = TestGitHub::new();
+    gh.add_file(
+        "owner",
+        "repo",
+        ".release-regent.toml",
+        "main",
+        ": this is not valid toml {{{{ ]]]]",
+    )
+    .await;
+    let client = gh.clone();
+    let provider = make_github_provider(gh).await;
+
+    // First call: parse error → cache entry must not be populated.
+    let first = provider
+        .fetch_repo_dotfile("owner", "repo", "main", &client)
+        .await;
+    assert!(first.is_err(), "invalid TOML must return an error");
+
+    // Replace the mock with valid content (simulates an operator fixing the file).
+    client
+        .add_file(
+            "owner",
+            "repo",
+            ".release-regent.toml",
+            "main",
+            &toml_config("fixed"),
+        )
+        .await;
+
+    // Second call must reach the API (no stale cache entry) and succeed.
+    let second = provider
+        .fetch_repo_dotfile("owner", "repo", "main", &client)
+        .await
+        .expect("second call with corrected content must succeed");
+    assert_eq!(
+        second.as_ref().map(|c| c.core.version_prefix.as_str()),
+        Some("fixed"),
+        "after a parse error the cache must be evicted so the corrected file is re-fetched"
+    );
+}
+
+#[tokio::test]
 async fn test_fetch_repo_dotfile_api_error_returns_err_github() {
     let gh = TestGitHub::new();
     gh.add_file_error("owner", "repo", ".release-regent.toml", "main")
@@ -1284,6 +1262,47 @@ async fn test_load_global_policy_cache_hit_within_ttl_skips_api() {
     assert_eq!(result.unwrap().core.version_prefix, "cached");
 }
 
+#[tokio::test]
+async fn test_load_global_policy_parse_error_evicts_cache_so_corrected_file_is_re_fetched() {
+    let gh = TestGitHub::new();
+    gh.add_file(
+        "myorg",
+        ".release-regent",
+        "global.toml",
+        "main",
+        "not valid toml [[[",
+    )
+    .await;
+    let client = gh.clone();
+    let provider = make_github_provider(gh).await;
+
+    // First call: parse error → cache entry must not be populated.
+    let first = provider.load_global_policy("myorg", &client).await;
+    assert!(first.is_err(), "invalid TOML must return an error");
+
+    // Replace the mock with valid content (simulates an operator fixing the file).
+    client
+        .add_file(
+            "myorg",
+            ".release-regent",
+            "global.toml",
+            "main",
+            &toml_config("fixed-global"),
+        )
+        .await;
+
+    // Second call must reach the API (no stale cache entry) and succeed.
+    let second = provider
+        .load_global_policy("myorg", &client)
+        .await
+        .expect("second call with corrected content must succeed");
+    assert_eq!(
+        second.as_ref().map(|c| c.core.version_prefix.as_str()),
+        Some("fixed-global"),
+        "after a parse error the cache must be evicted so the corrected file is re-fetched"
+    );
+}
+
 // ── load_group_policy ─────────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -1342,6 +1361,49 @@ async fn test_load_group_policy_invalid_content_returns_err_config() {
 
     assert!(result.is_err());
     assert!(result.unwrap_err().is_config_error());
+}
+
+#[tokio::test]
+async fn test_load_group_policy_parse_error_evicts_cache_so_corrected_file_is_re_fetched() {
+    let gh = TestGitHub::new();
+    gh.add_file(
+        "myorg",
+        ".release-regent",
+        "groups/backend.toml",
+        "main",
+        "definitely not toml {{{{",
+    )
+    .await;
+    let client = gh.clone();
+    let provider = make_github_provider(gh).await;
+
+    // First call: parse error → cache entry must not be populated.
+    let first = provider
+        .load_group_policy("myorg", "backend", &client)
+        .await;
+    assert!(first.is_err(), "invalid TOML must return an error");
+
+    // Replace the mock with valid content (simulates an operator fixing the file).
+    client
+        .add_file(
+            "myorg",
+            ".release-regent",
+            "groups/backend.toml",
+            "main",
+            &toml_config("fixed-backend"),
+        )
+        .await;
+
+    // Second call must reach the API (no stale cache entry) and succeed.
+    let second = provider
+        .load_group_policy("myorg", "backend", &client)
+        .await
+        .expect("second call with corrected content must succeed");
+    assert_eq!(
+        second.as_ref().map(|c| c.core.version_prefix.as_str()),
+        Some("fixed-backend"),
+        "after a parse error the cache must be evicted so the corrected file is re-fetched"
+    );
 }
 
 #[tokio::test]

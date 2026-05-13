@@ -181,10 +181,7 @@ impl FileConfigurationProvider {
             .map_err(|e| ConfigProviderError::io_error("Failed to read configuration file", e))?;
 
         // Validate extension and parse
-        validate_toml_path(path).map_err(|e| ConfigProviderError::InvalidFormat {
-            path: path.to_path_buf(),
-            reason: format!("Could not detect format: {e}"),
-        })?;
+        validate_toml_path(path)?;
 
         let mut config = parse_config(&content).map_err(|mut e| {
             // Update error with correct path if it's empty
