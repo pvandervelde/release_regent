@@ -216,7 +216,7 @@ rr generate [OPTIONS]
 | Kind | Files created |
 | :--- | :--- |
 | `webhook` | `sample-webhook.json` |
-| `config` | `sample-config.yml` |
+| `config` | `sample-config.toml` |
 | `all` | Both of the above |
 
 ### Examples

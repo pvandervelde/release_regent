@@ -569,7 +569,7 @@ policy applies.
 repository so that a corrected dotfile is picked up on the very next event.
 
 *Preconditions*: A valid cache entry exists for `myorg/my-repo` (from a previous event).
-Then the dotfile is changed to contain invalid YAML.
+Then the dotfile is changed to contain invalid TOML.
 
 *Sequence*: A new event arrives after the TTL has expired and the invalidated file is
 fetched.
@@ -577,7 +577,7 @@ fetched.
 *Expected*:
 
 - The stale cache entry is not used after TTL expiry.
-- The new fetch sees the invalid YAML.
+- The new fetch sees the invalid TOML.
 - The event fails with `CoreError::Config`.
 - The cache entry for `myorg/my-repo` is cleared (not updated with the invalid result).
 - A subsequent event, once the TOML is fixed, fetches and caches the corrected config.
@@ -609,7 +609,7 @@ re-fetch the dotfile via the GitHub API.
 
 **BA-45**: When `LoadOptions.installation_id` is `None` (CLI mode), `load_repository_config`
 must not make any GitHub API call. It must fall back to searching `CONFIG_DIR` for a
-local file named `{owner}-{repo}.yaml` (or `.yml` / `.toml`).
+local file named `{owner}-{repo}.toml`.
 
 *Preconditions*: CLI invokes `get_merged_config("myorg", "my-repo", LoadOptions::default())`;
 no local file exists in `CONFIG_DIR`.
@@ -681,7 +681,7 @@ settings applied to all repositories in the org that do not have conflicting loc
 *Expected for `myorg/repo-a`*: effective strategy is `external` (global policy applied).
 *Expected for `myorg/repo-b`*: effective strategy is `conventional` (repo overrides unlocked field).
 
-**BA-51**: A valid `global.toml` that cannot be parsed (invalid TOML/YAML) must hard-fail
+**BA-51**: A valid `global.toml` that cannot be parsed (invalid TOML) must hard-fail
 all events for repositories in that org.
 
 *Preconditions*: `myorg/.release-regent/global.toml` contains a syntax error.

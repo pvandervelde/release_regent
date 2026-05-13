@@ -1457,7 +1457,7 @@ use release_regent_core::traits::{configuration_provider::LoadOptions, Configura
 
 /// Minimal valid app-level config seeded onto disk.
 /// Uses a distinctive `version_prefix` so tests can verify the app level ran.
-fn app_config_yaml() -> &'static str {
+fn app_config_toml() -> &'static str {
     "[core]\nversion_prefix = \"app-v\"\n"
 }
 
@@ -1468,7 +1468,7 @@ async fn make_provider_with_app_config(
 ) -> super::GitHubConfigurationProvider<TestGitHub> {
     use crate::file_provider::FileConfigurationProvider;
     let tmp = tempfile::tempdir().expect("tempdir");
-    std::fs::write(tmp.path().join("release-regent.toml"), app_config_yaml())
+    std::fs::write(tmp.path().join("release-regent.toml"), app_config_toml())
         .expect("write app config");
     let inner = FileConfigurationProvider::new(tmp.path())
         .await
@@ -2122,7 +2122,7 @@ async fn make_provider_with_mock(
 ) -> super::GitHubConfigurationProvider<MockGitHubOperations> {
     use crate::file_provider::FileConfigurationProvider;
     let tmp = tempfile::tempdir().expect("tempdir");
-    std::fs::write(tmp.path().join("release-regent.toml"), app_config_yaml())
+    std::fs::write(tmp.path().join("release-regent.toml"), app_config_toml())
         .expect("write app config");
     let inner = FileConfigurationProvider::new(tmp.path())
         .await
