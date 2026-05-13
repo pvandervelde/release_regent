@@ -28,7 +28,11 @@ type GetFileContentCalls = Arc<RwLock<Vec<(String, String, String, String)>>>;
 type GetFileContentResponses =
     Arc<RwLock<HashMap<(String, String, String, String), Option<String>>>>;
 type BatchCommitFilesCalls = Arc<RwLock<Vec<(String, String, String, Vec<String>, String)>>>;
+type BatchCommitFilesRebasedCalls =
+    Arc<RwLock<Vec<(String, String, String, Vec<String>, String, String)>>>;
 type UpsertFileCalls = Arc<RwLock<Vec<(String, String, String, String, String, String)>>>;
+
+/// Mock implementation of `GitHubOperations` trait
 
 /// Mock implementation of `GitHubOperations` trait
 ///
@@ -97,6 +101,8 @@ pub struct MockGitHubOperations {
     get_file_content_responses: GetFileContentResponses,
     /// Recorded `batch_commit_files` calls: (owner, repo, branch, file_paths, message).
     batch_commit_files_calls: BatchCommitFilesCalls,
+    /// Recorded `batch_commit_files_rebased` calls: (owner, repo, branch, file_paths, message, parent_sha).
+    batch_commit_files_rebased_calls: BatchCommitFilesRebasedCalls,
     /// Issue comments keyed `"owner/repo/issue_number"`. Used by
     /// `list_issue_comments` (returns the vec) and `update_issue_comment`
     /// (replaces the body of the matching comment by id).
@@ -158,6 +164,7 @@ impl MockGitHubOperations {
             get_file_content_calls: Arc::new(RwLock::new(Vec::new())),
             get_file_content_responses: Arc::new(RwLock::new(HashMap::new())),
             batch_commit_files_calls: Arc::new(RwLock::new(Vec::new())),
+            batch_commit_files_rebased_calls: Arc::new(RwLock::new(Vec::new())),
             issue_comments: Arc::new(RwLock::new(HashMap::new())),
             list_issue_comments_calls: Arc::new(RwLock::new(Vec::new())),
             update_issue_comment_calls: Arc::new(RwLock::new(Vec::new())),
@@ -205,6 +212,15 @@ impl MockGitHubOperations {
         &self,
     ) -> Vec<(String, String, String, Vec<String>, String)> {
         self.batch_commit_files_calls.read().await.clone()
+    }
+
+    /// Return all recorded `batch_commit_files_rebased` calls.
+    ///
+    /// Each element is `(owner, repo, branch, file_paths, message, parent_sha)`.
+    pub async fn batch_commit_files_rebased_calls(
+        &self,
+    ) -> Vec<(String, String, String, Vec<String>, String, String)> {
+        self.batch_commit_files_rebased_calls.read().await.clone()
     }
 
     /// Record a method call for tracking
@@ -267,6 +283,7 @@ impl MockGitHubOperations {
             get_file_content_calls: Arc::new(RwLock::new(Vec::new())),
             get_file_content_responses: Arc::new(RwLock::new(HashMap::new())),
             batch_commit_files_calls: Arc::new(RwLock::new(Vec::new())),
+            batch_commit_files_rebased_calls: Arc::new(RwLock::new(Vec::new())),
             issue_comments: Arc::new(RwLock::new(HashMap::new())),
             list_issue_comments_calls: Arc::new(RwLock::new(Vec::new())),
             update_issue_comment_calls: Arc::new(RwLock::new(Vec::new())),
@@ -510,6 +527,7 @@ impl Clone for MockGitHubOperations {
             get_file_content_calls: Arc::clone(&self.get_file_content_calls),
             get_file_content_responses: Arc::clone(&self.get_file_content_responses),
             batch_commit_files_calls: Arc::clone(&self.batch_commit_files_calls),
+            batch_commit_files_rebased_calls: Arc::clone(&self.batch_commit_files_rebased_calls),
             issue_comments: Arc::clone(&self.issue_comments),
             list_issue_comments_calls: Arc::clone(&self.list_issue_comments_calls),
             update_issue_comment_calls: Arc::clone(&self.update_issue_comment_calls),
@@ -1481,6 +1499,7 @@ impl GitHubOperations for MockGitHubOperations {
             get_file_content_calls: Arc::clone(&self.get_file_content_calls),
             get_file_content_responses: Arc::clone(&self.get_file_content_responses),
             batch_commit_files_calls: Arc::clone(&self.batch_commit_files_calls),
+            batch_commit_files_rebased_calls: Arc::clone(&self.batch_commit_files_rebased_calls),
             issue_comments: Arc::clone(&self.issue_comments),
             list_issue_comments_calls: Arc::clone(&self.list_issue_comments_calls),
             update_issue_comment_calls: Arc::clone(&self.update_issue_comment_calls),
@@ -1620,6 +1639,53 @@ impl GitHubOperations for MockGitHubOperations {
             branch.to_string(),
             file_paths,
             message.to_string(),
+        ));
+
+        self.record_call(method, &params_str, CallResult::Success)
+            .await;
+        Ok(())
+    }
+
+    async fn batch_commit_files_rebased(
+        &self,
+        owner: &str,
+        repo: &str,
+        branch: &str,
+        files: &[release_regent_core::traits::github_operations::FileUpdate],
+        message: &str,
+        parent_sha: &str,
+    ) -> CoreResult<()> {
+        let method = "batch_commit_files_rebased";
+        let params_str = format!(
+            "owner={owner}, repo={repo}, branch={branch}, files={}, parent_sha={parent_sha}",
+            files.len()
+        );
+
+        self.check_quota().await?;
+        self.simulate_latency().await;
+
+        if self.should_simulate_failure().await {
+            let error = CoreError::network("Simulated GitHub API error");
+            self.record_call(method, &params_str, CallResult::Error(error.to_string()))
+                .await;
+            return Err(error);
+        }
+
+        if let Some(msg) = self.method_errors.get(method) {
+            let error = CoreError::network(msg.clone());
+            self.record_call(method, &params_str, CallResult::Error(error.to_string()))
+                .await;
+            return Err(error);
+        }
+
+        let file_paths: Vec<String> = files.iter().map(|f| f.path.clone()).collect();
+        self.batch_commit_files_rebased_calls.write().await.push((
+            owner.to_string(),
+            repo.to_string(),
+            branch.to_string(),
+            file_paths,
+            message.to_string(),
+            parent_sha.to_string(),
         ));
 
         self.record_call(method, &params_str, CallResult::Success)

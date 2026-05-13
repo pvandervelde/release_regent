@@ -686,6 +686,13 @@ async fn test_orchestrate_no_existing_pr_creates_branch_and_pr() {
         github.batch_commits().await.is_empty(),
         "create path should use batch_commit_files_rebased, not batch_commit_files"
     );
+
+    // force_update_branch must never be called on the fresh-branch path: it would
+    // temporarily set branch tip == base_sha, which auto-closes any open release PR.
+    assert!(
+        github.force_updated_branches().await.is_empty(),
+        "force_update_branch must not be called on the fresh-branch create path"
+    );
 }
 
 /// Existing PR has the same version → changelog is merged (Updated).

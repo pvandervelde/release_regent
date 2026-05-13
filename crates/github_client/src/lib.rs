@@ -1367,7 +1367,14 @@ impl GitHubOperations for GitHubClient {
         // Step 1: Get the tree SHA from the explicit parent commit (not branch HEAD).
         let commit_url = format!("/repos/{owner}/{repo}/git/commits/{parent_sha}");
         let commit_resp = installation.get(&commit_url).await.map_err(map_sdk_error)?;
+        let commit_status = commit_resp.status().as_u16();
         let commit_json: serde_json::Value = commit_resp.json().await.map_err(CoreError::github)?;
+        if commit_status != 200 {
+            return Err(CoreError::github(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("GET /git/commits/{parent_sha} failed with status {commit_status}"),
+            )));
+        }
         let base_tree_sha = commit_json["tree"]["sha"]
             .as_str()
             .ok_or_else(|| {

@@ -759,11 +759,13 @@ pub trait GitHubOperations: GitOperations + Send + Sync {
     ///   failed
     /// - `CoreError::InvalidInput` — `files` is empty
     ///
-    /// # Default implementation
+    /// # Required override
     ///
-    /// Falls back to [`batch_commit_files`], which uses the current branch
-    /// HEAD as the parent commit and does not force-update the branch.
-    /// Override in production clients for correct rebase semantics.
+    /// There is **no default implementation**.  Every `GitHubOperations` implementor
+    /// must provide this method explicitly.  A fallback to [`batch_commit_files`] is
+    /// intentionally absent: it would silently restore the race condition where the
+    /// branch tip passes through `parent_sha`, causing GitHub to auto-close any open
+    /// PR whose head equals the base branch at that moment.
     async fn batch_commit_files_rebased(
         &self,
         owner: &str,
@@ -772,15 +774,7 @@ pub trait GitHubOperations: GitOperations + Send + Sync {
         files: &[FileUpdate],
         message: &str,
         parent_sha: &str,
-    ) -> CoreResult<()> {
-        // Default: ignore parent_sha, commit on top of current branch HEAD.
-        // Production clients should override with an implementation that reads
-        // the tree from parent_sha and creates the commit with parent_sha as
-        // the explicit parent, then force-updates the branch ref.
-        let _ = parent_sha;
-        self.batch_commit_files(owner, repo, branch, files, message)
-            .await
-    }
+    ) -> CoreResult<()>;
 }
 
 // Note: Git commit information is now provided by GitOperations trait

@@ -516,22 +516,19 @@ impl GitHubOperations for TestGitHub {
         Ok(())
     }
 
-    async fn list_issue_comments(
+    async fn batch_commit_files_rebased(
         &self,
         _owner: &str,
         _repo: &str,
-        _issue_number: u64,
-    ) -> CoreResult<Vec<crate::traits::github_operations::IssueComment>> {
-        Ok(vec![])
+        _branch: &str,
+        _files: &[crate::traits::github_operations::FileUpdate],
+        _message: &str,
+        _parent_sha: &str,
+    ) -> CoreResult<()> {
+        Ok(())
     }
 
-    async fn update_issue_comment(
-        &self,
-        _owner: &str,
-        _repo: &str,
-        _comment_id: u64,
-        _body: &str,
-    ) -> CoreResult<()> {
+    async fn list_issue_comments(_repo: &str, _comment_id: u64, _body: &str) -> CoreResult<()> {
         Ok(())
     }
 

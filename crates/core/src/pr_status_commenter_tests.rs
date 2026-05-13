@@ -170,6 +170,18 @@ impl GitHubOperations for TestGitHubForUpsert {
         Ok(())
     }
 
+    async fn batch_commit_files_rebased(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _branch: &str,
+        _files: &[FileUpdate],
+        _message: &str,
+        _parent_sha: &str,
+    ) -> crate::CoreResult<()> {
+        Ok(())
+    }
+
     async fn create_branch(
         &self,
         _owner: &str,
