@@ -720,6 +720,61 @@ pub trait GitHubOperations: GitOperations + Send + Sync {
         files: &[FileUpdate],
         message: &str,
     ) -> CoreResult<()>;
+
+    /// Atomically commit multiple file changes to a branch, rebasing onto an
+    /// explicit parent commit rather than the current branch HEAD.
+    ///
+    /// Creates a new commit whose parent is `parent_sha`, then force-updates
+    /// the branch ref to that commit.  Because the branch is never set to
+    /// `parent_sha` itself, this avoids the race where a temporary
+    /// branch == base-branch state causes GitHub to auto-close an open PR
+    /// whose head and base become identical.
+    ///
+    /// ## When to use this instead of [`batch_commit_files`]
+    ///
+    /// Use `batch_commit_files_rebased` whenever you want to rebase the
+    /// release branch onto the latest base-branch tip *and* keep any open PR
+    /// alive.  The sequence `force_update_branch(base_sha)` →
+    /// `batch_commit_files(…)` is subject to the race described above;
+    /// `batch_commit_files_rebased` eliminates it by making the branch
+    /// transition atomic at the commit level.
+    ///
+    /// # Parameters
+    /// - `owner`: Repository owner name
+    /// - `repo`: Repository name
+    /// - `branch`: Branch to update (must already exist)
+    /// - `files`: Slice of [`FileUpdate`] describing each file path and its
+    ///   new content
+    /// - `message`: Commit message for the batch commit
+    /// - `parent_sha`: The commit SHA to use as the single parent of the new
+    ///   commit.  The branch is force-updated to the new commit after it is
+    ///   created, so the branch moves from wherever it currently points to
+    ///   exactly one commit ahead of `parent_sha`.
+    ///
+    /// # Returns
+    /// `Ok(())` on success.
+    ///
+    /// # Errors
+    /// - `CoreError::GitHub` — any step in the Trees/Commits/Refs pipeline
+    ///   failed
+    /// - `CoreError::InvalidInput` — `files` is empty
+    ///
+    /// # Required override
+    ///
+    /// There is **no default implementation**.  Every `GitHubOperations` implementor
+    /// must provide this method explicitly.  A fallback to [`batch_commit_files`] is
+    /// intentionally absent: it would silently restore the race condition where the
+    /// branch tip passes through `parent_sha`, causing GitHub to auto-close any open
+    /// PR whose head equals the base branch at that moment.
+    async fn batch_commit_files_rebased(
+        &self,
+        owner: &str,
+        repo: &str,
+        branch: &str,
+        files: &[FileUpdate],
+        message: &str,
+        parent_sha: &str,
+    ) -> CoreResult<()>;
 }
 
 // Note: Git commit information is now provided by GitOperations trait

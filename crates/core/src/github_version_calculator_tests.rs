@@ -388,6 +388,19 @@ impl GitHubOperations for StubGitHub {
     ) -> CoreResult<()> {
         Ok(())
     }
+
+    async fn batch_commit_files_rebased(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _branch: &str,
+        _files: &[crate::traits::github_operations::FileUpdate],
+        _message: &str,
+        _parent_sha: &str,
+    ) -> CoreResult<()> {
+        Ok(())
+    }
+
     async fn list_issue_comments(
         &self,
         _owner: &str,

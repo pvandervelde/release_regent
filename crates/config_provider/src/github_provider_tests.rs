@@ -955,6 +955,18 @@ impl GitHubOperations for TestGitHub {
     ) -> release_regent_core::CoreResult<()> {
         Ok(())
     }
+
+    async fn batch_commit_files_rebased(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _branch: &str,
+        _files: &[FileUpdate],
+        _message: &str,
+        _parent_sha: &str,
+    ) -> release_regent_core::CoreResult<()> {
+        Ok(())
+    }
 }
 
 // ── Provider factory ──────────────────────────────────────────────────────────

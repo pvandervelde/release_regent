@@ -1354,6 +1354,17 @@ mod cross_calculator_consistency {
         ) -> crate::CoreResult<()> {
             Ok(())
         }
+        async fn batch_commit_files_rebased(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &[crate::traits::github_operations::FileUpdate],
+            _: &str,
+            _: &str,
+        ) -> crate::CoreResult<()> {
+            Ok(())
+        }
         async fn list_issue_comments(
             &self,
             _: &str,
