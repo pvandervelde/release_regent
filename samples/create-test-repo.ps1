@@ -613,6 +613,32 @@ group = "backend"
 # Allow contributors to override the calculated bump via PR comments.
 # versioning.strategy is locked by the group policy and cannot be changed here.
 allow_override = true
+
+[release_pr]
+# Register the version files that Release Regent should update on the release
+# branch alongside CHANGELOG.md.  Without these entries the files would keep
+# their old version numbers even after a release PR is merged.
+
+# package.json — standard JSON version field.
+[[release_pr.manifest_files]]
+path        = "package.json"
+format      = "json"
+version_key = "version"
+
+# version.txt — plain-text file; the regex capture group is replaced.
+[[release_pr.manifest_files]]
+path        = "version.txt"
+format      = "plain_text"
+version_key = 'version = "([^"]+)"'
+
+# ── Changelog (optional overrides) ─────────────────────────────────────────
+# The [changelog] section is now parsed (was silently ignored before).
+# Leave it commented out to use the app-level defaults (built-in renderer).
+#
+# [changelog]
+# strategy = "internal"    # "internal" | "git_cliff" | see strategy.external
+# include_shas   = true
+# include_links  = true
 "@
 
 New-RepoFile 'src/greeting.md' @"
