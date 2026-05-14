@@ -93,6 +93,61 @@ fn test_default_configuration() {
         VersioningStrategy::Conventional
     ));
     assert!(config.versioning.allow_override);
+    // Changelog section defaults to the built-in template renderer.
+    assert!(matches!(
+        config.changelog.strategy,
+        crate::changelog::ChangelogStrategy::Internal
+    ));
+}
+
+/// A `[changelog]` block in a TOML config is no longer silently ignored —
+/// it is parsed into `ReleaseRegentConfig::changelog`.
+#[test]
+fn test_changelog_section_is_parsed_from_toml() {
+    let toml_input = r#"
+[changelog]
+include_shas = false
+include_links = false
+
+[changelog.strategy.external]
+command = "git-cliff"
+env_vars = {}
+timeout_ms = 45000
+"#;
+    let config: ReleaseRegentConfig = toml::from_str(toml_input).expect("should parse");
+    assert!(!config.changelog.include_shas);
+    assert!(!config.changelog.include_links);
+    if let crate::changelog::ChangelogStrategy::External {
+        command,
+        timeout_ms,
+        ..
+    } = config.changelog.strategy
+    {
+        assert_eq!(command, "git-cliff");
+        assert_eq!(timeout_ms, 45_000);
+    } else {
+        panic!(
+            "expected External changelog strategy, got {:?}",
+            config.changelog.strategy
+        );
+    }
+}
+
+/// A TOML config with no `[changelog]` block deserialises with the default
+/// changelog config (strategy = Internal, booleans = true).
+#[test]
+fn test_changelog_section_defaults_when_absent() {
+    let toml_input = r#"
+[core]
+version_prefix = "v"
+"#;
+    let config: ReleaseRegentConfig = toml::from_str(toml_input).expect("should parse");
+    assert!(matches!(
+        config.changelog.strategy,
+        crate::changelog::ChangelogStrategy::Internal
+    ));
+    assert!(config.changelog.include_shas);
+    assert!(config.changelog.include_links);
 }
 
 #[test]

@@ -1268,6 +1268,126 @@ fn test_merge_changelog_sections_preserves_new_section_headers() {
     );
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Unit tests for build_changelog_file_content
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Empty existing content produces a fresh `# Changelog` header followed by
+/// the new version section.
+#[test]
+fn test_build_changelog_file_content_empty_existing() {
+    let result =
+        build_changelog_file_content("", "1.0.0", "2024-01-15", "### Added\n\n- feat: new");
+
+    assert!(
+        result.starts_with("# Changelog\n"),
+        "should start with file-level header; got:\n{result}"
+    );
+    assert!(
+        result.contains("## [1.0.0] - 2024-01-15"),
+        "should contain version section; got:\n{result}"
+    );
+    assert!(
+        result.contains("feat: new"),
+        "should contain changelog body; got:\n{result}"
+    );
+}
+
+/// Existing history is preserved below the newly inserted section.
+#[test]
+fn test_build_changelog_file_content_with_existing_history() {
+    let existing = "# Changelog\n\n## [0.9.0] - 2024-01-01\n\n### Added\n\n- feat: old\n";
+
+    let result =
+        build_changelog_file_content(existing, "1.0.0", "2024-01-15", "### Added\n\n- feat: new");
+
+    let pos_new = result
+        .find("## [1.0.0]")
+        .expect("new section must be present");
+    let pos_old = result
+        .find("## [0.9.0]")
+        .expect("old section must be preserved");
+    assert!(
+        pos_new < pos_old,
+        "new section must appear before old section; got:\n{result}"
+    );
+}
+
+/// Calling the function twice with the same version replaces the existing
+/// section rather than duplicating it (idempotent behaviour).
+#[test]
+fn test_build_changelog_file_content_idempotent_same_version() {
+    let existing = "# Changelog\n\n## [1.0.0] - 2024-01-15\n\n### Added\n\n- feat: first run\n";
+
+    let result = build_changelog_file_content(
+        existing,
+        "1.0.0",
+        "2024-01-15",
+        "### Added\n\n- feat: second run",
+    );
+
+    assert_eq!(
+        result.matches("## [1.0.0]").count(),
+        1,
+        "version section must not be duplicated; got:\n{result}"
+    );
+    assert!(
+        result.contains("second run"),
+        "updated body must be present; got:\n{result}"
+    );
+    assert!(
+        !result.contains("first run"),
+        "old body must be replaced; got:\n{result}"
+    );
+}
+
+/// Content that already starts with a `## [version]` line (no file-level
+/// `# Changelog` header) gets the header prepended automatically.
+#[test]
+fn test_build_changelog_file_content_no_header() {
+    let existing = "## [0.1.0] - 2023-12-01\n\n### Fixed\n\n- fix: old\n";
+
+    let result =
+        build_changelog_file_content(existing, "1.0.0", "2024-01-15", "### Added\n\n- feat: new");
+
+    assert!(
+        result.starts_with("# Changelog\n"),
+        "generated header must be present; got:\n{result}"
+    );
+    assert!(
+        result.contains("## [1.0.0]"),
+        "new section must be present; got:\n{result}"
+    );
+    assert!(
+        result.contains("## [0.1.0]"),
+        "old section must be preserved; got:\n{result}"
+    );
+}
+
+/// Existing file-level header text (e.g. a description below `# Changelog`)
+/// is preserved verbatim.
+#[test]
+fn test_build_changelog_file_content_preserves_file_header() {
+    let existing =
+        "# Changelog\n\nAll notable changes are documented here.\n\n## [0.2.0] - 2024-01-10\n\n### Fixed\n\n- fix: something\n";
+
+    let result =
+        build_changelog_file_content(existing, "1.0.0", "2024-01-15", "### Added\n\n- feat: new");
+
+    assert!(
+        result.contains("All notable changes are documented here."),
+        "header description must be preserved; got:\n{result}"
+    );
+    assert!(
+        result.contains("## [1.0.0]"),
+        "new section must be present; got:\n{result}"
+    );
+    assert!(
+        result.contains("## [0.2.0]"),
+        "old section must be preserved; got:\n{result}"
+    );
+}
+
 /// When `search_pull_requests` returns multiple open release PRs the
 /// orchestrator selects the highest-versioned one, not the first match.
 #[tokio::test]

@@ -3,7 +3,7 @@
 //! This module handles loading and validating Release Regent configuration from
 //! YAML files with support for both application-wide and repository-specific settings.
 
-use crate::{manifest::ManifestFileConfig, CoreError, CoreResult};
+use crate::{changelog::ChangelogConfig, manifest::ManifestFileConfig, CoreError, CoreResult};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
@@ -210,6 +210,13 @@ pub struct ReleaseRegentConfig {
     /// Non-lockable paths are silently dropped with `warn!`.
     #[serde(default)]
     pub locked_fields: Vec<String>,
+    /// Changelog generation settings.
+    ///
+    /// Controls how CHANGELOG.md entries are produced and which rendering
+    /// back-end is used.  When absent the section defaults to the built-in
+    /// template renderer.
+    #[serde(default)]
+    pub changelog: ChangelogConfig,
     /// Release PR settings
     #[serde(default)]
     pub release_pr: ReleasePrConfig,

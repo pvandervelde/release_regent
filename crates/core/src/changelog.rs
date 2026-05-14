@@ -14,40 +14,112 @@ use git_cliff_core::{
     config::Config as GitCliffConfig, release::Release as GitCliffRelease,
 };
 
+/// Strategy for changelog generation.
+///
+/// Controls how [`ChangelogGenerator`] produces formatted release notes:
+/// - [`ChangelogStrategy::Internal`] — built-in template renderer (default).
+/// - [`ChangelogStrategy::GitCliff`] — delegates to git-cliff-core for
+///   advanced Tera-based templating.
+/// - [`ChangelogStrategy::External`] — runs a subprocess and captures stdout.
+///   Commits are passed as `{sha} {message}` lines on stdin.
+///
+/// Example TOML (external):
+/// ```toml
+/// [changelog.strategy.external]
+/// command = "git-cliff"
+/// env_vars = { GIT_CLIFF_CONFIG = "/path/to/cliff.toml" }
+/// timeout_ms = 30000
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ChangelogStrategy {
+    /// Built-in template renderer.
+    Internal,
+    /// Delegate to git-cliff-core for advanced Tera-based templating.
+    GitCliff,
+    /// Run an external subprocess.
+    ///
+    /// Commits are passed as `{sha} {message}\n` lines on stdin.
+    /// The command's stdout becomes the changelog body.
+    External {
+        /// Command to execute (space-separated; first token is the binary).
+        command: String,
+        /// Additional environment variables passed to the command.
+        env_vars: HashMap<String, String>,
+        /// Maximum wall-clock time in milliseconds before the process is
+        /// terminated.  Defaults to 30 000 ms (30 seconds).
+        ///
+        /// Note: timeout enforcement uses a background thread; the function
+        /// blocks the calling thread until the process exits or the deadline
+        /// elapses.
+        #[serde(default = "default_external_timeout_ms")]
+        timeout_ms: u64,
+    },
+}
+
+fn default_external_timeout_ms() -> u64 {
+    30_000
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_section_template() -> String {
+    "### {title}\n\n{entries}\n".to_string()
+}
+
+fn default_commit_template() -> String {
+    "- {description} [{sha}]".to_string()
+}
+
+impl Default for ChangelogStrategy {
+    fn default() -> Self {
+        Self::Internal
+    }
+}
+
 /// Configuration for changelog generation.
 ///
-/// Covers both the basic template-driven path and the git-cliff-core path.
-/// Set `use_git_cliff = true` (the default) to use git-cliff-core for
-/// advanced features such as link generation; set it to `false` to use the
-/// built-in template renderer instead.
+/// The `strategy` field selects the rendering back-end; the remaining fields
+/// control the built-in template renderer and apply only when
+/// `strategy == ChangelogStrategy::Internal`.
 ///
 /// Uses multiple boolean flags because each controls an independent, orthogonal
 /// rendering option; converting them to enums would add complexity without benefit.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChangelogConfig {
-    /// Whether to use git-cliff-core for advanced features
-    pub use_git_cliff: bool,
+    /// Rendering strategy to use.
+    #[serde(default)]
+    pub strategy: ChangelogStrategy,
     /// Whether to include commit authors
+    #[serde(default = "default_true")]
     pub include_authors: bool,
     /// Whether to include commit SHAs
+    #[serde(default = "default_true")]
     pub include_shas: bool,
     /// Whether to include links to commits/PRs
+    #[serde(default = "default_true")]
     pub include_links: bool,
     /// Template for changelog sections
+    #[serde(default = "default_section_template")]
     pub section_template: String,
     /// Template for individual commit entries
+    #[serde(default = "default_commit_template")]
     pub commit_template: String,
     /// Git repository path for git-cliff-core (optional)
+    #[serde(default)]
     pub repository_path: Option<String>,
     /// Remote repository URL for link generation
+    #[serde(default)]
     pub remote_url: Option<String>,
 }
 
 impl Default for ChangelogConfig {
     fn default() -> Self {
         Self {
-            use_git_cliff: false,
+            strategy: ChangelogStrategy::default(),
             include_authors: true,
             include_shas: true,
             include_links: true,
@@ -61,9 +133,12 @@ impl Default for ChangelogConfig {
 
 /// Changelog generator that creates formatted markdown from conventional commits.
 ///
-/// When `config.use_git_cliff` is `true` (the default), the generator delegates to
-/// git-cliff-core for rendering. When `false`, an internal template renderer is used
-/// instead. Both paths return `CoreResult<String>` so callers handle errors uniformly.
+/// The rendering back-end is selected by [`ChangelogConfig::strategy`]:
+/// - [`ChangelogStrategy::Internal`] — built-in ordered template renderer.
+/// - [`ChangelogStrategy::GitCliff`] — git-cliff-core Tera templating.
+/// - [`ChangelogStrategy::External`] — subprocess (e.g. `git-cliff` CLI).
+///
+/// All paths return `CoreResult<String>` so callers handle errors uniformly.
 pub struct ChangelogGenerator {
     config: ChangelogConfig,
 }
@@ -85,13 +160,15 @@ impl ChangelogGenerator {
 
     /// Generate a changelog from conventional commits.
     ///
-    /// Uses git-cliff-core when `config.use_git_cliff` is `true`; falls back to the
-    /// built-in template renderer otherwise.
+    /// The rendering back-end is selected by [`ChangelogConfig::strategy`]:
+    /// - [`ChangelogStrategy::Internal`] \u2014 built-in template renderer.
+    /// - [`ChangelogStrategy::GitCliff`] \u2014 git-cliff-core.
+    /// - [`ChangelogStrategy::External`] \u2014 subprocess.
     ///
     /// # Errors
     ///
-    /// Returns [`crate::errors::CoreError::ChangelogGeneration`] when git-cliff
-    /// processing fails.
+    /// Returns [`crate::errors::CoreError::ChangelogGeneration`] when the
+    /// selected back-end fails (git-cliff processing error, subprocess failure, etc.).
     // CoreError is intentionally large; this is the established pattern throughout the codebase.
     #[allow(clippy::result_large_err)]
     pub fn generate_changelog(
@@ -104,11 +181,99 @@ impl ChangelogGenerator {
             return Ok("No changes in this release.".to_string());
         }
 
-        if self.config.use_git_cliff {
-            self.generate_with_git_cliff(commits)
-        } else {
-            Ok(self.generate_with_template(commits))
+        match &self.config.strategy {
+            ChangelogStrategy::Internal => Ok(self.generate_with_template(commits)),
+            ChangelogStrategy::GitCliff => self.generate_with_git_cliff(commits),
+            ChangelogStrategy::External {
+                command,
+                env_vars,
+                timeout_ms,
+            } => self.generate_with_external(command, env_vars, *timeout_ms, commits),
         }
+    }
+
+    /// Delegate changelog generation to an external subprocess.
+    ///
+    /// Commits are written to the child's stdin as `{sha} {message}\n` lines.
+    /// The child's stdout is captured and returned as the changelog body.
+    ///
+    /// The `timeout_ms` parameter reserves a future deadline; it is not yet
+    /// enforced at the OS level in this implementation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::errors::CoreError::ChangelogGeneration`] when:
+    /// - the command string is empty or cannot be split,
+    /// - the process cannot be spawned,
+    /// - the process exits with a non-zero status, or
+    /// - the stdout is not valid UTF-8.
+    // CoreError is intentionally large; this is the established pattern throughout the codebase.
+    #[allow(clippy::result_large_err)]
+    fn generate_with_external(
+        &self,
+        command: &str,
+        env_vars: &HashMap<String, String>,
+        _timeout_ms: u64,
+        commits: &[ConventionalCommit],
+    ) -> crate::errors::CoreResult<String> {
+        use std::io::Write as _;
+        use std::process::{Command, Stdio};
+
+        let parts: Vec<&str> = command.split_whitespace().collect();
+        let (prog, args) = parts.split_first().ok_or_else(|| {
+            crate::errors::CoreError::changelog_generation(
+                "changelog.strategy.external.command is empty".to_string(),
+            )
+        })?;
+
+        // Build stdin: one line per commit.
+        let stdin_content: String = commits
+            .iter()
+            .map(|c| format!("{} {}", c.sha, c.message))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let mut child = Command::new(prog)
+            .args(args)
+            .envs(env_vars)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| {
+                crate::errors::CoreError::changelog_generation(format!(
+                    "Failed to start changelog command '{command}': {e}"
+                ))
+            })?;
+
+        // Write commits to stdin then drop to signal EOF.
+        if let Some(mut stdin) = child.stdin.take() {
+            if let Err(e) = stdin.write_all(stdin_content.as_bytes()) {
+                return Err(crate::errors::CoreError::changelog_generation(format!(
+                    "Failed to write commits to changelog command stdin: {e}"
+                )));
+            }
+        }
+
+        let output = child.wait_with_output().map_err(|e| {
+            crate::errors::CoreError::changelog_generation(format!(
+                "Changelog command '{command}' failed while waiting: {e}"
+            ))
+        })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(crate::errors::CoreError::changelog_generation(format!(
+                "Changelog command '{command}' exited with {}: {stderr}",
+                output.status
+            )));
+        }
+
+        String::from_utf8(output.stdout).map_err(|e| {
+            crate::errors::CoreError::changelog_generation(format!(
+                "Changelog command '{command}' produced non-UTF-8 output: {e}"
+            ))
+        })
     }
 
     /// Generate changelog using git-cliff-core.
