@@ -121,13 +121,50 @@ impl OrchestratorConfig {
     pub const DEFAULT_BODY_TEMPLATE: &'static str = "## Changelog\n\n${changelog}";
 }
 
+/// Derive the changelog-section header from a PR body template.
+///
+/// Scans `body_template` backwards from the `${changelog}` placeholder and
+/// returns the first `## ` heading line found.  Falls back to `"## Changelog"`
+/// when no such heading precedes the placeholder.
+///
+/// This keeps [`OrchestratorConfig::changelog_header`] and
+/// [`OrchestratorConfig::body_template`] in sync automatically: callers only
+/// need to set `body_template` and can derive `changelog_header` from it.
+///
+/// # Examples
+///
+/// ```
+/// use release_regent_core::release_orchestrator::extract_changelog_header;
+///
+/// assert_eq!(extract_changelog_header("## Changelog\n\n${changelog}"), "## Changelog");
+/// assert_eq!(extract_changelog_header("## Release Notes\n\n${changelog}"), "## Release Notes");
+/// // Falls back when no heading precedes the placeholder.
+/// assert_eq!(extract_changelog_header("${changelog}"), "## Changelog");
+/// ```
+pub fn extract_changelog_header(body_template: &str) -> String {
+    // Walk lines before ${changelog} in reverse to find the nearest ## heading.
+    let marker = "${changelog}";
+    let prefix = match body_template.find(marker) {
+        Some(i) => &body_template[..i],
+        None => body_template,
+    };
+    prefix
+        .lines()
+        .rev()
+        .find(|l| l.starts_with("## "))
+        .unwrap_or("## Changelog")
+        .to_string()
+}
+
 impl Default for OrchestratorConfig {
     fn default() -> Self {
+        let body_template = Self::DEFAULT_BODY_TEMPLATE.to_string();
+        let changelog_header = extract_changelog_header(&body_template);
         Self {
             branch_prefix: Self::DEFAULT_BRANCH_PREFIX.to_string(),
             title_template: "chore(release): {version_tag}".to_string(),
-            body_template: Self::DEFAULT_BODY_TEMPLATE.to_string(),
-            changelog_header: "## Changelog".to_string(),
+            changelog_header,
+            body_template,
             manifest_files: Vec::new(),
             auto_detect_manifests: true,
         }
@@ -1154,6 +1191,7 @@ fn skip_existing_version_section<'a>(rest: &'a str, version_str: &str) -> &'a st
     }
 }
 
+/// Merge two formatted changelog strings, deduplicating committed entries by SHA.
 ///
 /// Lines matching the pattern `- ... [<40-hex-SHA>]` are treated as commit
 /// entries.  New entries from `new_section` that share a SHA with an entry in

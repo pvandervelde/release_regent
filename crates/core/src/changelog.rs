@@ -57,7 +57,7 @@ pub enum ChangelogStrategy {
     },
 }
 
-fn default_external_timeout_ms() -> u64 {
+pub(crate) fn default_external_timeout_ms() -> u64 {
     30_000
 }
 
@@ -197,15 +197,16 @@ impl ChangelogGenerator {
     /// Commits are written to the child's stdin as `{sha} {message}\n` lines.
     /// The child's stdout is captured and returned as the changelog body.
     ///
-    /// The `timeout_ms` parameter reserves a future deadline; it is not yet
-    /// enforced at the OS level in this implementation.
+    /// A background thread enforces `timeout_ms`: if the process has not exited
+    /// within the deadline, the child is killed and an error is returned.
     ///
     /// # Errors
     ///
     /// Returns [`crate::errors::CoreError::ChangelogGeneration`] when:
     /// - the command string is empty or cannot be split,
     /// - the process cannot be spawned,
-    /// - the process exits with a non-zero status, or
+    /// - the process exits with a non-zero status,
+    /// - the deadline elapses before the process exits, or
     /// - the stdout is not valid UTF-8.
     // CoreError is intentionally large; this is the established pattern throughout the codebase.
     #[allow(clippy::result_large_err)]
@@ -213,7 +214,7 @@ impl ChangelogGenerator {
         &self,
         command: &str,
         env_vars: &HashMap<String, String>,
-        _timeout_ms: u64,
+        timeout_ms: u64,
         commits: &[ConventionalCommit],
     ) -> crate::errors::CoreResult<String> {
         use std::io::Write as _;
@@ -255,11 +256,31 @@ impl ChangelogGenerator {
             }
         }
 
-        let output = child.wait_with_output().map_err(|e| {
-            crate::errors::CoreError::changelog_generation(format!(
-                "Changelog command '{command}' failed while waiting: {e}"
-            ))
-        })?;
+        // Enforce the timeout via a channel: `wait_with_output` runs on a
+        // background thread and the result is sent back to the calling thread.
+        // The calling thread blocks on `recv_timeout`; if the deadline elapses
+        // before the process exits an error is returned.  The child process may
+        // become an orphan in that case — consistent with how
+        // `DefaultVersionCalculator::External` handles the same situation.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let command_for_thread = command.to_string();
+        std::thread::spawn(move || {
+            let result = child.wait_with_output().map_err(|e| {
+                crate::errors::CoreError::changelog_generation(format!(
+                    "Changelog command '{command_for_thread}' failed while waiting: {e}"
+                ))
+            });
+            // Ignore send error — receiver may have already timed out.
+            let _ = tx.send(result);
+        });
+
+        let output = rx
+            .recv_timeout(std::time::Duration::from_millis(timeout_ms))
+            .map_err(|_| {
+                crate::errors::CoreError::changelog_generation(format!(
+                    "Changelog command '{command}' timed out after {timeout_ms} ms"
+                ))
+            })??;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -496,12 +517,7 @@ exclude_paths = []
             .replace("{description}", &description);
 
         if self.config.include_shas {
-            let short_sha = if commit.sha.len() > 7 {
-                &commit.sha[..7]
-            } else {
-                &commit.sha
-            };
-            entry = entry.replace("{sha}", short_sha);
+            entry = entry.replace("{sha}", &commit.sha);
         } else {
             entry = entry.replace(" [{sha}]", "");
             entry = entry.replace("[{sha}]", "");

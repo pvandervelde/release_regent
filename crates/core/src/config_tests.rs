@@ -524,3 +524,39 @@ fn test_sample_config_parses_without_error() {
     ));
     assert!(config.changelog.include_shas);
 }
+
+/// `validate()` must reject an `External` changelog strategy with an empty command.
+#[test]
+fn test_validate_rejects_external_changelog_strategy_with_empty_command() {
+    let mut config = ReleaseRegentConfig::default();
+    config.changelog.strategy = crate::changelog::ChangelogStrategy::External {
+        command: "   ".to_string(),
+        env_vars: Default::default(),
+        timeout_ms: 5_000,
+    };
+    let result = config.validate();
+    assert!(
+        result.is_err(),
+        "expected validation error for empty command"
+    );
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("changelog.strategy.external.command"),
+        "error should mention the field, got: {msg}"
+    );
+}
+
+/// `validate()` must accept a well-formed `External` changelog strategy.
+#[test]
+fn test_validate_accepts_external_changelog_strategy_with_non_empty_command() {
+    let mut config = ReleaseRegentConfig::default();
+    config.changelog.strategy = crate::changelog::ChangelogStrategy::External {
+        command: "/usr/local/bin/gen-changelog".to_string(),
+        env_vars: Default::default(),
+        timeout_ms: 30_000,
+    };
+    assert!(
+        config.validate().is_ok(),
+        "non-empty external command should pass validation"
+    );
+}

@@ -374,8 +374,11 @@ pub enum VersioningStrategy {
 }
 
 /// Default timeout for external versioning commands (30 seconds).
+///
+/// Delegates to the canonical definition in [`crate::changelog`] so the two
+/// timeout defaults are always identical.
 fn default_external_timeout_ms() -> u64 {
-    30_000
+    crate::changelog::default_external_timeout_ms()
 }
 
 impl From<VersioningStrategy> for crate::traits::version_calculator::VersioningStrategy {
@@ -464,6 +467,17 @@ impl ReleaseRegentConfig {
                 }
             }
             _ => {} // No additional validation needed
+        }
+
+        // Validate changelog strategy
+        if let crate::changelog::ChangelogStrategy::External { command, .. } =
+            &self.changelog.strategy
+        {
+            if command.trim().is_empty() {
+                return Err(CoreError::config(
+                    "changelog.strategy.external.command cannot be empty",
+                ));
+            }
         }
 
         debug!("Configuration validation passed");

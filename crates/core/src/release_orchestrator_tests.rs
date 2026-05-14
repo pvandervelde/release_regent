@@ -1586,6 +1586,50 @@ fn test_extract_changelog_from_pr_body_empty_body_returns_empty() {
     assert_eq!(result, "");
 }
 
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// extract_changelog_header — free-function unit tests
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+#[test]
+fn test_extract_changelog_header_returns_default_heading_from_default_template() {
+    let header = super::extract_changelog_header(
+        crate::release_orchestrator::OrchestratorConfig::DEFAULT_BODY_TEMPLATE,
+    );
+    assert_eq!(header, "## Changelog");
+}
+
+#[test]
+fn test_extract_changelog_header_returns_custom_heading() {
+    let template = "## Release Notes\n\n${changelog}";
+    assert_eq!(
+        super::extract_changelog_header(template),
+        "## Release Notes"
+    );
+}
+
+#[test]
+fn test_extract_changelog_header_falls_back_when_no_heading_before_placeholder() {
+    assert_eq!(
+        super::extract_changelog_header("${changelog}"),
+        "## Changelog"
+    );
+}
+
+#[test]
+fn test_extract_changelog_header_ignores_heading_after_placeholder() {
+    let template = "${changelog}\n\n## Ignored";
+    assert_eq!(super::extract_changelog_header(template), "## Changelog");
+}
+
+#[test]
+fn test_extract_changelog_header_picks_nearest_heading_when_multiple_precede_placeholder() {
+    let template = "## Top\n\nSome text\n\n## Release Notes\n\n${changelog}";
+    assert_eq!(
+        super::extract_changelog_header(template),
+        "## Release Notes"
+    );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // cargo_workspace_member_cargo_tomls — private helper unit tests
 // ─────────────────────────────────────────────────────────────────────────────
