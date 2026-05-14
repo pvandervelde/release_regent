@@ -52,19 +52,79 @@ strategy = "conventional"
 # (e.g. /override-bump minor).
 allow_override = true
 
+# PR authors whose PRs should be silently skipped (no status comment, no
+# post-merge refresh).  Useful for bot accounts such as Dependabot or Renovate.
+# excluded_pr_authors = ["dependabot[bot]", "renovate[bot]"]
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Release pull request
 # ─────────────────────────────────────────────────────────────────────────────
 
 [release_pr]
-# Template for the release PR title. ${version} is replaced at runtime.
+# Template for the release PR title.
+# Supported placeholders: ${version} (e.g. "1.2.3"), ${version_tag} (e.g. "v1.2.3").
 title_template = "chore(release): ${version}"
 
-# Template for the release PR body. ${changelog} is replaced at runtime.
+# Template for the release PR body.
+# ${changelog} is replaced with the changes for THIS release only.
+# Add any extra text (badges, footers, links) around the placeholder.
 body_template = "## Changelog\n\n${changelog}"
 
 # Create release PRs as drafts.
 draft = false
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Changelog generation
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Controls how CHANGELOG.md entries are produced and how the release PR body
+# changelog section is formatted.
+#
+# Three strategies are available:
+#
+#   internal   — built-in template renderer (default, no extra tooling needed)
+#   git_cliff  — delegates to the bundled git-cliff-core library for advanced
+#                Tera-based templating
+#   external   — runs an arbitrary subprocess; commits are sent on stdin as
+#                "{sha} {message}\n" lines and stdout becomes the changelog body
+
+[changelog]
+# Strategy: "internal" | "git_cliff" | use the [changelog.strategy.external]
+# table to delegate to an external command.
+#
+# Uncomment ONE of the blocks below, or leave the default (internal).
+
+# --- Option 1: built-in renderer (default) ---
+# strategy = "internal"
+
+# Whether to include commit authors, SHAs, and commit/PR links in entries.
+include_authors = true
+include_shas = true
+include_links = true
+
+# Section (type group) heading template.  {title} is replaced with the
+# conventional-commit type (e.g. "feat", "fix").
+section_template = "### {title}\n\n{entries}\n"
+
+# Per-commit line template.  {description} and {sha} are replaced at runtime.
+commit_template = "- {description} [{sha}]"
+
+# Remote URL used to generate links (leave blank to auto-detect from git remote).
+# remote_url = "https://github.com/myorg/myrepo"
+
+# --- Option 2: git-cliff-core renderer ---
+# Uncomment to use the bundled git-cliff-core library for changelog generation.
+# strategy = "git_cliff"
+# repository_path = "."
+
+# --- Option 3: external command ---
+# Uncomment to delegate changelog generation to a subprocess.
+# Commits are piped to stdin as "{sha} {message}\n" lines; stdout becomes the body.
+#
+# [changelog.strategy.external]
+# command = "git-cliff --from-stdin --unreleased"
+# env_vars = { GIT_CLIFF_CONFIG = "/path/to/cliff.toml" }
+# timeout_ms = 30000
 
 # ─────────────────────────────────────────────────────────────────────────────
 # GitHub releases

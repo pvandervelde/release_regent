@@ -500,3 +500,27 @@ fn test_load_options_default_branch_can_be_set() {
     assert_eq!(opts.default_branch.as_deref(), Some("develop"));
     assert!(opts.installation_id.is_none());
 }
+
+/// The sample config file in samples/config/release-regent.toml must parse
+/// without error.  This catches any drift between the sample and the real
+/// config schema.
+#[test]
+fn test_sample_config_parses_without_error() {
+    let sample = include_str!("../../../samples/config/release-regent.toml");
+    let config: ReleaseRegentConfig =
+        toml::from_str(sample).expect("samples/config/release-regent.toml should parse");
+
+    // Spot-check a few fields documented in the sample.
+    assert_eq!(config.core.branches.main, "main");
+    assert!(matches!(
+        config.versioning.strategy,
+        VersioningStrategy::Conventional
+    ));
+    assert!(config.versioning.allow_override);
+    assert!(!config.release_pr.draft);
+    assert!(matches!(
+        config.changelog.strategy,
+        crate::changelog::ChangelogStrategy::Internal
+    ));
+    assert!(config.changelog.include_shas);
+}
