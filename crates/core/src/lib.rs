@@ -384,6 +384,7 @@ where
             orchestrator_config: release_orchestrator::OrchestratorConfig {
                 branch_prefix: release_orchestrator::OrchestratorConfig::default().branch_prefix,
                 title_template: repo_config.release_pr.title_template.clone(),
+                body_template: repo_config.release_pr.body_template.clone(),
                 changelog_header: "## Changelog".to_string(),
                 manifest_files: repo_config.release_pr.manifest_files.clone(),
                 auto_detect_manifests: repo_config.release_pr.auto_detect_manifests,
@@ -956,6 +957,7 @@ where
             branch_prefix: release_orchestrator::OrchestratorConfig::DEFAULT_BRANCH_PREFIX
                 .to_string(),
             title_template: repo_config.release_pr.title_template.clone(),
+            body_template: repo_config.release_pr.body_template.clone(),
             changelog_header: "## Changelog".to_string(),
             manifest_files: repo_config.release_pr.manifest_files.clone(),
             auto_detect_manifests: repo_config.release_pr.auto_detect_manifests,

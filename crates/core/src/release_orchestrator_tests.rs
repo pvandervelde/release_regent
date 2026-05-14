@@ -1190,6 +1190,60 @@ async fn test_title_template_dollar_brace_version_tag_syntax_is_substituted() {
     }
 }
 
+/// Custom `body_template` is substituted into the PR body; only the current
+/// release changelog appears under `${changelog}`.
+#[tokio::test]
+async fn test_body_template_is_used_in_pr_body() {
+    let config = OrchestratorConfig {
+        body_template: "# Release\n\n${changelog}\n\n---\n*auto-generated*".to_string(),
+        ..OrchestratorConfig::default()
+    };
+    let github = TestGitHub::new();
+    let orchestrator = ReleaseOrchestrator::new(config, &github);
+
+    let changelog = "### Added\n\n- feat: shiny thing [ab12cd34ef5678901234abcdef12345678901234]";
+
+    let result = orchestrator
+        .orchestrate(
+            "testorg",
+            "testrepo",
+            &ver(1, 3, 0),
+            changelog,
+            "main",
+            "sha011",
+            "corr-011",
+        )
+        .await
+        .expect("orchestrate should succeed");
+
+    if let OrchestratorResult::Created { .. } = result {
+        let prs = github.created_prs().await;
+        assert_eq!(prs.len(), 1);
+        let body = prs[0].body.as_deref().unwrap_or("");
+        // Template prefix and suffix preserved.
+        assert!(
+            body.starts_with("# Release\n\n"),
+            "template prefix missing; body:\n{body}"
+        );
+        assert!(
+            body.ends_with("---\n*auto-generated*"),
+            "template suffix missing; body:\n{body}"
+        );
+        // Only current-release entries are present.
+        assert!(
+            body.contains("shiny thing"),
+            "changelog entry missing; body:\n{body}"
+        );
+        // The old `## Changelog` sentinel is NOT present because we overrode it.
+        assert!(
+            !body.contains("## Changelog"),
+            "default header should not appear in custom template; body:\n{body}"
+        );
+    } else {
+        panic!("expected Created, got {result:?}");
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Unit tests for internal helpers
 // ─────────────────────────────────────────────────────────────────────────────

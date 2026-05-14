@@ -75,9 +75,22 @@ pub struct OrchestratorConfig {
     /// Defaults to `"chore(release): {version_tag}"`.
     pub title_template: String,
 
+    /// Template for the release PR body.
+    ///
+    /// Use `${changelog}` as a placeholder; it is replaced with the formatted
+    /// changelog entries for **this release only**.  Any text before or after the
+    /// placeholder (version badges, footers, etc.) is preserved verbatim.
+    ///
+    /// Defaults to `"## Changelog\n\n${changelog}"`.
+    pub body_template: String,
+
     /// Sentinel that separates the generated changelog from any trailing content
     /// in the PR body.  The orchestrator will only look for commits between
     /// `## Changelog` and the next `##` heading (or end of string).
+    ///
+    /// Must match the Markdown heading that immediately precedes `${changelog}`
+    /// in [`Self::body_template`] so that changelog extraction from existing PR
+    /// bodies works correctly when updating an existing release PR.
     ///
     /// Defaults to `"## Changelog"`.
     pub changelog_header: String,
@@ -103,6 +116,9 @@ pub struct OrchestratorConfig {
 impl OrchestratorConfig {
     /// The default branch prefix used when no explicit configuration is provided.
     pub const DEFAULT_BRANCH_PREFIX: &'static str = "release";
+
+    /// The default PR body template string.
+    pub const DEFAULT_BODY_TEMPLATE: &'static str = "## Changelog\n\n${changelog}";
 }
 
 impl Default for OrchestratorConfig {
@@ -110,6 +126,7 @@ impl Default for OrchestratorConfig {
         Self {
             branch_prefix: Self::DEFAULT_BRANCH_PREFIX.to_string(),
             title_template: "chore(release): {version_tag}".to_string(),
+            body_template: Self::DEFAULT_BODY_TEMPLATE.to_string(),
             changelog_header: "## Changelog".to_string(),
             manifest_files: Vec::new(),
             auto_detect_manifests: true,
@@ -897,9 +914,10 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
             .replace("{version}", &version_str)
     }
 
-    /// Wrap the changelog body in the standard PR body format.
+    /// Render the PR body by substituting `${changelog}` in the configured
+    /// body template with the current release's changelog entries.
     fn render_body(&self, changelog: &str) -> String {
-        format!("{}\n\n{}", self.config.changelog_header, changelog)
+        self.config.body_template.replace("${changelog}", changelog)
     }
 
     /// Extract the changelog section from a PR body.
