@@ -340,6 +340,8 @@ fn merge_config_with_locks(
             // excluded_pr_authors is not lockable; always from incoming.
             excluded_pr_authors: incoming.versioning.excluded_pr_authors,
         },
+        // changelog is not lockable; always take from incoming.
+        changelog: incoming.changelog,
     }
 }
 
