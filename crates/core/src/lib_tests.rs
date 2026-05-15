@@ -1360,13 +1360,31 @@ impl VersionCalculator for TestVersionCalcForLib {
         _options: CalculationOptions,
     ) -> CoreResult<VersionCalculationResult> {
         *self.captured_ctx.lock().await = Some(ctx.clone());
+        // Synthesise CommitAnalysis entries from changelog_entries so that
+        // calculate_version_for_merge can build ConventionalCommit items from
+        // analyzed_commits (which carry the raw commit_type/message data).
+        let analyzed_commits: Vec<CommitAnalysis> = self
+            .changelog_entries
+            .iter()
+            .map(|e| CommitAnalysis {
+                author: String::new(),
+                commit_type: Some(e.entry_type.clone()),
+                date: chrono::Utc::now(),
+                is_breaking: e.is_breaking,
+                message: e.description.clone(),
+                metadata: std::collections::HashMap::new(),
+                scope: e.scope.clone(),
+                sha: e.commit_sha.clone(),
+                version_bump: VersionBump::None,
+            })
+            .collect();
         Ok(VersionCalculationResult {
             next_version: self.next_version.clone(),
             current_version: ctx.current_version,
             version_bump: self.version_bump.clone(),
             is_prerelease: false,
             build_metadata: None,
-            analyzed_commits: vec![],
+            analyzed_commits,
             changelog_entries: self.changelog_entries.clone(),
             strategy: VCalcStrategy::ConventionalCommits {
                 custom_types: HashMap::new(),

@@ -631,14 +631,13 @@ path        = "version.txt"
 format      = "plain_text"
 version_key = 'version = "([^"]+)"'
 
-# ── Changelog (optional overrides) ─────────────────────────────────────────
-# The [changelog] section is now parsed (was silently ignored before).
-# Leave it commented out to use the app-level defaults (built-in renderer).
-#
-# [changelog]
-# strategy = "internal"    # "internal" | "git_cliff" | see strategy.external
-# include_shas   = true
-# include_links  = true
+# ── Changelog ──────────────────────────────────────────────────────────────
+# Override the app-level defaults to use git-cliff-core for rendering.
+# This exercises the [changelog] config path that was previously ignored.
+[changelog]
+strategy      = "git_cliff"  # "internal" (default) | "git_cliff" | strategy.external
+include_shas  = true
+include_links = true
 "@
 
 New-RepoFile 'src/greeting.md' @"

@@ -1087,19 +1087,27 @@ where
             .calculate_version(ctx, strategy, options)
             .await?;
 
-        // Convert ChangelogEntry items to ConventionalCommit so that
-        // ChangelogGenerator can apply the configured strategy (internal,
-        // git-cliff, or external subprocess).
+        // Build ConventionalCommit items from the raw analyzed_commits so that
+        // all ChangelogGenerator strategies receive the correct vocabulary:
+        // - commit_type = raw conventional-commit type token ("feat", "fix", …)
+        // - message     = full original commit string ("feat(auth): add OAuth")
+        // These are required for git-cliff (message parsed as conv-commit) and
+        // external tools (stdin line reconstructed from sha + message).
+        // Entries without a commit_type (e.g. merges) are omitted; they would
+        // produce empty sections in every strategy.
         let commits: Vec<versioning::ConventionalCommit> = calc_result
-            .changelog_entries
+            .analyzed_commits
             .iter()
-            .map(|e| versioning::ConventionalCommit {
-                commit_type: e.entry_type.clone(),
-                scope: e.scope.clone(),
-                description: e.description.clone(),
-                breaking_change: e.is_breaking,
-                message: e.description.clone(),
-                sha: e.commit_sha.clone(),
+            .filter_map(|a| {
+                let commit_type = a.commit_type.clone()?;
+                Some(versioning::ConventionalCommit {
+                    commit_type,
+                    scope: a.scope.clone(),
+                    description: a.message.clone(),
+                    breaking_change: a.is_breaking,
+                    message: a.message.clone(),
+                    sha: a.sha.clone(),
+                })
             })
             .collect();
 
