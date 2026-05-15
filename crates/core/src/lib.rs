@@ -339,7 +339,10 @@ where
             config,
             &self
                 .github_operations
-                .scoped_to(self.resolve_installation_id(owner, repo).await?),
+                .scoped_to(
+                    self.resolve_installation_id(owner, repo)
+                        .await?,
+                ),
         )
         .automate(owner, repo, event, correlation_id)
         .await
@@ -399,7 +402,10 @@ where
             config,
             &self
                 .github_operations
-                .scoped_to(self.resolve_installation_id(owner, repo).await?),
+                .scoped_to(
+                    self.resolve_installation_id(owner, repo)
+                        .await?,
+                ),
         )
         .process(event)
         .await
@@ -459,7 +465,9 @@ where
             .unwrap_or_default()
             .to_string();
 
-        let installation_id = self.resolve_installation_id(owner, repo).await?;
+        let installation_id = self
+            .resolve_installation_id(owner, repo)
+            .await?;
 
         let repo_config = self
             .configuration_provider
@@ -944,7 +952,9 @@ where
             })?
             .to_string();
 
-        let installation_id = self.resolve_installation_id(owner, repo).await?;
+        let installation_id = self
+            .resolve_installation_id(owner, repo)
+            .await?;
 
         let MergeCalcResult {
             calc_result,
