@@ -416,9 +416,9 @@ postprocessors = []
 
 [git]
 conventional_commits = true
-filter_unconventional = false
+filter_unconventional = true
 split_commits = false
-require_conventional = true
+require_conventional = false
 commit_preprocessors = []
 commit_parsers = [
     { message = "^feat", group = "Features" },
