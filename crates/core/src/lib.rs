@@ -339,10 +339,7 @@ where
             config,
             &self
                 .github_operations
-                .scoped_to(
-                    self.resolve_installation_id(owner, repo)
-                        .await?,
-                ),
+                .scoped_to(self.resolve_installation_id(owner, repo).await?),
         )
         .automate(owner, repo, event, correlation_id)
         .await
@@ -402,10 +399,7 @@ where
             config,
             &self
                 .github_operations
-                .scoped_to(
-                    self.resolve_installation_id(owner, repo)
-                        .await?,
-                ),
+                .scoped_to(self.resolve_installation_id(owner, repo).await?),
         )
         .process(event)
         .await
@@ -465,9 +459,7 @@ where
             .unwrap_or_default()
             .to_string();
 
-        let installation_id = self
-            .resolve_installation_id(owner, repo)
-            .await?;
+        let installation_id = self.resolve_installation_id(owner, repo).await?;
 
         let repo_config = self
             .configuration_provider
@@ -952,9 +944,7 @@ where
             })?
             .to_string();
 
-        let installation_id = self
-            .resolve_installation_id(owner, repo)
-            .await?;
+        let installation_id = self.resolve_installation_id(owner, repo).await?;
 
         let MergeCalcResult {
             calc_result,
@@ -1103,17 +1093,29 @@ where
         // - message     = full original commit string ("feat(auth): add OAuth")
         // These are required for git-cliff (message parsed as conv-commit) and
         // external tools (stdin line reconstructed from sha + message).
-        // Entries without a commit_type (e.g. merges) are omitted; they would
-        // produce empty sections in every strategy.
+        // In production, commit_type is always Some(...) — parse_single_conventional_commit
+        // falls back to "chore" for non-conventional messages such as merge commits.
+        // Non-conventional commits reach git-cliff/External and are silently dropped there
+        // by filter_unconventional=true; they are not omitted here.
+        // The filter_map's `?` guards only against custom VersionCalculator
+        // implementations that might return None for commit_type.
         let commits: Vec<versioning::ConventionalCommit> = calc_result
             .analyzed_commits
             .iter()
             .filter_map(|a| {
                 let commit_type = a.commit_type.clone()?;
+                // Extract the description by dropping the "type(scope): " prefix from
+                // the full commit message.  For non-conventional messages (e.g. merge
+                // commits) where no ": " separator exists, fall back to the full message.
+                let description = a
+                    .message
+                    .find(": ")
+                    .map(|i| a.message[i + 2..].to_string())
+                    .unwrap_or_else(|| a.message.clone());
                 Some(versioning::ConventionalCommit {
                     commit_type,
                     scope: a.scope.clone(),
-                    description: a.message.clone(),
+                    description,
                     breaking_change: a.is_breaking,
                     message: a.message.clone(),
                     sha: a.sha.clone(),

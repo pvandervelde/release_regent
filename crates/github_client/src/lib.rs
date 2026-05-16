@@ -2128,6 +2128,10 @@ fn is_not_found_error(error: &ApiError) -> bool {
 }
 
 #[cfg(test)]
+#[path = "installation_tests.rs"]
+mod installation_tests;
+
+#[cfg(test)]
 #[path = "lib_tests.rs"]
 mod lib_tests;
 
