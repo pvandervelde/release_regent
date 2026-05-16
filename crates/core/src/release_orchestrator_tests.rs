@@ -1322,6 +1322,50 @@ fn test_merge_changelog_sections_preserves_new_section_headers() {
     );
 }
 
+/// `merge_changelog_sections` deduplicates using abbreviated (7-char) SHAs.
+///
+/// Regression guard: git-cliff's body template historically truncated commit
+/// SHAs to 7 characters.  Even though the template now emits full SHAs, the
+/// deduplication logic must tolerate any SHA length ≥ 7 in case the user
+/// supplies a custom git-cliff template that still uses short hashes.
+#[test]
+fn test_merge_changelog_sections_handles_short_sha() {
+    let short_sha = "ab5749c";
+    let existing = format!("- fix: previous fix [{short_sha}]");
+    let new_section = format!("- fix: previous fix (dupe) [{short_sha}]");
+
+    let merged = merge_changelog_sections(&existing, &new_section);
+
+    assert_eq!(
+        merged.matches(short_sha).count(),
+        1,
+        "short SHA should be recognised; merged:\n{merged}"
+    );
+}
+
+/// `merge_changelog_sections` adds a new entry when the incoming section uses a
+/// 7-char SHA that is not already present in the existing section.
+#[test]
+fn test_merge_changelog_sections_appends_new_entry_with_short_sha() {
+    let old_sha = "0000001";
+    let new_sha = "aaabbbc";
+    let existing = format!("### Bug Fixes\n\n- fix: old thing [{old_sha}]");
+    let new_section =
+        format!("### Bug Fixes\n\n- fix: old thing [{old_sha}]\n- fix: new thing [{new_sha}]");
+
+    let merged = merge_changelog_sections(&existing, &new_section);
+
+    assert!(
+        merged.contains("new thing"),
+        "new entry should be appended; merged:\n{merged}"
+    );
+    assert_eq!(
+        merged.matches(old_sha).count(),
+        1,
+        "old entry must not be duplicated; merged:\n{merged}"
+    );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Unit tests for build_changelog_file_content
 // ─────────────────────────────────────────────────────────────────────────────

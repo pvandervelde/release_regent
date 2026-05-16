@@ -466,6 +466,89 @@ fn test_generate_with_git_cliff_links_without_remote_url() {
     );
 }
 
+/// Reproduce the real-world scenario from glitchgrove/rr-test:
+/// 1 conventional fix commit + 1 non-conventional merge commit.
+/// With `filter_unconventional = true` the merge commit is skipped and the
+/// fix commit should produce a non-empty "Bug Fixes" section.
+#[test]
+fn test_generate_with_git_cliff_filters_merge_commit() {
+    let config = ChangelogConfig {
+        strategy: ChangelogStrategy::GitCliff,
+        include_links: false,
+        ..Default::default()
+    };
+    let generator = ChangelogGenerator::with_config(config);
+    let commits = vec![
+        ConventionalCommit {
+            commit_type: "fix".to_string(),
+            scope: Some("api".to_string()),
+            description: "return 400 when input name is empty".to_string(),
+            breaking_change: false,
+            message: "fix(api): return 400 when input name is empty".to_string(),
+            sha: "ab5749c3ab5749c3ab5749c3ab5749c3ab5749c3".to_string(),
+        },
+        ConventionalCommit {
+            commit_type: "chore".to_string(),
+            scope: None,
+            description: "Merge pull request #1 from glitchgrove/fix/handle-empty-input"
+                .to_string(),
+            breaking_change: false,
+            message: "Merge pull request #1 from glitchgrove/fix/handle-empty-input".to_string(),
+            sha: "0a382b0d0a382b0d0a382b0d0a382b0d0a382b0d".to_string(),
+        },
+    ];
+
+    let result = generator.generate_changelog(&commits);
+    assert!(
+        result.is_ok(),
+        "git-cliff path should not error: {result:?}"
+    );
+    let text = result.unwrap();
+    println!("Generated changelog:\n{text:?}");
+    assert!(
+        !text.is_empty(),
+        "expected non-empty changelog from fix+merge commits, got empty string"
+    );
+    assert!(
+        text.contains("Bug Fixes") || text.contains("fix"),
+        "expected Bug Fixes section, got:\n{text}"
+    );
+}
+
+/// When every commit is non-conventional (e.g. only merge commits),
+/// `generate_with_git_cliff` should return "No changes in this release."
+/// rather than an empty string that would produce a blank PR body.
+#[test]
+fn test_generate_with_git_cliff_all_non_conventional_returns_no_changes() {
+    let config = ChangelogConfig {
+        strategy: ChangelogStrategy::GitCliff,
+        include_links: false,
+        ..Default::default()
+    };
+    let generator = ChangelogGenerator::with_config(config);
+
+    // Only a bare merge commit — non-conventional, no type prefix.
+    let commits = vec![ConventionalCommit {
+        commit_type: "chore".to_string(),
+        scope: None,
+        description: "Merge pull request #2 from owner/branch".to_string(),
+        breaking_change: false,
+        message: "Merge pull request #2 from owner/branch".to_string(),
+        sha: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef".to_string(),
+    }];
+
+    let result = generator.generate_changelog(&commits);
+    assert!(
+        result.is_ok(),
+        "should not error on non-conventional commits"
+    );
+    let text = result.unwrap();
+    assert_eq!(
+        text, "No changes in this release.",
+        "expected fallback message when git-cliff filters all commits, got:\n{text:?}"
+    );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // ChangelogStrategy serialization / round-trip tests
 // ─────────────────────────────────────────────────────────────────────────────

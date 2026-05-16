@@ -342,7 +342,15 @@ impl ChangelogGenerator {
             crate::errors::CoreError::changelog_generation(format!("UTF-8 conversion error: {e}"))
         })?;
 
-        Ok(changelog_string)
+        let trimmed = changelog_string.trim().to_string();
+        if trimmed.is_empty() {
+            // All commits were filtered (e.g. only merge commits with filter_unconventional=true).
+            // Return the same sentinel the public API uses for an empty commit list so callers
+            // get a meaningful message rather than a blank PR body.
+            Ok("No changes in this release.".to_string())
+        } else {
+            Ok(trimmed)
+        }
     }
 
     /// Generate changelog using the built-in template renderer.
@@ -399,13 +407,11 @@ impl ChangelogGenerator {
     fn create_git_cliff_config() -> crate::errors::CoreResult<GitCliffConfig> {
         let config_toml = r#"
 [changelog]
-header = """
-"""
 body = """
 {%- for group, commits in commits | group_by(attribute="group") %}
 ### {{ group | title }}
 {%- for commit in commits %}
-- {{ commit.message | split(pat=":") | last | trim }} [{{ commit.id | truncate(length=7, end="") }}]
+- {{ commit.message | split(pat=":") | last | trim }} [{{ commit.id }}]
 {%- endfor %}
 
 {%- endfor %}

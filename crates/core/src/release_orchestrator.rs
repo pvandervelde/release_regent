@@ -1193,20 +1193,23 @@ fn skip_existing_version_section<'a>(rest: &'a str, version_str: &str) -> &'a st
 
 /// Merge two formatted changelog strings, deduplicating committed entries by SHA.
 ///
-/// Lines matching the pattern `- ... [<40-hex-SHA>]` are treated as commit
-/// entries.  New entries from `new_section` that share a SHA with an entry in
-/// `existing_section` are dropped.  All other lines are kept as-is from
-/// `existing_section`, with unique new entries appended.
+/// Lines matching the pattern `- ... [<hex-SHA>]` (where the SHA is 7–40
+/// hexadecimal characters) are treated as commit entries.  New entries from
+/// `new_section` that share a SHA with an entry in `existing_section` are
+/// dropped.  All other lines are kept as-is from `existing_section`, with
+/// unique new entries appended.
 fn merge_changelog_sections(existing_section: &str, new_section: &str) -> String {
-    /// Extract the last 40-character hex token from a commit line if it exists.
+    /// Extract the last hex SHA token from a commit line if it exists.
     fn extract_sha(line: &str) -> Option<&str> {
-        // Looks for `[<sha>]` at end of line where sha is exactly 40 hex chars.
+        // Looks for `[<sha>]` at end of line where sha is 7-40 hex chars.
+        // Both abbreviated (7-char) and full (40-char) SHAs are accepted so
+        // that changelogs from any supported strategy can be deduplicated.
         let inner = line.rfind('[').and_then(|i| {
             let after = &line[i + 1..];
             let close = after.find(']')?;
             Some(&after[..close])
         })?;
-        if inner.len() == 40 && inner.chars().all(|c| c.is_ascii_hexdigit()) {
+        if (7..=40).contains(&inner.len()) && inner.chars().all(|c| c.is_ascii_hexdigit()) {
             Some(inner)
         } else {
             None
