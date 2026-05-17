@@ -1190,6 +1190,60 @@ async fn test_title_template_dollar_brace_version_tag_syntax_is_substituted() {
     }
 }
 
+/// Custom `body_template` is substituted into the PR body; only the current
+/// release changelog appears under `${changelog}`.
+#[tokio::test]
+async fn test_body_template_is_used_in_pr_body() {
+    let config = OrchestratorConfig {
+        body_template: "# Release\n\n${changelog}\n\n---\n*auto-generated*".to_string(),
+        ..OrchestratorConfig::default()
+    };
+    let github = TestGitHub::new();
+    let orchestrator = ReleaseOrchestrator::new(config, &github);
+
+    let changelog = "### Added\n\n- feat: shiny thing [ab12cd34ef5678901234abcdef12345678901234]";
+
+    let result = orchestrator
+        .orchestrate(
+            "testorg",
+            "testrepo",
+            &ver(1, 3, 0),
+            changelog,
+            "main",
+            "sha011",
+            "corr-011",
+        )
+        .await
+        .expect("orchestrate should succeed");
+
+    if let OrchestratorResult::Created { .. } = result {
+        let prs = github.created_prs().await;
+        assert_eq!(prs.len(), 1);
+        let body = prs[0].body.as_deref().unwrap_or("");
+        // Template prefix and suffix preserved.
+        assert!(
+            body.starts_with("# Release\n\n"),
+            "template prefix missing; body:\n{body}"
+        );
+        assert!(
+            body.ends_with("---\n*auto-generated*"),
+            "template suffix missing; body:\n{body}"
+        );
+        // Only current-release entries are present.
+        assert!(
+            body.contains("shiny thing"),
+            "changelog entry missing; body:\n{body}"
+        );
+        // The old `## Changelog` sentinel is NOT present because we overrode it.
+        assert!(
+            !body.contains("## Changelog"),
+            "default header should not appear in custom template; body:\n{body}"
+        );
+    } else {
+        panic!("expected Created, got {result:?}");
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Unit tests for internal helpers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1265,6 +1319,170 @@ fn test_merge_changelog_sections_preserves_new_section_headers() {
         merged.matches(sha_old).count(),
         1,
         "old SHA should appear exactly once; merged:\n{merged}"
+    );
+}
+
+/// `merge_changelog_sections` deduplicates using abbreviated (7-char) SHAs.
+///
+/// Regression guard: git-cliff's body template historically truncated commit
+/// SHAs to 7 characters.  Even though the template now emits full SHAs, the
+/// deduplication logic must tolerate any SHA length ≥ 7 in case the user
+/// supplies a custom git-cliff template that still uses short hashes.
+#[test]
+fn test_merge_changelog_sections_handles_short_sha() {
+    let short_sha = "ab5749c";
+    let existing = format!("- fix: previous fix [{short_sha}]");
+    let new_section = format!("- fix: previous fix (dupe) [{short_sha}]");
+
+    let merged = merge_changelog_sections(&existing, &new_section);
+
+    assert_eq!(
+        merged.matches(short_sha).count(),
+        1,
+        "short SHA should be recognised; merged:\n{merged}"
+    );
+}
+
+/// `merge_changelog_sections` adds a new entry when the incoming section uses a
+/// 7-char SHA that is not already present in the existing section.
+#[test]
+fn test_merge_changelog_sections_appends_new_entry_with_short_sha() {
+    let old_sha = "0000001";
+    let new_sha = "aaabbbc";
+    let existing = format!("### Bug Fixes\n\n- fix: old thing [{old_sha}]");
+    let new_section =
+        format!("### Bug Fixes\n\n- fix: old thing [{old_sha}]\n- fix: new thing [{new_sha}]");
+
+    let merged = merge_changelog_sections(&existing, &new_section);
+
+    assert!(
+        merged.contains("new thing"),
+        "new entry should be appended; merged:\n{merged}"
+    );
+    assert_eq!(
+        merged.matches(old_sha).count(),
+        1,
+        "old entry must not be duplicated; merged:\n{merged}"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Unit tests for build_changelog_file_content
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Empty existing content produces a fresh `# Changelog` header followed by
+/// the new version section.
+#[test]
+fn test_build_changelog_file_content_empty_existing() {
+    let result =
+        build_changelog_file_content("", "1.0.0", "2024-01-15", "### Added\n\n- feat: new");
+
+    assert!(
+        result.starts_with("# Changelog\n"),
+        "should start with file-level header; got:\n{result}"
+    );
+    assert!(
+        result.contains("## [1.0.0] - 2024-01-15"),
+        "should contain version section; got:\n{result}"
+    );
+    assert!(
+        result.contains("feat: new"),
+        "should contain changelog body; got:\n{result}"
+    );
+}
+
+/// Existing history is preserved below the newly inserted section.
+#[test]
+fn test_build_changelog_file_content_with_existing_history() {
+    let existing = "# Changelog\n\n## [0.9.0] - 2024-01-01\n\n### Added\n\n- feat: old\n";
+
+    let result =
+        build_changelog_file_content(existing, "1.0.0", "2024-01-15", "### Added\n\n- feat: new");
+
+    let pos_new = result
+        .find("## [1.0.0]")
+        .expect("new section must be present");
+    let pos_old = result
+        .find("## [0.9.0]")
+        .expect("old section must be preserved");
+    assert!(
+        pos_new < pos_old,
+        "new section must appear before old section; got:\n{result}"
+    );
+}
+
+/// Calling the function twice with the same version replaces the existing
+/// section rather than duplicating it (idempotent behaviour).
+#[test]
+fn test_build_changelog_file_content_idempotent_same_version() {
+    let existing = "# Changelog\n\n## [1.0.0] - 2024-01-15\n\n### Added\n\n- feat: first run\n";
+
+    let result = build_changelog_file_content(
+        existing,
+        "1.0.0",
+        "2024-01-15",
+        "### Added\n\n- feat: second run",
+    );
+
+    assert_eq!(
+        result.matches("## [1.0.0]").count(),
+        1,
+        "version section must not be duplicated; got:\n{result}"
+    );
+    assert!(
+        result.contains("second run"),
+        "updated body must be present; got:\n{result}"
+    );
+    assert!(
+        !result.contains("first run"),
+        "old body must be replaced; got:\n{result}"
+    );
+}
+
+/// Content that already starts with a `## [version]` line (no file-level
+/// `# Changelog` header) gets the header prepended automatically.
+#[test]
+fn test_build_changelog_file_content_no_header() {
+    let existing = "## [0.1.0] - 2023-12-01\n\n### Fixed\n\n- fix: old\n";
+
+    let result =
+        build_changelog_file_content(existing, "1.0.0", "2024-01-15", "### Added\n\n- feat: new");
+
+    assert!(
+        result.starts_with("# Changelog\n"),
+        "generated header must be present; got:\n{result}"
+    );
+    assert!(
+        result.contains("## [1.0.0]"),
+        "new section must be present; got:\n{result}"
+    );
+    assert!(
+        result.contains("## [0.1.0]"),
+        "old section must be preserved; got:\n{result}"
+    );
+}
+
+/// Existing file-level header text (e.g. a description below `# Changelog`)
+/// is preserved verbatim.
+#[test]
+fn test_build_changelog_file_content_preserves_file_header() {
+    let existing =
+        "# Changelog\n\nAll notable changes are documented here.\n\n## [0.2.0] - 2024-01-10\n\n### Fixed\n\n- fix: something\n";
+
+    let result =
+        build_changelog_file_content(existing, "1.0.0", "2024-01-15", "### Added\n\n- feat: new");
+
+    assert!(
+        result.contains("All notable changes are documented here."),
+        "header description must be preserved; got:\n{result}"
+    );
+    assert!(
+        result.contains("## [1.0.0]"),
+        "new section must be present; got:\n{result}"
+    );
+    assert!(
+        result.contains("## [0.2.0]"),
+        "old section must be preserved; got:\n{result}"
     );
 }
 
@@ -1410,6 +1628,50 @@ fn test_extract_changelog_from_pr_body_empty_section_returns_empty() {
 fn test_extract_changelog_from_pr_body_empty_body_returns_empty() {
     let result = extract_changelog_from_pr_body("", "## Changelog");
     assert_eq!(result, "");
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// extract_changelog_header — free-function unit tests
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+#[test]
+fn test_extract_changelog_header_returns_default_heading_from_default_template() {
+    let header = super::extract_changelog_header(
+        crate::release_orchestrator::OrchestratorConfig::DEFAULT_BODY_TEMPLATE,
+    );
+    assert_eq!(header, "## Changelog");
+}
+
+#[test]
+fn test_extract_changelog_header_returns_custom_heading() {
+    let template = "## Release Notes\n\n${changelog}";
+    assert_eq!(
+        super::extract_changelog_header(template),
+        "## Release Notes"
+    );
+}
+
+#[test]
+fn test_extract_changelog_header_falls_back_when_no_heading_before_placeholder() {
+    assert_eq!(
+        super::extract_changelog_header("${changelog}"),
+        "## Changelog"
+    );
+}
+
+#[test]
+fn test_extract_changelog_header_ignores_heading_after_placeholder() {
+    let template = "${changelog}\n\n## Ignored";
+    assert_eq!(super::extract_changelog_header(template), "## Changelog");
+}
+
+#[test]
+fn test_extract_changelog_header_picks_nearest_heading_when_multiple_precede_placeholder() {
+    let template = "## Top\n\nSome text\n\n## Release Notes\n\n${changelog}";
+    assert_eq!(
+        super::extract_changelog_header(template),
+        "## Release Notes"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

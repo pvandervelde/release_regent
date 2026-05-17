@@ -154,7 +154,7 @@ fn test_changelog_generation_section_ordering() {
 #[test]
 fn test_changelog_generation_custom_config() {
     let config = ChangelogConfig {
-        use_git_cliff: false,
+        strategy: ChangelogStrategy::Internal,
         include_authors: false,
         include_shas: false,
         include_links: false,
@@ -230,7 +230,7 @@ fn test_changelog_generation_scope_sorting() {
 fn test_changelog_generation_template_path_basic() {
     // Previously "test_enhanced_changelog_generation_basic": uses template renderer
     let config = ChangelogConfig {
-        use_git_cliff: false,
+        strategy: ChangelogStrategy::Internal,
         ..Default::default()
     };
     let generator = ChangelogGenerator::with_config(config);
@@ -268,7 +268,7 @@ fn test_changelog_generation_template_path_basic() {
 #[test]
 fn test_changelog_config_defaults() {
     let config = ChangelogConfig::default();
-    assert!(!config.use_git_cliff); // template renderer is the default
+    assert!(config.strategy == ChangelogStrategy::Internal); // template renderer is the default
     assert!(config.include_authors);
     assert!(config.include_shas);
     assert!(config.include_links);
@@ -279,15 +279,15 @@ fn test_changelog_config_defaults() {
 #[test]
 fn test_changelog_generator_creation() {
     let generator = ChangelogGenerator::new();
-    assert!(!generator.config.use_git_cliff); // default is template renderer
+    assert!(generator.config.strategy == ChangelogStrategy::Internal); // default is template renderer
 
     let custom_config = ChangelogConfig {
-        use_git_cliff: true,
+        strategy: ChangelogStrategy::GitCliff,
         include_authors: false,
         ..Default::default()
     };
     let custom_generator = ChangelogGenerator::with_config(custom_config);
-    assert!(custom_generator.config.use_git_cliff);
+    assert!(custom_generator.config.strategy == ChangelogStrategy::GitCliff);
     assert!(!custom_generator.config.include_authors);
 }
 
@@ -302,7 +302,7 @@ fn test_changelog_empty_commits() {
 #[test]
 fn test_changelog_with_git_cliff_enabled() {
     let config = ChangelogConfig {
-        use_git_cliff: true,
+        strategy: ChangelogStrategy::GitCliff,
         include_authors: true,
         include_shas: true,
         include_links: false, // Disable links to avoid remote dependency in tests
@@ -374,7 +374,7 @@ fn test_changelog_error_handling() {
 #[test]
 fn test_generate_with_git_cliff_happy_path() {
     let config = ChangelogConfig {
-        use_git_cliff: true,
+        strategy: ChangelogStrategy::GitCliff,
         include_links: false,
         ..Default::default()
     };
@@ -415,7 +415,7 @@ fn test_generate_with_git_cliff_happy_path() {
 #[test]
 fn test_generate_with_git_cliff_single_commit() {
     let config = ChangelogConfig {
-        use_git_cliff: true,
+        strategy: ChangelogStrategy::GitCliff,
         include_links: false,
         ..Default::default()
     };
@@ -443,7 +443,7 @@ fn test_generate_with_git_cliff_single_commit() {
 #[test]
 fn test_generate_with_git_cliff_links_without_remote_url() {
     let config = ChangelogConfig {
-        use_git_cliff: true,
+        strategy: ChangelogStrategy::GitCliff,
         include_links: true,
         remote_url: None,
         ..Default::default()
@@ -463,5 +463,230 @@ fn test_generate_with_git_cliff_links_without_remote_url() {
     assert!(
         result.is_ok(),
         "git-cliff path should not propagate remote-context errors: {result:?}"
+    );
+}
+
+/// Reproduce the real-world scenario from glitchgrove/rr-test:
+/// 1 conventional fix commit + 1 non-conventional merge commit.
+/// With `filter_unconventional = true` the merge commit is skipped and the
+/// fix commit should produce a non-empty "Bug Fixes" section.
+#[test]
+fn test_generate_with_git_cliff_filters_merge_commit() {
+    let config = ChangelogConfig {
+        strategy: ChangelogStrategy::GitCliff,
+        include_links: false,
+        ..Default::default()
+    };
+    let generator = ChangelogGenerator::with_config(config);
+    let commits = vec![
+        ConventionalCommit {
+            commit_type: "fix".to_string(),
+            scope: Some("api".to_string()),
+            description: "return 400 when input name is empty".to_string(),
+            breaking_change: false,
+            message: "fix(api): return 400 when input name is empty".to_string(),
+            sha: "ab5749c3ab5749c3ab5749c3ab5749c3ab5749c3".to_string(),
+        },
+        ConventionalCommit {
+            commit_type: "chore".to_string(),
+            scope: None,
+            description: "Merge pull request #1 from glitchgrove/fix/handle-empty-input"
+                .to_string(),
+            breaking_change: false,
+            message: "Merge pull request #1 from glitchgrove/fix/handle-empty-input".to_string(),
+            sha: "0a382b0d0a382b0d0a382b0d0a382b0d0a382b0d".to_string(),
+        },
+    ];
+
+    let result = generator.generate_changelog(&commits);
+    assert!(
+        result.is_ok(),
+        "git-cliff path should not error: {result:?}"
+    );
+    let text = result.unwrap();
+    println!("Generated changelog:\n{text:?}");
+    assert!(
+        !text.is_empty(),
+        "expected non-empty changelog from fix+merge commits, got empty string"
+    );
+    assert!(
+        text.contains("Bug Fixes") || text.contains("fix"),
+        "expected Bug Fixes section, got:\n{text}"
+    );
+}
+
+/// When every commit is non-conventional (e.g. only merge commits),
+/// `generate_with_git_cliff` should return "No changes in this release."
+/// rather than an empty string that would produce a blank PR body.
+#[test]
+fn test_generate_with_git_cliff_all_non_conventional_returns_no_changes() {
+    let config = ChangelogConfig {
+        strategy: ChangelogStrategy::GitCliff,
+        include_links: false,
+        ..Default::default()
+    };
+    let generator = ChangelogGenerator::with_config(config);
+
+    // Only a bare merge commit — non-conventional, no type prefix.
+    let commits = vec![ConventionalCommit {
+        commit_type: "chore".to_string(),
+        scope: None,
+        description: "Merge pull request #2 from owner/branch".to_string(),
+        breaking_change: false,
+        message: "Merge pull request #2 from owner/branch".to_string(),
+        sha: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef".to_string(),
+    }];
+
+    let result = generator.generate_changelog(&commits);
+    assert!(
+        result.is_ok(),
+        "should not error on non-conventional commits"
+    );
+    let text = result.unwrap();
+    assert_eq!(
+        text, "No changes in this release.",
+        "expected fallback message when git-cliff filters all commits, got:\n{text:?}"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ChangelogStrategy serialization / round-trip tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// `ChangelogStrategy::Internal` round-trips through TOML unchanged.
+#[test]
+fn test_changelog_strategy_internal_roundtrip() {
+    let config = ChangelogConfig {
+        strategy: ChangelogStrategy::Internal,
+        ..Default::default()
+    };
+    let toml = toml::to_string_pretty(&config).expect("should serialize");
+    let back: ChangelogConfig = toml::from_str(&toml).expect("should deserialize");
+    assert_eq!(back.strategy, ChangelogStrategy::Internal);
+}
+
+/// `ChangelogStrategy::GitCliff` round-trips through TOML unchanged.
+#[test]
+fn test_changelog_strategy_git_cliff_roundtrip() {
+    let config = ChangelogConfig {
+        strategy: ChangelogStrategy::GitCliff,
+        ..Default::default()
+    };
+    let toml = toml::to_string_pretty(&config).expect("should serialize");
+    let back: ChangelogConfig = toml::from_str(&toml).expect("should deserialize");
+    assert_eq!(back.strategy, ChangelogStrategy::GitCliff);
+}
+
+/// `ChangelogStrategy::External` round-trips through TOML with command, env_vars, and timeout.
+#[test]
+fn test_changelog_strategy_external_roundtrip() {
+    let mut env_vars = std::collections::HashMap::new();
+    env_vars.insert("FOO".to_string(), "bar".to_string());
+    let config = ChangelogConfig {
+        strategy: ChangelogStrategy::External {
+            command: "git-cliff --config cliff.toml".to_string(),
+            env_vars,
+            timeout_ms: 60_000,
+        },
+        ..Default::default()
+    };
+    let toml = toml::to_string_pretty(&config).expect("should serialize");
+    let back: ChangelogConfig = toml::from_str(&toml).expect("should deserialize");
+    if let ChangelogStrategy::External {
+        command,
+        env_vars,
+        timeout_ms,
+    } = back.strategy
+    {
+        assert_eq!(command, "git-cliff --config cliff.toml");
+        assert_eq!(env_vars.get("FOO").map(String::as_str), Some("bar"));
+        assert_eq!(timeout_ms, 60_000);
+    } else {
+        panic!("expected External strategy after round-trip");
+    }
+}
+
+/// `ChangelogStrategy::External` uses the default timeout when `timeout_ms` is omitted.
+#[test]
+fn test_changelog_strategy_external_default_timeout() {
+    let toml_input = r#"
+[strategy.external]
+command = "my-tool"
+env_vars = {}
+"#;
+    let config: ChangelogConfig =
+        toml::from_str(toml_input).expect("should parse external config without timeout_ms");
+    if let ChangelogStrategy::External { timeout_ms, .. } = config.strategy {
+        assert_eq!(timeout_ms, 30_000, "default timeout should be 30 000 ms");
+    } else {
+        panic!("expected External strategy");
+    }
+}
+
+/// An empty command returns a `ChangelogGeneration` error rather than panicking.
+#[test]
+fn test_generate_with_external_empty_command_returns_error() {
+    let config = ChangelogConfig {
+        strategy: ChangelogStrategy::External {
+            command: "".to_string(),
+            env_vars: std::collections::HashMap::new(),
+            timeout_ms: 5_000,
+        },
+        ..Default::default()
+    };
+    let generator = ChangelogGenerator::with_config(config);
+    let commits = vec![ConventionalCommit {
+        commit_type: "feat".to_string(),
+        scope: None,
+        description: "add thing".to_string(),
+        breaking_change: false,
+        message: "feat: add thing".to_string(),
+        sha: "abc123".to_string(),
+    }];
+
+    let result = generator.generate_changelog(&commits);
+    assert!(result.is_err(), "empty command should return an error");
+    let err_msg = result.unwrap_err().to_string().to_lowercase();
+    assert!(
+        err_msg.contains("empty") || err_msg.contains("command"),
+        "error should mention empty command; got: {err_msg}"
+    );
+}
+
+/// When the external tool exits 0 but writes nothing to stdout, the sentinel
+/// "No changes in this release." is returned instead of an empty string.
+#[test]
+fn test_generate_with_external_empty_output_returns_sentinel() {
+    // Use a cross-platform no-op command that succeeds and produces no stdout.
+    #[cfg(target_os = "windows")]
+    let (command, env_vars) = (
+        "cmd /c exit 0".to_string(),
+        std::collections::HashMap::new(),
+    );
+    #[cfg(not(target_os = "windows"))]
+    let (command, env_vars) = ("true".to_string(), std::collections::HashMap::new());
+
+    let config = ChangelogConfig {
+        strategy: ChangelogStrategy::External {
+            command,
+            env_vars,
+            timeout_ms: 5_000,
+        },
+        ..Default::default()
+    };
+    let generator = ChangelogGenerator::with_config(config);
+    let commits = vec![ConventionalCommit {
+        commit_type: "feat".to_string(),
+        scope: None,
+        description: "add thing".to_string(),
+        breaking_change: false,
+        message: "feat: add thing".to_string(),
+        sha: "abc123".to_string(),
+    }];
+
+    let result = generator.generate_changelog(&commits).unwrap();
+    assert_eq!(
+        result, "No changes in this release.",
+        "empty external output should return sentinel"
     );
 }

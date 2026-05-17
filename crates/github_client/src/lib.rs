@@ -1524,11 +1524,77 @@ impl GitHubOperations for GitHubClient {
             .get_as_app(&path)
             .await
             .map_err(map_sdk_error)?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            let code = status.as_u16();
+            return Err(match code {
+                // A 401 from the installation endpoint means the JWT was
+                // rejected by GitHub.  This is treated as a transient auth
+                // token failure (clock skew, brief GitHub auth service hiccup)
+                // per the error-handling spec; the event will be retried and a
+                // fresh JWT will be used on the next attempt.
+                401 => {
+                    warn!(
+                        owner,
+                        repo,
+                        status = code,
+                        "Installation lookup returned 401 — transient JWT \
+                         rejection; event will be retried"
+                    );
+                    CoreError::network(format!(
+                        "installation lookup for {owner}/{repo} failed with 401 \
+                         (transient auth token rejection): {body}"
+                    ))
+                }
+                // 404 means the GitHub App is not installed on this repository.
+                // This is a permanent configuration error, not a transient one.
+                404 => {
+                    warn!(
+                        owner,
+                        repo,
+                        status = code,
+                        "Installation lookup returned 404 — app may not be \
+                         installed on this repository"
+                    );
+                    CoreError::not_found(format!(
+                        "installation lookup for {owner}/{repo} failed with 404 \
+                         (app not installed?): {body}"
+                    ))
+                }
+                // 5xx responses are server-side errors — transient and retryable.
+                s if s >= 500 => {
+                    warn!(
+                        owner,
+                        repo,
+                        status = code,
+                        "Installation lookup returned server error — will retry"
+                    );
+                    CoreError::network(format!(
+                        "installation lookup for {owner}/{repo} failed with \
+                         server error {s}: {body}"
+                    ))
+                }
+                // All other failures (403, other 4xx) are permanent.
+                _ => CoreError::GitHub {
+                    source: Box::new(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        format!(
+                            "installation lookup for {owner}/{repo} failed with \
+                             status {status}: {body}"
+                        ),
+                    )),
+                    context: None,
+                },
+            });
+        }
+
         let body: serde_json::Value = response.json().await.map_err(CoreError::github)?;
         body["id"].as_u64().ok_or_else(|| CoreError::GitHub {
             source: Box::new(std::io::Error::new(
                 std::io::ErrorKind::Other,
-                "installation lookup response missing 'id' field",
+                format!("installation lookup for {owner}/{repo}: response missing 'id' field"),
             )),
             context: None,
         })
@@ -2060,6 +2126,10 @@ fn is_not_found_error(error: &ApiError) -> bool {
         ApiError::NotFound | ApiError::HttpError { status: 404, .. }
     )
 }
+
+#[cfg(test)]
+#[path = "installation_tests.rs"]
+mod installation_tests;
 
 #[cfg(test)]
 #[path = "lib_tests.rs"]

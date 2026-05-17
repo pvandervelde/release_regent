@@ -5,6 +5,7 @@ use crate::builders::{
     TestDataBuilder,
 };
 use release_regent_core::{
+    changelog::ChangelogConfig,
     config::{
         BranchConfig, CoreConfig, ErrorHandlingConfig, NotificationConfig, NotificationStrategy,
         ReleasePrConfig, ReleaseRegentConfig, ReleasesConfig, VersioningConfig, VersioningStrategy,
@@ -119,5 +120,6 @@ fn create_default_config() -> ReleaseRegentConfig {
             allow_override: false,
             excluded_pr_authors: Vec::new(),
         },
+        changelog: ChangelogConfig::default(),
     }
 }

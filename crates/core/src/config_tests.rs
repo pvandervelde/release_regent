@@ -93,6 +93,61 @@ fn test_default_configuration() {
         VersioningStrategy::Conventional
     ));
     assert!(config.versioning.allow_override);
+    // Changelog section defaults to the built-in template renderer.
+    assert!(matches!(
+        config.changelog.strategy,
+        crate::changelog::ChangelogStrategy::Internal
+    ));
+}
+
+/// A `[changelog]` block in a TOML config is no longer silently ignored —
+/// it is parsed into `ReleaseRegentConfig::changelog`.
+#[test]
+fn test_changelog_section_is_parsed_from_toml() {
+    let toml_input = r#"
+[changelog]
+include_shas = false
+include_links = false
+
+[changelog.strategy.external]
+command = "git-cliff"
+env_vars = {}
+timeout_ms = 45000
+"#;
+    let config: ReleaseRegentConfig = toml::from_str(toml_input).expect("should parse");
+    assert!(!config.changelog.include_shas);
+    assert!(!config.changelog.include_links);
+    if let crate::changelog::ChangelogStrategy::External {
+        command,
+        timeout_ms,
+        ..
+    } = config.changelog.strategy
+    {
+        assert_eq!(command, "git-cliff");
+        assert_eq!(timeout_ms, 45_000);
+    } else {
+        panic!(
+            "expected External changelog strategy, got {:?}",
+            config.changelog.strategy
+        );
+    }
+}
+
+/// A TOML config with no `[changelog]` block deserialises with the default
+/// changelog config (strategy = Internal, booleans = true).
+#[test]
+fn test_changelog_section_defaults_when_absent() {
+    let toml_input = r#"
+[core]
+version_prefix = "v"
+"#;
+    let config: ReleaseRegentConfig = toml::from_str(toml_input).expect("should parse");
+    assert!(matches!(
+        config.changelog.strategy,
+        crate::changelog::ChangelogStrategy::Internal
+    ));
+    assert!(config.changelog.include_shas);
+    assert!(config.changelog.include_links);
 }
 
 #[test]
@@ -444,4 +499,64 @@ fn test_load_options_default_branch_can_be_set() {
     };
     assert_eq!(opts.default_branch.as_deref(), Some("develop"));
     assert!(opts.installation_id.is_none());
+}
+
+/// The sample config file in samples/config/release-regent.toml must parse
+/// without error.  This catches any drift between the sample and the real
+/// config schema.
+#[test]
+fn test_sample_config_parses_without_error() {
+    let sample = include_str!("../../../samples/config/release-regent.toml");
+    let config: ReleaseRegentConfig =
+        toml::from_str(sample).expect("samples/config/release-regent.toml should parse");
+
+    // Spot-check a few fields documented in the sample.
+    assert_eq!(config.core.branches.main, "main");
+    assert!(matches!(
+        config.versioning.strategy,
+        VersioningStrategy::Conventional
+    ));
+    assert!(config.versioning.allow_override);
+    assert!(!config.release_pr.draft);
+    assert!(matches!(
+        config.changelog.strategy,
+        crate::changelog::ChangelogStrategy::Internal
+    ));
+    assert!(config.changelog.include_shas);
+}
+
+/// `validate()` must reject an `External` changelog strategy with an empty command.
+#[test]
+fn test_validate_rejects_external_changelog_strategy_with_empty_command() {
+    let mut config = ReleaseRegentConfig::default();
+    config.changelog.strategy = crate::changelog::ChangelogStrategy::External {
+        command: "   ".to_string(),
+        env_vars: Default::default(),
+        timeout_ms: 5_000,
+    };
+    let result = config.validate();
+    assert!(
+        result.is_err(),
+        "expected validation error for empty command"
+    );
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("changelog.strategy.external.command"),
+        "error should mention the field, got: {msg}"
+    );
+}
+
+/// `validate()` must accept a well-formed `External` changelog strategy.
+#[test]
+fn test_validate_accepts_external_changelog_strategy_with_non_empty_command() {
+    let mut config = ReleaseRegentConfig::default();
+    config.changelog.strategy = crate::changelog::ChangelogStrategy::External {
+        command: "/usr/local/bin/gen-changelog".to_string(),
+        env_vars: Default::default(),
+        timeout_ms: 30_000,
+    };
+    assert!(
+        config.validate().is_ok(),
+        "non-empty external command should pass validation"
+    );
 }

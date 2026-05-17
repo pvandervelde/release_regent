@@ -54,6 +54,7 @@ use crate::{
     versioning::SemanticVersion,
     CoreError, CoreResult,
 };
+use chrono::Utc;
 use tracing::{debug, info, warn};
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -74,9 +75,22 @@ pub struct OrchestratorConfig {
     /// Defaults to `"chore(release): {version_tag}"`.
     pub title_template: String,
 
+    /// Template for the release PR body.
+    ///
+    /// Use `${changelog}` as a placeholder; it is replaced with the formatted
+    /// changelog entries for **this release only**.  Any text before or after the
+    /// placeholder (version badges, footers, etc.) is preserved verbatim.
+    ///
+    /// Defaults to `"## Changelog\n\n${changelog}"`.
+    pub body_template: String,
+
     /// Sentinel that separates the generated changelog from any trailing content
     /// in the PR body.  The orchestrator will only look for commits between
     /// `## Changelog` and the next `##` heading (or end of string).
+    ///
+    /// Must match the Markdown heading that immediately precedes `${changelog}`
+    /// in [`Self::body_template`] so that changelog extraction from existing PR
+    /// bodies works correctly when updating an existing release PR.
     ///
     /// Defaults to `"## Changelog"`.
     pub changelog_header: String,
@@ -102,14 +116,55 @@ pub struct OrchestratorConfig {
 impl OrchestratorConfig {
     /// The default branch prefix used when no explicit configuration is provided.
     pub const DEFAULT_BRANCH_PREFIX: &'static str = "release";
+
+    /// The default PR body template string.
+    pub const DEFAULT_BODY_TEMPLATE: &'static str = "## Changelog\n\n${changelog}";
+}
+
+/// Derive the changelog-section header from a PR body template.
+///
+/// Scans `body_template` backwards from the `${changelog}` placeholder and
+/// returns the first `## ` heading line found.  Falls back to `"## Changelog"`
+/// when no such heading precedes the placeholder.
+///
+/// This keeps [`OrchestratorConfig::changelog_header`] and
+/// [`OrchestratorConfig::body_template`] in sync automatically: callers only
+/// need to set `body_template` and can derive `changelog_header` from it.
+///
+/// # Examples
+///
+/// ```
+/// use release_regent_core::release_orchestrator::extract_changelog_header;
+///
+/// assert_eq!(extract_changelog_header("## Changelog\n\n${changelog}"), "## Changelog");
+/// assert_eq!(extract_changelog_header("## Release Notes\n\n${changelog}"), "## Release Notes");
+/// // Falls back when no heading precedes the placeholder.
+/// assert_eq!(extract_changelog_header("${changelog}"), "## Changelog");
+/// ```
+pub fn extract_changelog_header(body_template: &str) -> String {
+    // Walk lines before ${changelog} in reverse to find the nearest ## heading.
+    let marker = "${changelog}";
+    let prefix = match body_template.find(marker) {
+        Some(i) => &body_template[..i],
+        None => body_template,
+    };
+    prefix
+        .lines()
+        .rev()
+        .find(|l| l.starts_with("## "))
+        .unwrap_or("## Changelog")
+        .to_string()
 }
 
 impl Default for OrchestratorConfig {
     fn default() -> Self {
+        let body_template = Self::DEFAULT_BODY_TEMPLATE.to_string();
+        let changelog_header = extract_changelog_header(&body_template);
         Self {
             branch_prefix: Self::DEFAULT_BRANCH_PREFIX.to_string(),
             title_template: "chore(release): {version_tag}".to_string(),
-            changelog_header: "## Changelog".to_string(),
+            changelog_header,
+            body_template,
             manifest_files: Vec::new(),
             auto_detect_manifests: true,
         }
@@ -380,10 +435,30 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
         let title = self.render_title(version);
         let body = self.render_body(changelog);
 
+        // Fetch the existing CHANGELOG.md from the base branch so we can
+        // prepend the new version section rather than overwriting history.
+        let existing_changelog_file = self
+            .github
+            .get_file_content(owner, repo, "CHANGELOG.md", base_branch)
+            .await
+            .unwrap_or_else(|e| {
+                warn!(error = %e, "Failed to fetch existing CHANGELOG.md; starting fresh");
+                None
+            })
+            .unwrap_or_default();
+
+        let today = Utc::now().format("%Y-%m-%d").to_string();
+        let changelog_file_content = build_changelog_file_content(
+            &existing_changelog_file,
+            &version.to_string(),
+            &today,
+            changelog,
+        );
+
         // Build the batch of files: CHANGELOG.md plus any manifest files.
         let mut file_updates = vec![FileUpdate {
             path: "CHANGELOG.md".to_string(),
-            content: changelog.to_string(),
+            content: changelog_file_content,
         }];
         self.collect_manifest_updates(owner, repo, &actual_branch, version, &mut file_updates)
             .await;
@@ -480,10 +555,31 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
         // Files are committed BEFORE the PR metadata is updated so that, if the
         // commit step fails, the PR body never drifts ahead of the branch content.
 
+        // Fetch the existing CHANGELOG.md from the PR branch and rebuild the
+        // full content with the merged changelog section prepended so that
+        // history is preserved rather than overwritten (issue #128).
+        let existing_changelog_file = self
+            .github
+            .get_file_content(owner, repo, "CHANGELOG.md", &fresh_pr.head.ref_name)
+            .await
+            .unwrap_or_else(|e| {
+                warn!(error = %e, "Failed to fetch existing CHANGELOG.md; starting fresh");
+                None
+            })
+            .unwrap_or_default();
+
+        let today = Utc::now().format("%Y-%m-%d").to_string();
+        let changelog_file_content = build_changelog_file_content(
+            &existing_changelog_file,
+            &version.to_string(),
+            &today,
+            &merged_changelog,
+        );
+
         // Build batch: CHANGELOG.md plus manifest files — all in one atomic commit.
         let mut file_updates = vec![FileUpdate {
             path: "CHANGELOG.md".to_string(),
-            content: merged_changelog.clone(),
+            content: changelog_file_content,
         }];
         self.collect_manifest_updates(
             owner,
@@ -855,9 +951,10 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
             .replace("{version}", &version_str)
     }
 
-    /// Wrap the changelog body in the standard PR body format.
+    /// Render the PR body by substituting `${changelog}` in the configured
+    /// body template with the current release's changelog entries.
     fn render_body(&self, changelog: &str) -> String {
-        format!("{}\n\n{}", self.config.changelog_header, changelog)
+        self.config.body_template.replace("${changelog}", changelog)
     }
 
     /// Extract the changelog section from a PR body.
@@ -1038,21 +1135,81 @@ pub fn extract_changelog_from_pr_body(body: &str, changelog_header: &str) -> Str
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Merge two formatted changelog strings, deduplicating by commit SHA.
+/// Build the complete CHANGELOG.md content by inserting a new version section.
 ///
-/// Lines matching the pattern `- ... [<40-hex-SHA>]` are treated as commit
-/// entries.  New entries from `new_section` that share a SHA with an entry in
-/// `existing_section` are dropped.  All other lines are kept as-is from
-/// `existing_section`, with unique new entries appended.
+/// Inserts `## [{version_str}] - {date_str}\n\n{changelog_body}` after the
+/// file-level `# Changelog` header and before any existing `## [version]`
+/// sections.  If the file already contains a section for `version_str` it is
+/// replaced so that the operation is idempotent.  When `existing_content` is
+/// empty or lacks a `# Changelog` header, one is generated automatically.
+pub(crate) fn build_changelog_file_content(
+    existing_content: &str,
+    version_str: &str,
+    date_str: &str,
+    changelog_body: &str,
+) -> String {
+    let (file_header, rest) = split_changelog_header_and_rest(existing_content);
+    let file_header = if file_header.trim().is_empty() {
+        "# Changelog".to_string()
+    } else {
+        file_header.trim_end().to_string()
+    };
+    let history = skip_existing_version_section(rest, version_str);
+    let body = changelog_body.trim();
+    let history = history.trim_start();
+    if history.is_empty() {
+        format!("{file_header}\n\n## [{version_str}] - {date_str}\n\n{body}\n")
+    } else {
+        format!("{file_header}\n\n## [{version_str}] - {date_str}\n\n{body}\n\n{history}\n")
+    }
+}
+
+/// Split a CHANGELOG.md string into the file-level header (anything before
+/// the first `## ` version line) and the remainder (from that `## ` line on).
+fn split_changelog_header_and_rest(content: &str) -> (&str, &str) {
+    if content.starts_with("## ") {
+        return ("", content);
+    }
+    if let Some(pos) = content.find("\n## ") {
+        (&content[..pos], &content[pos + 1..])
+    } else {
+        (content, "")
+    }
+}
+
+/// If `rest` starts with a version section for `version_str`, skip over it
+/// and return the remaining content.  Otherwise return `rest` unchanged.
+fn skip_existing_version_section<'a>(rest: &'a str, version_str: &str) -> &'a str {
+    let version_prefix = format!("## [{version_str}]");
+    if !rest.starts_with(version_prefix.as_str()) {
+        return rest;
+    }
+    if let Some(next_pos) = rest[1..].find("\n## ").map(|i| i + 1) {
+        &rest[next_pos + 1..]
+    } else {
+        ""
+    }
+}
+
+/// Merge two formatted changelog strings, deduplicating committed entries by SHA.
+///
+/// Lines matching the pattern `- ... [<hex-SHA>]` (where the SHA is 7–40
+/// hexadecimal characters) are treated as commit entries.  New entries from
+/// `new_section` that share a SHA with an entry in `existing_section` are
+/// dropped.  All other lines are kept as-is from `existing_section`, with
+/// unique new entries appended.
 fn merge_changelog_sections(existing_section: &str, new_section: &str) -> String {
-    /// Extract the last 40-character hex token from a commit line if it exists.
+    /// Extract the last hex SHA token from a commit line if it exists.
     fn extract_sha(line: &str) -> Option<&str> {
-        // Looks for `[<sha>]` at end of line where sha is exactly 40 hex chars.
+        // Looks for `[<sha>]` at end of line where sha is 7-40 hex chars.
+        // Both abbreviated (7-char) and full (40-char) SHAs are accepted so
+        // that changelogs from any supported strategy can be deduplicated.
         let inner = line.rfind('[').and_then(|i| {
             let after = &line[i + 1..];
             let close = after.find(']')?;
             Some(&after[..close])
         })?;
-        if inner.len() == 40 && inner.chars().all(|c| c.is_ascii_hexdigit()) {
+        if (7..=40).contains(&inner.len()) && inner.chars().all(|c| c.is_ascii_hexdigit()) {
             Some(inner)
         } else {
             None

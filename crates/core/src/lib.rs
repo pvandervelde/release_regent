@@ -329,9 +329,10 @@ where
         // `OrchestratorConfig` so both components stay in sync. When the schema
         // gains an explicit `release.branch_prefix` field, load it here via
         // `self.configuration_provider.get_merged_config(...)`.
+        let default_orch = release_orchestrator::OrchestratorConfig::default();
         let config = AutomatorConfig {
-            branch_prefix: release_orchestrator::OrchestratorConfig::default().branch_prefix,
-            changelog_header: "## Changelog".to_string(),
+            branch_prefix: default_orch.branch_prefix,
+            changelog_header: default_orch.changelog_header,
         };
 
         match ReleaseAutomator::new(
@@ -384,7 +385,10 @@ where
             orchestrator_config: release_orchestrator::OrchestratorConfig {
                 branch_prefix: release_orchestrator::OrchestratorConfig::default().branch_prefix,
                 title_template: repo_config.release_pr.title_template.clone(),
-                changelog_header: "## Changelog".to_string(),
+                changelog_header: release_orchestrator::extract_changelog_header(
+                    &repo_config.release_pr.body_template,
+                ),
+                body_template: repo_config.release_pr.body_template.clone(),
                 manifest_files: repo_config.release_pr.manifest_files.clone(),
                 auto_detect_manifests: repo_config.release_pr.auto_detect_manifests,
             },
@@ -956,7 +960,10 @@ where
             branch_prefix: release_orchestrator::OrchestratorConfig::DEFAULT_BRANCH_PREFIX
                 .to_string(),
             title_template: repo_config.release_pr.title_template.clone(),
-            changelog_header: "## Changelog".to_string(),
+            changelog_header: release_orchestrator::extract_changelog_header(
+                &repo_config.release_pr.body_template,
+            ),
+            body_template: repo_config.release_pr.body_template.clone(),
             manifest_files: repo_config.release_pr.manifest_files.clone(),
             auto_detect_manifests: repo_config.release_pr.auto_detect_manifests,
         };
@@ -1080,7 +1087,44 @@ where
             .calculate_version(ctx, strategy, options)
             .await?;
 
-        let changelog = format_changelog_for_release(&calc_result.changelog_entries);
+        // Build ConventionalCommit items from the raw analyzed_commits so that
+        // all ChangelogGenerator strategies receive the correct vocabulary:
+        // - commit_type = raw conventional-commit type token ("feat", "fix", …)
+        // - message     = full original commit string ("feat(auth): add OAuth")
+        // These are required for git-cliff (message parsed as conv-commit) and
+        // external tools (stdin line reconstructed from sha + message).
+        // In production, commit_type is always Some(...) — parse_single_conventional_commit
+        // falls back to "chore" for non-conventional messages such as merge commits.
+        // Non-conventional commits reach git-cliff/External and are silently dropped there
+        // by filter_unconventional=true; they are not omitted here.
+        // The filter_map's `?` guards only against custom VersionCalculator
+        // implementations that might return None for commit_type.
+        let commits: Vec<versioning::ConventionalCommit> = calc_result
+            .analyzed_commits
+            .iter()
+            .filter_map(|a| {
+                let commit_type = a.commit_type.clone()?;
+                // Extract the description by dropping the "type(scope): " prefix from
+                // the full commit message.  For non-conventional messages (e.g. merge
+                // commits) where no ": " separator exists, fall back to the full message.
+                let description = a
+                    .message
+                    .find(": ")
+                    .map(|i| a.message[i + 2..].to_string())
+                    .unwrap_or_else(|| a.message.clone());
+                Some(versioning::ConventionalCommit {
+                    commit_type,
+                    scope: a.scope.clone(),
+                    description,
+                    breaking_change: a.is_breaking,
+                    message: a.message.clone(),
+                    sha: a.sha.clone(),
+                })
+            })
+            .collect();
+
+        let changelog = changelog::ChangelogGenerator::with_config(repo_config.changelog.clone())
+            .generate_changelog(&commits)?;
 
         Ok(MergeCalcResult {
             calc_result,
@@ -1637,54 +1681,6 @@ where
             }
         }
     }
-}
-
-/// Format [`traits::version_calculator::ChangelogEntry`] items into a markdown
-/// body suitable for a release PR.
-///
-/// Entries are grouped by [`ChangelogEntry::entry_type`] (e.g. "Added",
-/// "Fixed") and sorted alphabetically within each group. Each entry line
-/// includes the full 40-character commit SHA in `[sha]` notation so that the
-/// [`release_orchestrator`] changelog merge/dedup logic can identify duplicates.
-fn format_changelog_for_release(entries: &[traits::version_calculator::ChangelogEntry]) -> String {
-    use std::collections::BTreeMap;
-    use std::fmt::Write as _;
-
-    if entries.is_empty() {
-        return String::new();
-    }
-
-    // Group entries by type preserving the alphabetical section order from BTreeMap.
-    let mut by_type: BTreeMap<&str, Vec<&traits::version_calculator::ChangelogEntry>> =
-        BTreeMap::new();
-    for entry in entries {
-        by_type
-            .entry(entry.entry_type.as_str())
-            .or_default()
-            .push(entry);
-    }
-
-    let mut out = String::new();
-    for (entry_type, items) in &by_type {
-        let _ = write!(out, "### {entry_type}\n\n");
-        for item in items {
-            let desc = if let Some(scope) = &item.scope {
-                format!("**{scope}**: {}", item.description)
-            } else {
-                item.description.clone()
-            };
-            let line = if item.commit_sha.is_empty() {
-                format!("- {desc}")
-            } else {
-                format!("- {desc} [{}]", item.commit_sha)
-            };
-            out.push_str(&line);
-            out.push('\n');
-        }
-        out.push('\n');
-    }
-
-    out.trim_end().to_string()
 }
 
 #[cfg(test)]

@@ -56,6 +56,7 @@ fn make_config(
         locked_fields: Vec::new(),
         release_pr: ReleasePrConfig::default(),
         notifications: Default::default(),
+        changelog: Default::default(),
     }
 }
 

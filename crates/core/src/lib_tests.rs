@@ -1360,13 +1360,40 @@ impl VersionCalculator for TestVersionCalcForLib {
         _options: CalculationOptions,
     ) -> CoreResult<VersionCalculationResult> {
         *self.captured_ctx.lock().await = Some(ctx.clone());
+        // Synthesise CommitAnalysis entries from changelog_entries so that
+        // calculate_version_for_merge can build ConventionalCommit items from
+        // analyzed_commits (which carry the raw commit_type/message data).
+        let analyzed_commits: Vec<CommitAnalysis> = self
+            .changelog_entries
+            .iter()
+            .map(|e| {
+                // Construct the full conventional commit message so that
+                // calculate_version_for_merge can extract the description
+                // correctly (it strips the "type(scope): " prefix).
+                let full_message = match &e.scope {
+                    Some(s) => format!("{}({}): {}", e.entry_type, s, e.description),
+                    None => format!("{}: {}", e.entry_type, e.description),
+                };
+                CommitAnalysis {
+                    author: String::new(),
+                    commit_type: Some(e.entry_type.clone()),
+                    date: chrono::Utc::now(),
+                    is_breaking: e.is_breaking,
+                    message: full_message,
+                    metadata: std::collections::HashMap::new(),
+                    scope: e.scope.clone(),
+                    sha: e.commit_sha.clone(),
+                    version_bump: VersionBump::None,
+                }
+            })
+            .collect();
         Ok(VersionCalculationResult {
             next_version: self.next_version.clone(),
             current_version: ctx.current_version,
             version_bump: self.version_bump.clone(),
             is_prerelease: false,
             build_metadata: None,
-            analyzed_commits: vec![],
+            analyzed_commits,
             changelog_entries: self.changelog_entries.clone(),
             strategy: VCalcStrategy::ConventionalCommits {
                 custom_types: HashMap::new(),
@@ -1597,7 +1624,7 @@ async fn test_handle_merged_pr_includes_changelog_entries_in_pr_body() {
         ChangelogEntry {
             commit_sha: "a".repeat(40),
             description: "add shiny feature".into(),
-            entry_type: "Added".into(),
+            entry_type: "feat".into(),
             is_breaking: false,
             issues: vec![],
             pr_number: None,
@@ -1606,7 +1633,7 @@ async fn test_handle_merged_pr_includes_changelog_entries_in_pr_body() {
         ChangelogEntry {
             commit_sha: "b".repeat(40),
             description: "fix nasty bug".into(),
-            entry_type: "Fixed".into(),
+            entry_type: "fix".into(),
             is_breaking: false,
             issues: vec![],
             pr_number: None,
@@ -1656,6 +1683,14 @@ async fn test_handle_merged_pr_includes_changelog_entries_in_pr_body() {
     assert!(
         body.contains(&"b".repeat(40)),
         "body missing commit sha B: {body}"
+    );
+    assert!(
+        body.contains("### Features"),
+        "body should contain '### Features' section header: {body}"
+    );
+    assert!(
+        body.contains("### Bug Fixes"),
+        "body should contain '### Bug Fixes' section header: {body}"
     );
 }
 
