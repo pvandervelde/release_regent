@@ -652,3 +652,41 @@ fn test_generate_with_external_empty_command_returns_error() {
         "error should mention empty command; got: {err_msg}"
     );
 }
+
+/// When the external tool exits 0 but writes nothing to stdout, the sentinel
+/// "No changes in this release." is returned instead of an empty string.
+#[test]
+fn test_generate_with_external_empty_output_returns_sentinel() {
+    // Use a cross-platform no-op command that succeeds and produces no stdout.
+    #[cfg(target_os = "windows")]
+    let (command, env_vars) = (
+        "cmd /c exit 0".to_string(),
+        std::collections::HashMap::new(),
+    );
+    #[cfg(not(target_os = "windows"))]
+    let (command, env_vars) = ("true".to_string(), std::collections::HashMap::new());
+
+    let config = ChangelogConfig {
+        strategy: ChangelogStrategy::External {
+            command,
+            env_vars,
+            timeout_ms: 5_000,
+        },
+        ..Default::default()
+    };
+    let generator = ChangelogGenerator::with_config(config);
+    let commits = vec![ConventionalCommit {
+        commit_type: "feat".to_string(),
+        scope: None,
+        description: "add thing".to_string(),
+        breaking_change: false,
+        message: "feat: add thing".to_string(),
+        sha: "abc123".to_string(),
+    }];
+
+    let result = generator.generate_changelog(&commits).unwrap();
+    assert_eq!(
+        result, "No changes in this release.",
+        "empty external output should return sentinel"
+    );
+}

@@ -290,11 +290,18 @@ impl ChangelogGenerator {
             )));
         }
 
-        String::from_utf8(output.stdout).map_err(|e| {
+        let raw = String::from_utf8(output.stdout).map_err(|e| {
             crate::errors::CoreError::changelog_generation(format!(
                 "Changelog command '{command}' produced non-UTF-8 output: {e}"
             ))
-        })
+        })?;
+
+        let trimmed = raw.trim().to_string();
+        if trimmed.is_empty() {
+            Ok("No changes in this release.".to_string())
+        } else {
+            Ok(trimmed)
+        }
     }
 
     /// Generate changelog using git-cliff-core.
