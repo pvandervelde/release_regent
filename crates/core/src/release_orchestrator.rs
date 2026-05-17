@@ -1155,13 +1155,12 @@ pub(crate) fn build_changelog_file_content(
     // level-1 Markdown heading.  Content that starts with `## ` or `### `
     // section markers (e.g. raw changelog entries leaked from a corrupted PR
     // body) is not a valid file-level header and must be discarded.
-    let file_header = if file_header.trim().is_empty()
-        || !file_header.trim_start().starts_with("# ")
-    {
-        "# Changelog".to_string()
-    } else {
-        file_header.trim_end().to_string()
-    };
+    let file_header =
+        if file_header.trim().is_empty() || !file_header.trim_start().starts_with("# ") {
+            "# Changelog".to_string()
+        } else {
+            file_header.trim_end().to_string()
+        };
     let history = skip_existing_version_section(rest, version_str);
     let body = changelog_body.trim();
     let history = history.trim_start();
