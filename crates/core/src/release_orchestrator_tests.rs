@@ -50,6 +50,8 @@ struct TestState {
     batch_commits: Vec<(String, Vec<String>, String)>,
     /// Recorded `batch_commit_files_rebased` calls: (branch, paths, message, parent_sha).
     rebased_batch_commits: Vec<(String, Vec<String>, String, String)>,
+    /// Full `FileUpdate` lists from each `batch_commit_files_rebased` call.
+    rebased_batch_file_updates: Vec<Vec<FileUpdate>>,
     /// Pre-loaded file contents for `get_file_content`: (path, branch) → content.
     file_contents: std::collections::HashMap<(String, String), String>,
     /// Sequential PR number to return from `create_pull_request`.
@@ -125,6 +127,10 @@ impl TestGitHub {
 
     async fn rebased_batch_commits(&self) -> Vec<(String, Vec<String>, String, String)> {
         self.state.lock().await.rebased_batch_commits.clone()
+    }
+
+    async fn rebased_batch_file_updates(&self) -> Vec<Vec<FileUpdate>> {
+        self.state.lock().await.rebased_batch_file_updates.clone()
     }
 
     /// Pre-load a file content so `get_file_content` returns it.
@@ -514,12 +520,14 @@ impl GitHubOperations for TestGitHub {
         parent_sha: &str,
     ) -> CoreResult<()> {
         let paths: Vec<String> = files.iter().map(|f| f.path.clone()).collect();
-        self.state.lock().await.rebased_batch_commits.push((
+        let mut st = self.state.lock().await;
+        st.rebased_batch_commits.push((
             branch.to_string(),
             paths,
             message.to_string(),
             parent_sha.to_string(),
         ));
+        st.rebased_batch_file_updates.push(files.to_vec());
         Ok(())
     }
 
@@ -1483,6 +1491,117 @@ fn test_build_changelog_file_content_preserves_file_header() {
     assert!(
         result.contains("## [0.2.0]"),
         "old section must be preserved; got:\n{result}"
+    );
+}
+
+/// Content whose leading block starts with `### ` (not a proper `# ` file
+/// header) is treated as garbage and replaced by a generated `# Changelog`
+/// header rather than being preserved verbatim.
+///
+/// Regression guard for the secondary bug: corrupted CHANGELOG.md files written
+/// by old release-regent (raw `### feat`/`### fix` blocks at the top) must not
+/// be silently accepted as a valid file-level header.
+#[test]
+fn test_build_changelog_file_content_rejects_non_hash_prefix_as_file_header() {
+    // Simulates the corrupted content written by old release-regent: raw
+    // `### feat`/`### fix` section blocks at the top of the file, no
+    // `# Changelog` file-level header, and only the current version section.
+    let corrupted = "### feat\n- **config**: some commit [aabbccdd]\n### fix\n- **release**: another [bbccddee]\n\n## [1.0.0] - 2024-01-15\n\n### Features\n\n- feat: thing\n";
+
+    let result =
+        build_changelog_file_content(corrupted, "1.0.0", "2024-01-15", "### Added\n\n- feat: new");
+
+    assert!(
+        result.starts_with("# Changelog\n"),
+        "corrupted non-header content must be replaced by '# Changelog'; got:\n{result}"
+    );
+    assert!(
+        !result.contains("### feat\n"),
+        "raw section headers must not appear as file-level header; got:\n{result}"
+    );
+    assert!(
+        !result.contains("- **config**: some commit"),
+        "corrupted entry lines must not appear anywhere in output; got:\n{result}"
+    );
+    assert!(
+        result.contains("## [1.0.0]"),
+        "version section must be present; got:\n{result}"
+    );
+}
+
+/// `update_release_pr` reads CHANGELOG.md from the PR *base* branch (e.g.
+/// `main`), not from the PR head branch.
+///
+/// Regression guard for the primary bug: when the head branch contains a
+/// corrupted CHANGELOG.md (written by an older release-regent), the update
+/// path must still produce a correct file with history by reading from the
+/// authoritative base branch.
+#[tokio::test]
+async fn test_update_release_pr_reads_changelog_from_base_branch() {
+    let version = ver(1, 0, 0);
+
+    let corrupted_head_changelog =
+        "### feat\n- some commit [aabbccdd]\n\n## [1.0.0] - 2026-01-01\n\n### Features\n\n- feat: thing\n";
+    let correct_base_changelog =
+        "# Changelog\n\nAll notable changes.\n\n## [0.9.0] - 2025-12-01\n\n### Fixed\n\n- fix: old thing [cccccccccccccccccccccccccccccccccccccccc]\n";
+
+    let existing_body =
+        "## Changelog\n\n- feat: something [1234567890abcdef1234567890abcdef12345678]";
+    let existing_pr = make_open_release_pr(55, "release/v1.0.0", Some(existing_body));
+
+    let github = TestGitHub::new()
+        .with_search_results(vec![existing_pr.clone()])
+        .await
+        .with_pr_by_number(existing_pr)
+        .await
+        // Corrupted content on the head branch.
+        .with_file_content("CHANGELOG.md", "release/v1.0.0", corrupted_head_changelog)
+        .await
+        // Correct content with history on the base branch.
+        .with_file_content("CHANGELOG.md", "main", correct_base_changelog)
+        .await;
+
+    let orchestrator = ReleaseOrchestrator::new(default_config(), &github);
+
+    orchestrator
+        .orchestrate(
+            "testorg",
+            "testrepo",
+            &version,
+            "- feat: new feature [1234567890abcdef1234567890abcdef12345678]",
+            "main",
+            "sha-base-001",
+            "corr-update-001",
+        )
+        .await
+        .expect("orchestrate should succeed");
+
+    let file_updates = github.rebased_batch_file_updates().await;
+    assert_eq!(
+        file_updates.len(),
+        1,
+        "expected exactly one rebased batch commit"
+    );
+
+    let changelog_update = file_updates[0]
+        .iter()
+        .find(|f| f.path == "CHANGELOG.md")
+        .expect("CHANGELOG.md must be in the committed files");
+
+    assert!(
+        changelog_update.content.starts_with("# Changelog\n"),
+        "committed CHANGELOG.md must start with '# Changelog'; got:\n{}",
+        changelog_update.content
+    );
+    assert!(
+        changelog_update.content.contains("## [0.9.0]"),
+        "history from base branch must be preserved; got:\n{}",
+        changelog_update.content
+    );
+    assert!(
+        !changelog_update.content.contains("### feat\n"),
+        "corrupted head-branch header must not appear; got:\n{}",
+        changelog_update.content
     );
 }
 
