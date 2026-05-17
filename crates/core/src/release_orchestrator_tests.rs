@@ -1520,6 +1520,10 @@ fn test_build_changelog_file_content_rejects_non_hash_prefix_as_file_header() {
         "raw section headers must not appear as file-level header; got:\n{result}"
     );
     assert!(
+        !result.contains("- **config**: some commit"),
+        "corrupted entry lines must not appear anywhere in output; got:\n{result}"
+    );
+    assert!(
         result.contains("## [1.0.0]"),
         "version section must be present; got:\n{result}"
     );
