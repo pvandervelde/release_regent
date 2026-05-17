@@ -555,12 +555,14 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
         // Files are committed BEFORE the PR metadata is updated so that, if the
         // commit step fails, the PR body never drifts ahead of the branch content.
 
-        // Fetch the existing CHANGELOG.md from the PR branch and rebuild the
-        // full content with the merged changelog section prepended so that
-        // history is preserved rather than overwritten (issue #128).
+        // Fetch the existing CHANGELOG.md from the PR *base* branch (e.g. master)
+        // rather than the PR head branch.  The head branch may contain corrupted
+        // content written by an older release-regent; the base branch is always the
+        // authoritative source of historical changelog data.  This is exactly
+        // symmetric with the create_release_branch_and_pr path.
         let existing_changelog_file = self
             .github
-            .get_file_content(owner, repo, "CHANGELOG.md", &fresh_pr.head.ref_name)
+            .get_file_content(owner, repo, "CHANGELOG.md", &fresh_pr.base.ref_name)
             .await
             .unwrap_or_else(|e| {
                 warn!(error = %e, "Failed to fetch existing CHANGELOG.md; starting fresh");
@@ -1149,7 +1151,13 @@ pub(crate) fn build_changelog_file_content(
     changelog_body: &str,
 ) -> String {
     let (file_header, rest) = split_changelog_header_and_rest(existing_content);
-    let file_header = if file_header.trim().is_empty() {
+    // Accept the file header only if it is non-empty AND begins with a `# `
+    // level-1 Markdown heading.  Content that starts with `## ` or `### `
+    // section markers (e.g. raw changelog entries leaked from a corrupted PR
+    // body) is not a valid file-level header and must be discarded.
+    let file_header = if file_header.trim().is_empty()
+        || !file_header.trim_start().starts_with("# ")
+    {
         "# Changelog".to_string()
     } else {
         file_header.trim_end().to_string()
