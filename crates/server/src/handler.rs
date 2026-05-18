@@ -133,7 +133,7 @@ fn release_v_prefix(branch_prefix: &str, version_prefix: &str) -> String {
 /// | `X-GitHub-Event`              | Conditions                                                      | Result                             |
 /// |-------------------------------|----------------------------------------------------------------|------------------------------------|
 /// | `pull_request`                | `action=closed`, `merged=true`, non-release branch             | `PullRequestMerged`                |
-/// | `pull_request`                | `action=closed`, `merged=true`, `{release_branch_prefix}/v*`  | `ReleasePrMerged`                  |
+/// | `pull_request`                | `action=closed`, `merged=true`, `{release_branch_prefix}/{version_prefix}*` | `ReleasePrMerged`   |
 /// | `pull_request`                | any other action or not merged                                  | `Unknown("pull_request:<action>")` |
 /// | `issue_comment`               | `issue.pull_request` field present in payload                   | `PullRequestCommentReceived`       |
 /// | `issue_comment`               | no `issue.pull_request` field (plain issue)                     | `Unknown("issue_comment:issue")`   |
@@ -227,7 +227,7 @@ fn classify_pull_request_event(
     }
 
     if release_branch_prefix.is_empty() {
-        warn!("release_branch_prefix is empty; classifying merged PR as PullRequestMerged to avoid matching any /v* branch");
+        warn!("release_branch_prefix is empty; classifying merged PR as PullRequestMerged to avoid matching any /{version_prefix}* branch");
         return EventType::PullRequestMerged;
     }
 

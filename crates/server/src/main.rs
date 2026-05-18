@@ -15,6 +15,8 @@
 //! | `ALLOWED_REPOS`          | Comma-separated `owner/repo` values, or `*`          | `*`                |
 //! | `EVENT_CHANNEL_CAPACITY` | Bounded channel depth for in-flight events           | `1024`             |
 //! | `PORT`                   | TCP port the server listens on                       | `8080`             |
+//! | `RELEASE_BRANCH_PREFIX`  | Release branch prefix for webhook routing            | `"release"`        |
+//! | `VERSION_PREFIX`         | Version prefix for webhook routing (e.g. `""` or `"v"`) | `"v"`           |
 //!
 //! # Architecture
 //!
