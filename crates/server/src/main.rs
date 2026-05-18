@@ -366,12 +366,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // ── Event source + processing loop ─────────────────────────────────────
 
     // Build matched handler/source pair sharing a bounded mpsc channel.
-    // The release branch prefix and version prefix are sourced from the orchestrator
-    // configuration so that the webhook classifier and the orchestrator always agree on
-    // what constitutes a release branch.
+    // The release branch prefix and version prefix are used by the webhook
+    // classifier to route events as ReleasePrMerged vs PullRequestMerged.
+    //
+    // These values are read at server startup — before any per-repo config is
+    // available — so they apply uniformly to every repository served by this
+    // instance.  They default to the OrchestratorConfig defaults ("release"
+    // and "v" respectively) and can be overridden via environment variables
+    // when deploying a server that serves repositories with a non-standard
+    // branch prefix or version prefix.
+    //
+    // TODO(#138): Support per-repo version_prefix for multi-tenant deployments
+    // where different repositories use different prefixes.  Until then, all
+    // repositories served by this instance must use the same prefix.
     let default_orch = release_regent_core::release_orchestrator::OrchestratorConfig::default();
-    let release_branch_prefix = default_orch.branch_prefix;
-    let version_prefix = default_orch.version_prefix;
+    let release_branch_prefix =
+        std::env::var("RELEASE_BRANCH_PREFIX").unwrap_or_else(|_| default_orch.branch_prefix);
+    let version_prefix =
+        std::env::var("VERSION_PREFIX").unwrap_or_else(|_| default_orch.version_prefix);
     let (webhook_event_handler, event_source) = handler::create_webhook_components(
         allowed_repos,
         channel_capacity,

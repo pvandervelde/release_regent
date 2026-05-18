@@ -155,7 +155,9 @@ pub fn classify_event(
     version_prefix: &str,
 ) -> EventType {
     match event_type {
-        "pull_request" => classify_pull_request_event(payload, release_branch_prefix, version_prefix),
+        "pull_request" => {
+            classify_pull_request_event(payload, release_branch_prefix, version_prefix)
+        }
         "issue_comment" => classify_issue_comment_event(payload),
         "pull_request_review_comment" => EventType::PullRequestCommentReceived,
         other => EventType::Unknown(other.to_string()),
@@ -388,16 +390,16 @@ impl WebhookHandler for ReleaseRegentWebhookHandler {
 
         let processing_event =
             match convert_envelope(envelope, &self.release_branch_prefix, &self.version_prefix) {
-            Ok(e) => e,
-            Err(e) => {
-                warn!(
-                    error = %e,
-                    event_id = %envelope.event_id,
-                    "Failed to convert envelope; dropping event"
-                );
-                return Ok(());
-            }
-        };
+                Ok(e) => e,
+                Err(e) => {
+                    warn!(
+                        error = %e,
+                        event_id = %envelope.event_id,
+                        "Failed to convert envelope; dropping event"
+                    );
+                    return Ok(());
+                }
+            };
 
         let event_id = processing_event.event_id.clone();
         let event_type = processing_event.event_type.to_string();

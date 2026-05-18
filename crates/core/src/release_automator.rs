@@ -8,8 +8,12 @@
 //! When [`EventType::ReleasePrMerged`] arrives in the event loop, the automator:
 //!
 //! 1. **Extracts** the version from the merged PR using a three-level fallback chain:
-//!    - Branch name: `release/v{version}` (e.g. `release/v1.2.3`).
+//!    - Branch name: `{branch_prefix}/{version_prefix}{version}` (e.g. `release/v1.2.3`
+//!      with the default `version_prefix = "v"`, or `release/1.2.3` with an empty prefix).
 //!    - PR title: first `v`-prefixed semver token (e.g. `chore(release): v1.2.3`).
+//!      **Note:** the title scan always looks for a `v`-prefixed token regardless of
+//!      `version_prefix`; users with a custom or empty prefix should ensure the branch
+//!      name source (step 1) is correct.
 //!    - PR body: first semver token with an optional `v` prefix.
 //!      Fails with [`CoreError::InvalidInput`] only if no valid semver is found in any
 //!      of the three sources.
@@ -417,7 +421,11 @@ pub fn extract_version_from_branch(
 ///    for branches matching `{branch_prefix}/{version_prefix}{semver}`.
 /// 2. **PR title** — scans whitespace-separated tokens for the first one that
 ///    starts with `v` *and* is a valid semantic version
-///    (e.g. `chore(release): v1.2.3` → `1.2.3`).
+///    (e.g. `chore(release): v1.2.3` → `1.2.3`).  **Note:** this step always
+///    looks for a `v`-prefixed token, regardless of the configured
+///    `version_prefix`.  Users with a custom or empty `version_prefix` should
+///    ensure that step 1 (branch name) succeeds; if the branch name is
+///    unavailable or unparseable the title fallback may not match their format.
 /// 3. **PR body** — scans whitespace-separated tokens for the first valid
 ///    semantic version with an optional `v` prefix
 ///    (e.g. `v1.2.3` or `1.2.3`).

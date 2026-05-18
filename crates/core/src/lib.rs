@@ -341,7 +341,9 @@ where
         let default_orch = release_orchestrator::OrchestratorConfig::default();
         let config = AutomatorConfig {
             branch_prefix: default_orch.branch_prefix,
-            changelog_header: default_orch.changelog_header,
+            changelog_header: release_orchestrator::extract_changelog_header(
+                &repo_config.release_pr.body_template,
+            ),
             version_prefix: repo_config.core.version_prefix.clone(),
         };
 

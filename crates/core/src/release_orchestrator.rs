@@ -363,7 +363,7 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
     // ── Private helpers ────────────────────────────────────────────────────
 
     /// Search the repository for an open release PR whose head branch starts
-    /// with the configured `branch_prefix/v` pattern.
+    /// with the configured `{branch_prefix}/{version_prefix}` pattern.
     ///
     /// Returns `None` when no matching PR exists, or the PR together with the
     /// parsed `SemanticVersion` extracted from its branch name.
@@ -482,8 +482,7 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
 
         let commit_message = format!(
             "chore(release): update release files for {}{}",
-            self.config.version_prefix,
-            version
+            self.config.version_prefix, version
         );
 
         // Use `batch_commit_files_rebased` (not `batch_commit_files`) so the new
@@ -610,8 +609,7 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
 
         let commit_message = format!(
             "chore(release): update release files for {}{}",
-            self.config.version_prefix,
-            version
+            self.config.version_prefix, version
         );
         self.github
             .batch_commit_files_rebased(
@@ -710,7 +708,10 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
     /// Returns the head-branch query prefix, e.g. `"release/v"` with the default config,
     /// or `"release/"` when `version_prefix` is empty.
     fn release_branch_prefix(&self) -> String {
-        format!("{}/{}", self.config.branch_prefix, self.config.version_prefix)
+        format!(
+            "{}/{}",
+            self.config.branch_prefix, self.config.version_prefix
+        )
     }
 
     /// Construct the canonical release branch name, e.g. `"release/v1.2.3"` with
@@ -718,8 +719,7 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
     pub(crate) fn make_branch_name(&self, version: &SemanticVersion) -> String {
         format!(
             "{}/{}{version}",
-            self.config.branch_prefix,
-            self.config.version_prefix,
+            self.config.branch_prefix, self.config.version_prefix,
         )
     }
 
@@ -1014,8 +1014,9 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
 
     /// Try to parse a [`SemanticVersion`] from a branch name.
     ///
-    /// Expects the branch to start with `{branch_prefix}/v` followed by a
-    /// valid semver string, e.g. `"release/v1.2.3" → SemanticVersion { 1, 2, 3 }`.
+    /// Expects the branch to start with `{branch_prefix}/{version_prefix}` followed by a
+    /// valid semver string, e.g. `"release/v1.2.3"` when `version_prefix` is `"v"`, or
+    /// `"release/1.2.3"` when `version_prefix` is `""`.
     fn parse_version_from_branch(&self, branch: &str) -> Option<SemanticVersion> {
         let prefix = self.release_branch_prefix();
         let version_str = branch.strip_prefix(&prefix)?;
