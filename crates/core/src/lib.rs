@@ -319,20 +319,32 @@ where
         event: &traits::event_source::ProcessingEvent,
     ) -> CoreResult<()> {
         use release_automator::{AutomatorConfig, ReleaseAutomator};
+        use traits::configuration_provider::LoadOptions;
 
         let correlation_id = &event.correlation_id;
         let owner = &event.repository.owner;
         let repo = &event.repository.name;
 
-        // `branch_prefix` and `changelog_header` are not yet per-repo config
-        // fields in `ReleaseRegentConfig`. Use the same default source as
-        // `OrchestratorConfig` so both components stay in sync. When the schema
-        // gains an explicit `release.branch_prefix` field, load it here via
-        // `self.configuration_provider.get_merged_config(...)`.
+        let repo_config = self
+            .configuration_provider
+            .get_merged_config(
+                owner,
+                repo,
+                LoadOptions {
+                    installation_id: Some(event.installation_id),
+                    default_branch: Some(event.repository.default_branch.clone()),
+                    ..Default::default()
+                },
+            )
+            .await?;
+
         let default_orch = release_orchestrator::OrchestratorConfig::default();
         let config = AutomatorConfig {
             branch_prefix: default_orch.branch_prefix,
-            changelog_header: default_orch.changelog_header,
+            changelog_header: release_orchestrator::extract_changelog_header(
+                &repo_config.release_pr.body_template,
+            ),
+            version_prefix: repo_config.core.version_prefix.clone(),
         };
 
         match ReleaseAutomator::new(
@@ -383,7 +395,9 @@ where
 
         let config = CommentCommandConfig {
             orchestrator_config: release_orchestrator::OrchestratorConfig {
-                branch_prefix: release_orchestrator::OrchestratorConfig::default().branch_prefix,
+                branch_prefix: release_orchestrator::OrchestratorConfig::DEFAULT_BRANCH_PREFIX
+                    .to_string(),
+                version_prefix: repo_config.core.version_prefix.clone(),
                 title_template: repo_config.release_pr.title_template.clone(),
                 changelog_header: release_orchestrator::extract_changelog_header(
                     &repo_config.release_pr.body_template,
@@ -493,12 +507,16 @@ where
 
         let branch_prefix =
             release_orchestrator::OrchestratorConfig::DEFAULT_BRANCH_PREFIX.to_string();
+        let version_prefix = repo_config.core.version_prefix.clone();
         let scoped_github = self.github_operations.scoped_to(installation_id);
 
-        let body = if is_release_pr_branch(&pr_head_branch, &branch_prefix) {
+        let body = if is_release_pr_branch(&pr_head_branch, &branch_prefix, &version_prefix) {
             // Release PR path (F.3): extract version from branch name.
-            let release_version =
-                release_automator::extract_version_from_branch(&pr_head_branch, &branch_prefix)?;
+            let release_version = release_automator::extract_version_from_branch(
+                &pr_head_branch,
+                &branch_prefix,
+                &version_prefix,
+            )?;
             pr_status_commenter::render_release_pr_comment(
                 &release_version,
                 repo_config.versioning.allow_override,
@@ -545,7 +563,8 @@ where
             // Check whether a release PR is already open with a higher version.
             // The trailing * makes this a prefix match so all versioned release
             // branches are captured (e.g. "is:open head:release/v*").
-            let release_search_query = format!("is:open head:{}/v*", branch_prefix);
+            let release_search_query =
+                format!("is:open head:{}/{}*", branch_prefix, version_prefix);
             let queued_release_version: Option<versioning::SemanticVersion> = scoped_github
                 .search_pull_requests(owner, repo, &release_search_query)
                 .await
@@ -561,6 +580,7 @@ where
                     release_automator::extract_version_from_branch(
                         &pr.head.ref_name,
                         &branch_prefix,
+                        &version_prefix,
                     )
                     .ok()
                 })
@@ -959,6 +979,7 @@ where
         let orch_config = release_orchestrator::OrchestratorConfig {
             branch_prefix: release_orchestrator::OrchestratorConfig::DEFAULT_BRANCH_PREFIX
                 .to_string(),
+            version_prefix: repo_config.core.version_prefix.clone(),
             title_template: repo_config.release_pr.title_template.clone(),
             changelog_header: release_orchestrator::extract_changelog_header(
                 &repo_config.release_pr.body_template,
@@ -969,7 +990,7 @@ where
         };
 
         // Determine whether the merged PR is itself a release PR by checking
-        // whether its head branch starts with the configured release prefix + "/v".
+        // whether its head branch starts with the configured release prefix.
         let merged_pr_head_ref = event
             .payload
             .get("pull_request")
@@ -978,8 +999,11 @@ where
             .and_then(|v| v.as_str())
             .unwrap_or_default()
             .to_string();
-        let is_release_pr =
-            merged_pr_head_ref.starts_with(&format!("{}/v", orch_config.branch_prefix));
+        let is_release_pr = release_automator::is_release_pr_branch(
+            &merged_pr_head_ref,
+            &orch_config.branch_prefix,
+            &orch_config.version_prefix,
+        );
 
         // Resolve the merged PR number (needed to read override labels on the
         // feature-PR path, and logged for diagnostics on the release-PR path).
@@ -1530,6 +1554,7 @@ where
 
         let branch_prefix =
             release_orchestrator::OrchestratorConfig::DEFAULT_BRANCH_PREFIX.to_string();
+        let version_prefix = repo_config.core.version_prefix.clone();
         let scoped_github = self.github_operations.scoped_to(installation_id);
 
         let open_prs = match scoped_github
@@ -1554,17 +1579,21 @@ where
         // so we can annotate feature PR comments when a release is already queued.
         let queued_release_version: Option<versioning::SemanticVersion> = open_prs
             .iter()
-            .filter(|pr| is_release_pr_branch(&pr.head.ref_name, &branch_prefix))
+            .filter(|pr| is_release_pr_branch(&pr.head.ref_name, &branch_prefix, &version_prefix))
             .filter_map(|pr| {
-                release_automator::extract_version_from_branch(&pr.head.ref_name, &branch_prefix)
-                    .ok()
+                release_automator::extract_version_from_branch(
+                    &pr.head.ref_name,
+                    &branch_prefix,
+                    &version_prefix,
+                )
+                .ok()
             })
             .max();
 
         // Feature PRs only; skip excluded authors; cap at 25.
         let candidates: Vec<_> = open_prs
             .into_iter()
-            .filter(|pr| !is_release_pr_branch(&pr.head.ref_name, &branch_prefix))
+            .filter(|pr| !is_release_pr_branch(&pr.head.ref_name, &branch_prefix, &version_prefix))
             .filter(|pr| {
                 let login = pr.user.login.as_deref().unwrap_or_default();
                 !excluded.iter().any(|a| a == login)

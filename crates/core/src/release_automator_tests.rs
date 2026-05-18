@@ -590,7 +590,7 @@ fn make_release_pr_event(branch: &str, merge_sha: &str, body: &str) -> Processin
 
 #[test]
 fn test_extract_version_from_branch_valid_stable() {
-    let v = extract_version_from_branch("release/v1.2.3", "release").unwrap();
+    let v = extract_version_from_branch("release/v1.2.3", "release", "v").unwrap();
     assert_eq!(v.major, 1);
     assert_eq!(v.minor, 2);
     assert_eq!(v.patch, 3);
@@ -599,7 +599,7 @@ fn test_extract_version_from_branch_valid_stable() {
 
 #[test]
 fn test_extract_version_from_branch_prerelease() {
-    let v = extract_version_from_branch("release/v1.0.0-rc.1", "release").unwrap();
+    let v = extract_version_from_branch("release/v1.0.0-rc.1", "release", "v").unwrap();
     assert_eq!(v.major, 1);
     assert_eq!(v.minor, 0);
     assert_eq!(v.patch, 0);
@@ -609,23 +609,43 @@ fn test_extract_version_from_branch_prerelease() {
 
 #[test]
 fn test_extract_version_from_branch_wrong_prefix_returns_error() {
-    let err = extract_version_from_branch("feature/my-feature", "release").unwrap_err();
+    let err = extract_version_from_branch("feature/my-feature", "release", "v").unwrap_err();
     assert!(matches!(err, CoreError::InvalidInput { .. }));
 }
 
 #[test]
 fn test_extract_version_from_branch_missing_v_prefix_returns_error() {
-    let err = extract_version_from_branch("release/1.2.3", "release").unwrap_err();
+    // When version_prefix is "v", branch "release/1.2.3" (no v) should fail.
+    let err = extract_version_from_branch("release/1.2.3", "release", "v").unwrap_err();
     assert!(matches!(err, CoreError::InvalidInput { .. }));
 }
 
 #[test]
 fn test_extract_version_from_branch_invalid_semver_returns_error() {
-    let err = extract_version_from_branch("release/vnot-semver", "release").unwrap_err();
+    let err = extract_version_from_branch("release/vnot-semver", "release", "v").unwrap_err();
     assert!(matches!(
         err,
         CoreError::InvalidInput { .. } | CoreError::Versioning { .. }
     ));
+}
+
+#[test]
+fn test_extract_version_from_branch_empty_version_prefix() {
+    // With an empty version_prefix, branch "release/1.2.3" is valid.
+    let v = extract_version_from_branch("release/1.2.3", "release", "").unwrap();
+    assert_eq!(v.major, 1);
+    assert_eq!(v.minor, 2);
+    assert_eq!(v.patch, 3);
+}
+
+#[test]
+fn test_extract_version_from_branch_empty_version_prefix_accepts_v_prefixed() {
+    // With an empty version_prefix the pattern is "release/"; "release/v1.2.3" strips
+    // the prefix to leave "v1.2.3" which is a valid semver (v-prefix is accepted by the parser).
+    let v = extract_version_from_branch("release/v1.2.3", "release", "").unwrap();
+    assert_eq!(v.major, 1);
+    assert_eq!(v.minor, 2);
+    assert_eq!(v.patch, 3);
 }
 
 /// Build a [`ProcessingEvent`] representing a merged release PR, including an
@@ -678,6 +698,7 @@ fn test_extract_version_from_pr_branch_path_takes_priority() {
         "chore(release): v9.9.9",
         "Release v8.8.8 notes",
         "release",
+        "v",
     )
     .unwrap();
     assert_eq!(v.major, 2);
@@ -693,6 +714,7 @@ fn test_extract_version_from_pr_title_fallback_conventional_commit() {
         "chore(release): v1.5.0",
         "",
         "release",
+        "v",
     )
     .unwrap();
     assert_eq!(v.major, 1);
@@ -708,6 +730,7 @@ fn test_extract_version_from_pr_title_fallback_prerelease_token() {
         "chore(release): v3.0.0-rc.2",
         "",
         "release",
+        "v",
     )
     .unwrap();
     assert_eq!(v.major, 3);
@@ -724,6 +747,7 @@ fn test_extract_version_from_pr_body_fallback_version_in_body() {
         "some title without version info",
         "This release contains changes for v3.1.4.",
         "release",
+        "v",
     )
     .unwrap();
     assert_eq!(v.major, 3);
@@ -739,6 +763,7 @@ fn test_extract_version_from_pr_body_fallback_no_v_prefix() {
         "no version here",
         "Version 4.2.1 released",
         "release",
+        "v",
     )
     .unwrap();
     assert_eq!(v.major, 4);
@@ -748,7 +773,7 @@ fn test_extract_version_from_pr_body_fallback_no_v_prefix() {
 
 #[test]
 fn test_extract_version_from_pr_all_sources_fail_returns_invalid_input() {
-    let err = extract_version_from_pr("feature/x", "no version", "no version here", "release")
+    let err = extract_version_from_pr("feature/x", "no version", "no version here", "release", "v")
         .unwrap_err();
     assert!(
         matches!(err, CoreError::InvalidInput { .. }),
@@ -764,6 +789,7 @@ fn test_extract_version_from_pr_malformed_v_token_in_title_falls_through_to_body
         "chore: vnot-semver update",
         "Body contains v1.2.3 as the actual version",
         "release",
+        "v",
     )
     .unwrap();
     assert_eq!(v.major, 1);
@@ -780,6 +806,7 @@ fn test_extract_version_from_pr_title_requires_v_prefix() {
         "bump to 5.0.0",
         "releasing 5.0.0 today",
         "release",
+        "v",
     )
     .unwrap();
     // Either body scan (step 3, no v-prefix required) found "5.0.0".
@@ -791,8 +818,14 @@ fn test_extract_version_from_pr_title_requires_v_prefix() {
 #[test]
 fn test_extract_version_from_pr_branch_prerelease_version() {
     // Branch with a pre-release version — step 1 must succeed.
-    let v = extract_version_from_pr("release/v1.0.0-rc.1", "no version", "no version", "release")
-        .unwrap();
+    let v = extract_version_from_pr(
+        "release/v1.0.0-rc.1",
+        "no version",
+        "no version",
+        "release",
+        "v",
+    )
+    .unwrap();
     assert!(v.is_prerelease());
     assert_eq!(v.major, 1);
     assert_eq!(v.minor, 0);
@@ -809,16 +842,28 @@ fn test_extract_version_from_pr_branch_prerelease_version() {
 
 #[test]
 fn test_is_release_pr_branch_matching() {
-    assert!(is_release_pr_branch("release/v1.2.3", "release"));
-    assert!(is_release_pr_branch("release/v0.1.0-alpha.1", "release"));
+    assert!(is_release_pr_branch("release/v1.2.3", "release", "v"));
+    assert!(is_release_pr_branch(
+        "release/v0.1.0-alpha.1",
+        "release",
+        "v"
+    ));
 }
 
 #[test]
 fn test_is_release_pr_branch_non_matching() {
-    assert!(!is_release_pr_branch("feature/my-feature", "release"));
-    assert!(!is_release_pr_branch("fix/bug", "release"));
-    assert!(!is_release_pr_branch("release/no-version", "release"));
-    assert!(!is_release_pr_branch("main", "release"));
+    assert!(!is_release_pr_branch("feature/my-feature", "release", "v"));
+    assert!(!is_release_pr_branch("fix/bug", "release", "v"));
+    assert!(!is_release_pr_branch("release/no-version", "release", "v"));
+    assert!(!is_release_pr_branch("main", "release", "v"));
+}
+
+#[test]
+fn test_is_release_pr_branch_empty_version_prefix() {
+    // With empty version_prefix the pattern is "release/"; both "release/1.2.3" and
+    // "release/v1.2.3" start with that prefix and contain a valid semver suffix.
+    assert!(is_release_pr_branch("release/1.2.3", "release", ""));
+    assert!(is_release_pr_branch("release/v1.2.3", "release", ""));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1295,4 +1340,70 @@ async fn test_automate_all_fallbacks_fail_returns_invalid_input() {
         matches!(err, CoreError::InvalidInput { .. }),
         "Expected InvalidInput when all fallbacks fail, got: {err:?}"
     );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// version_prefix regression tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_automate_empty_version_prefix_creates_tag_without_v() {
+    // Regression: when version_prefix = "", the created tag must be "1.2.3" not "v1.2.3".
+    let github = TestGitHub::new();
+    let config = AutomatorConfig {
+        version_prefix: String::new(),
+        ..AutomatorConfig::default()
+    };
+    let automator = ReleaseAutomator::new(config, &github);
+
+    let event = make_release_pr_event(
+        "release/1.2.3",
+        "deadbeef1234567890deadbeef1234567890abcd",
+        "## Changelog\n\n- feat: add widget [abc123def456789012345678901234567890abcd]\n",
+    );
+
+    let result = automator
+        .automate("testorg", "testrepo", &event, "corr-001")
+        .await
+        .unwrap();
+
+    let AutomatorResult::Created { release } = result;
+    assert_eq!(release.tag_name, "1.2.3", "tag must have no v prefix");
+
+    let tags = github.created_tags().await;
+    assert_eq!(tags.len(), 1);
+    assert_eq!(tags[0].0, "1.2.3", "created tag name must have no v prefix");
+}
+
+#[tokio::test]
+async fn test_automate_custom_version_prefix_creates_tag_with_prefix() {
+    // When version_prefix = "release-", the created tag must be "release-1.2.3".
+    let github = TestGitHub::new();
+    let config = AutomatorConfig {
+        version_prefix: "release-".to_string(),
+        ..AutomatorConfig::default()
+    };
+    let automator = ReleaseAutomator::new(config, &github);
+
+    let event = make_release_pr_event_with_title(
+        "feature/not-a-release-branch",
+        "chore(release): v1.2.3",
+        "deadbeef1234567890deadbeef1234567890abcd",
+        "## Changelog\n\n- feat: something\n",
+    );
+
+    let result = automator
+        .automate("testorg", "testrepo", &event, "corr-001")
+        .await
+        .unwrap();
+
+    let AutomatorResult::Created { release } = result;
+    assert_eq!(
+        release.tag_name, "release-1.2.3",
+        "tag must use the configured prefix"
+    );
+
+    let tags = github.created_tags().await;
+    assert_eq!(tags.len(), 1);
+    assert_eq!(tags[0].0, "release-1.2.3");
 }

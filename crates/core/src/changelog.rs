@@ -248,11 +248,16 @@ impl ChangelogGenerator {
             })?;
 
         // Write commits to stdin then drop to signal EOF.
+        // A BrokenPipe error means the process exited before reading all input,
+        // which is valid (e.g. a tool that ignores stdin). We do not treat that
+        // as fatal; we proceed to collect the process exit status and stdout.
         if let Some(mut stdin) = child.stdin.take() {
             if let Err(e) = stdin.write_all(stdin_content.as_bytes()) {
-                return Err(crate::errors::CoreError::changelog_generation(format!(
-                    "Failed to write commits to changelog command stdin: {e}"
-                )));
+                if e.kind() != std::io::ErrorKind::BrokenPipe {
+                    return Err(crate::errors::CoreError::changelog_generation(format!(
+                        "Failed to write commits to changelog command stdin: {e}"
+                    )));
+                }
             }
         }
 

@@ -8,8 +8,12 @@
 //! When [`EventType::ReleasePrMerged`] arrives in the event loop, the automator:
 //!
 //! 1. **Extracts** the version from the merged PR using a three-level fallback chain:
-//!    - Branch name: `release/v{version}` (e.g. `release/v1.2.3`).
+//!    - Branch name: `{branch_prefix}/{version_prefix}{version}` (e.g. `release/v1.2.3`
+//!      with the default `version_prefix = "v"`, or `release/1.2.3` with an empty prefix).
 //!    - PR title: first `v`-prefixed semver token (e.g. `chore(release): v1.2.3`).
+//!      **Note:** the title scan always looks for a `v`-prefixed token regardless of
+//!      `version_prefix`; users with a custom or empty prefix should ensure the branch
+//!      name source (step 1) is correct.
 //!    - PR body: first semver token with an optional `v` prefix.
 //!      Fails with [`CoreError::InvalidInput`] only if no valid semver is found in any
 //!      of the three sources.
@@ -73,6 +77,14 @@ pub struct AutomatorConfig {
     ///
     /// Defaults to `"## Changelog"`.
     pub changelog_header: String,
+
+    /// Version prefix prepended to the semver when forming tag names and branch names.
+    ///
+    /// For example, `"v"` (the default) produces tag `v1.2.3`; an empty string
+    /// produces `1.2.3`.
+    ///
+    /// Defaults to `"v"`.
+    pub version_prefix: String,
 }
 
 impl Default for AutomatorConfig {
@@ -80,6 +92,7 @@ impl Default for AutomatorConfig {
         Self {
             branch_prefix: "release".to_string(),
             changelog_header: "## Changelog".to_string(),
+            version_prefix: "v".to_string(),
         }
     }
 }
@@ -149,9 +162,14 @@ impl<'a, G: GitHubOperations + Send + Sync> ReleaseAutomator<'a, G> {
         correlation_id: &str,
     ) -> CoreResult<AutomatorResult> {
         let (branch, merge_sha, pr_body, pr_title) = extract_payload_fields(event)?;
-        let version =
-            extract_version_from_pr(&branch, &pr_title, &pr_body, &self.config.branch_prefix)?;
-        let tag_name = version.to_string_with_prefix(true);
+        let version = extract_version_from_pr(
+            &branch,
+            &pr_title,
+            &pr_body,
+            &self.config.branch_prefix,
+            &self.config.version_prefix,
+        )?;
+        let tag_name = format!("{}{version}", self.config.version_prefix);
 
         info!(
             owner, repo, branch = %branch, tag = %tag_name, sha = %merge_sha,
@@ -345,13 +363,14 @@ fn extract_payload_fields(event: &ProcessingEvent) -> CoreResult<(String, String
 
 /// Extract a [`SemanticVersion`] from a release branch name.
 ///
-/// Expects the branch to start with `{branch_prefix}/v` followed by a valid
-/// semantic version string, e.g. `"release/v1.2.3"` or `"release/v1.0.0-rc.1"`.
+/// Expects the branch to start with `{branch_prefix}/{version_prefix}` followed by a valid
+/// semantic version string, e.g. `"release/v1.2.3"` or `"release/v1.0.0-rc.1"` when
+/// `version_prefix` is `"v"`, or `"release/1.2.3"` when `version_prefix` is `""`.
 ///
 /// # Errors
 ///
 /// Returns [`CoreError::InvalidInput`] when:
-/// - The branch name does not start with `{branch_prefix}/v`.
+/// - The branch name does not start with `{branch_prefix}/{version_prefix}`.
 /// - The version suffix is not a valid semantic version.
 ///
 /// # Examples
@@ -359,13 +378,17 @@ fn extract_payload_fields(event: &ProcessingEvent) -> CoreResult<(String, String
 /// ```
 /// use release_regent_core::release_automator::extract_version_from_branch;
 ///
-/// let v = extract_version_from_branch("release/v1.2.3", "release").unwrap();
+/// let v = extract_version_from_branch("release/v1.2.3", "release", "v").unwrap();
 /// assert_eq!(v.to_string(), "1.2.3");
 ///
-/// let pre = extract_version_from_branch("release/v1.0.0-rc.1", "release").unwrap();
+/// let pre = extract_version_from_branch("release/v1.0.0-rc.1", "release", "v").unwrap();
 /// assert!(pre.is_prerelease());
 ///
-/// assert!(extract_version_from_branch("feature/abc", "release").is_err());
+/// // Empty version prefix: branch has no version prefix.
+/// let v2 = extract_version_from_branch("release/1.2.3", "release", "").unwrap();
+/// assert_eq!(v2.to_string(), "1.2.3");
+///
+/// assert!(extract_version_from_branch("feature/abc", "release", "v").is_err());
 /// ```
 // `CoreError` is a large enum used uniformly throughout the codebase.
 // Boxing it would require changing the entire `CoreResult<T>` type alias — a
@@ -375,14 +398,15 @@ fn extract_payload_fields(event: &ProcessingEvent) -> CoreResult<(String, String
 pub fn extract_version_from_branch(
     branch: &str,
     branch_prefix: &str,
+    version_prefix: &str,
 ) -> CoreResult<SemanticVersion> {
-    let prefix = format!("{branch_prefix}/v");
+    let prefix = format!("{branch_prefix}/{version_prefix}");
     let version_str = branch.strip_prefix(&prefix).ok_or_else(|| {
         CoreError::invalid_input(
             "branch",
             format!(
                 "Branch '{branch}' does not match the expected release branch \
-                 pattern '{branch_prefix}/v<version>'"
+                 pattern '{branch_prefix}/{version_prefix}<version>'"
             ),
         )
     })?;
@@ -394,10 +418,14 @@ pub fn extract_version_from_branch(
 /// The chain is evaluated in priority order:
 ///
 /// 1. **Branch name** — delegates to [`extract_version_from_branch`]; succeeds
-///    for branches matching `{branch_prefix}/v{semver}`.
+///    for branches matching `{branch_prefix}/{version_prefix}{semver}`.
 /// 2. **PR title** — scans whitespace-separated tokens for the first one that
 ///    starts with `v` *and* is a valid semantic version
-///    (e.g. `chore(release): v1.2.3` → `1.2.3`).
+///    (e.g. `chore(release): v1.2.3` → `1.2.3`).  **Note:** this step always
+///    looks for a `v`-prefixed token, regardless of the configured
+///    `version_prefix`.  Users with a custom or empty `version_prefix` should
+///    ensure that step 1 (branch name) succeeds; if the branch name is
+///    unavailable or unparseable the title fallback may not match their format.
 /// 3. **PR body** — scans whitespace-separated tokens for the first valid
 ///    semantic version with an optional `v` prefix
 ///    (e.g. `v1.2.3` or `1.2.3`).
@@ -414,6 +442,7 @@ pub fn extract_version_from_branch(
 /// - `title`: PR title string (e.g. `chore(release): v1.2.3`).
 /// - `body`: PR body text.
 /// - `branch_prefix`: Release branch prefix (e.g. `release`).
+/// - `version_prefix`: Version prefix used in branch names (e.g. `"v"` or `""`).
 ///
 /// # Errors
 ///
@@ -426,12 +455,12 @@ pub fn extract_version_from_branch(
 /// use release_regent_core::release_automator::extract_version_from_pr;
 ///
 /// // Branch name wins when valid.
-/// let v = extract_version_from_pr("release/v1.2.3", "no version", "no version", "release")
+/// let v = extract_version_from_pr("release/v1.2.3", "no version", "no version", "release", "v")
 ///     .unwrap();
 /// assert_eq!(v.to_string(), "1.2.3");
 ///
 /// // Falls back to title when branch is not a release branch.
-/// let v = extract_version_from_pr("feature/x", "chore(release): v2.0.0", "", "release")
+/// let v = extract_version_from_pr("feature/x", "chore(release): v2.0.0", "", "release", "v")
 ///     .unwrap();
 /// assert_eq!(v.to_string(), "2.0.0");
 /// ```
@@ -445,9 +474,10 @@ pub fn extract_version_from_pr(
     title: &str,
     body: &str,
     branch_prefix: &str,
+    version_prefix: &str,
 ) -> CoreResult<SemanticVersion> {
     // Step 1: branch name.
-    match extract_version_from_branch(branch, branch_prefix) {
+    match extract_version_from_branch(branch, branch_prefix, version_prefix) {
         Ok(version) => return Ok(version),
         Err(ref e) => {
             tracing::debug!(
@@ -537,7 +567,8 @@ fn find_version_token(text: &str, require_v_prefix: bool) -> Option<SemanticVers
 }
 
 /// Returns `true` when the branch name starts with the release branch prefix
-/// (`{branch_prefix}/v`).
+/// Check whether `branch` looks like a release PR branch
+/// (`{branch_prefix}/{version_prefix}`).
 ///
 /// **This is a prefix-only check.** It does not validate that the version
 /// suffix is a valid semantic version. For example, `"release/vnot-valid"`
@@ -551,17 +582,21 @@ fn find_version_token(text: &str, require_v_prefix: bool) -> Option<SemanticVers
 /// ```
 /// use release_regent_core::release_automator::is_release_pr_branch;
 ///
-/// assert!(is_release_pr_branch("release/v1.2.3", "release"));
-/// assert!(is_release_pr_branch("release/v1.0.0-rc.1", "release"));
+/// assert!(is_release_pr_branch("release/v1.2.3", "release", "v"));
+/// assert!(is_release_pr_branch("release/v1.0.0-rc.1", "release", "v"));
 /// // Prefix-only: "release/vnot-valid" passes the prefix check even though
 /// // extract_version_from_branch would reject the version suffix.
-/// assert!(is_release_pr_branch("release/vnot-valid", "release"));
-/// assert!(!is_release_pr_branch("feature/my-feature", "release"));
-/// assert!(!is_release_pr_branch("release/not-a-version", "release"));
+/// assert!(is_release_pr_branch("release/vnot-valid", "release", "v"));
+/// assert!(!is_release_pr_branch("feature/my-feature", "release", "v"));
+/// assert!(!is_release_pr_branch("release/not-a-version", "release", "v"));
+/// // Empty version prefix: branch has the form "release/<version>".
+/// // Both "release/1.2.3" and "release/v1.2.3" match the "release/" prefix.
+/// assert!(is_release_pr_branch("release/1.2.3", "release", ""));
+/// assert!(is_release_pr_branch("release/v1.2.3", "release", ""));
 /// ```
 #[must_use]
-pub fn is_release_pr_branch(branch: &str, branch_prefix: &str) -> bool {
-    let prefix = format!("{branch_prefix}/v");
+pub fn is_release_pr_branch(branch: &str, branch_prefix: &str, version_prefix: &str) -> bool {
+    let prefix = format!("{branch_prefix}/{version_prefix}");
     branch.starts_with(&prefix)
 }
 
