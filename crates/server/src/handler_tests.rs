@@ -203,14 +203,14 @@ async fn test_webhook_secret_provider_get_app_id_returns_not_found() {
 #[test]
 fn test_classify_event_pull_request_closed_merged_regular_returns_pr_merged() {
     let payload = merged_pr_payload();
-    let result = classify_event("pull_request", &payload, "release");
+    let result = classify_event("pull_request", &payload, "release", "v");
     assert_eq!(result, EventType::PullRequestMerged);
 }
 
 #[test]
 fn test_classify_event_pull_request_closed_merged_release_branch_returns_release_pr_merged() {
     let payload = merged_release_pr_payload();
-    let result = classify_event("pull_request", &payload, "release");
+    let result = classify_event("pull_request", &payload, "release", "v");
     assert_eq!(result, EventType::ReleasePrMerged);
 }
 
@@ -220,7 +220,7 @@ fn test_classify_event_pull_request_not_merged_returns_unknown_with_action() {
         "action": "closed",
         "pull_request": { "merged": false, "head": { "ref": "feature/x" } }
     });
-    let result = classify_event("pull_request", &payload, "release");
+    let result = classify_event("pull_request", &payload, "release", "v");
     assert!(
         matches!(result, EventType::Unknown(ref s) if s == "pull_request:closed"),
         "non-merged closed PR must return Unknown with action suffix"
@@ -233,7 +233,7 @@ fn test_classify_event_pull_request_opened_returns_pull_request_opened() {
         "action": "opened",
         "pull_request": { "merged": false, "head": { "ref": "feature/x" } }
     });
-    let result = classify_event("pull_request", &payload, "release");
+    let result = classify_event("pull_request", &payload, "release", "v");
     assert_eq!(
         result,
         EventType::PullRequestOpened,
@@ -247,7 +247,7 @@ fn test_classify_event_pull_request_synchronize_returns_pull_request_updated() {
         "action": "synchronize",
         "pull_request": { "merged": false, "head": { "ref": "feature/x" } }
     });
-    let result = classify_event("pull_request", &payload, "release");
+    let result = classify_event("pull_request", &payload, "release", "v");
     assert_eq!(result, EventType::PullRequestUpdated);
 }
 
@@ -257,7 +257,7 @@ fn test_classify_event_pull_request_ready_for_review_returns_pull_request_update
         "action": "ready_for_review",
         "pull_request": { "merged": false, "head": { "ref": "feature/x" } }
     });
-    let result = classify_event("pull_request", &payload, "release");
+    let result = classify_event("pull_request", &payload, "release", "v");
     assert_eq!(result, EventType::PullRequestUpdated);
 }
 
@@ -267,7 +267,7 @@ fn test_classify_event_pull_request_edited_returns_pull_request_updated() {
         "action": "edited",
         "pull_request": { "merged": false, "head": { "ref": "feature/x" } }
     });
-    let result = classify_event("pull_request", &payload, "release");
+    let result = classify_event("pull_request", &payload, "release", "v");
     assert_eq!(result, EventType::PullRequestUpdated);
 }
 
@@ -283,7 +283,7 @@ fn test_classify_event_issue_comment_on_pr_returns_pr_comment_received() {
             }
         }
     });
-    let result = classify_event("issue_comment", &payload, "release");
+    let result = classify_event("issue_comment", &payload, "release", "v");
     assert_eq!(result, EventType::PullRequestCommentReceived);
 }
 
@@ -298,7 +298,7 @@ fn test_classify_event_issue_comment_on_regular_issue_returns_unknown() {
             // no "pull_request" key
         }
     });
-    let result = classify_event("issue_comment", &payload, "release");
+    let result = classify_event("issue_comment", &payload, "release", "v");
     assert!(
         matches!(result, EventType::Unknown(ref s) if s == "issue_comment:issue"),
         "issue_comment on a plain issue must not be classified as PullRequestCommentReceived"
@@ -307,19 +307,19 @@ fn test_classify_event_issue_comment_on_regular_issue_returns_unknown() {
 
 #[test]
 fn test_classify_event_pull_request_review_comment_returns_pr_comment_received() {
-    let result = classify_event("pull_request_review_comment", &json!({}), "release");
+    let result = classify_event("pull_request_review_comment", &json!({}), "release", "v");
     assert_eq!(result, EventType::PullRequestCommentReceived);
 }
 
 #[test]
 fn test_classify_event_push_returns_unknown() {
-    let result = classify_event("push", &json!({}), "release");
+    let result = classify_event("push", &json!({}), "release", "v");
     assert!(matches!(result, EventType::Unknown(s) if s == "push"));
 }
 
 #[test]
 fn test_classify_event_empty_string_returns_unknown() {
-    let result = classify_event("", &json!({}), "release");
+    let result = classify_event("", &json!({}), "release", "v");
     assert!(matches!(result, EventType::Unknown(_)));
 }
 
@@ -334,7 +334,7 @@ fn test_classify_event_custom_prefix_matching_branch_returns_release_pr_merged()
             "head": { "ref": "custom/v1.2.3" }
         }
     });
-    let result = classify_event("pull_request", &payload, "custom");
+    let result = classify_event("pull_request", &payload, "custom", "v");
     assert_eq!(
         result,
         EventType::ReleasePrMerged,
@@ -352,7 +352,7 @@ fn test_classify_event_custom_prefix_non_matching_branch_returns_pr_merged() {
             "head": { "ref": "release/v1.2.3" }
         }
     });
-    let result = classify_event("pull_request", &payload, "custom");
+    let result = classify_event("pull_request", &payload, "custom", "v");
     assert_eq!(
         result,
         EventType::PullRequestMerged,
@@ -370,7 +370,7 @@ fn test_classify_event_default_prefix_unchanged_behavior_for_release_branch() {
             "head": { "ref": "release/v2.0.0" }
         }
     });
-    let result = classify_event("pull_request", &payload, "release");
+    let result = classify_event("pull_request", &payload, "release", "v");
     assert_eq!(
         result,
         EventType::ReleasePrMerged,
@@ -389,7 +389,7 @@ fn test_classify_event_empty_prefix_merged_pr_returns_pr_merged() {
             "head": { "ref": "/v1.0.0" }
         }
     });
-    let result = classify_event("pull_request", &payload, "");
+    let result = classify_event("pull_request", &payload, "", "v");
     assert_eq!(
         result,
         EventType::PullRequestMerged,
@@ -404,7 +404,7 @@ fn test_classify_event_empty_prefix_merged_pr_returns_pr_merged() {
 #[test]
 fn test_convert_envelope_valid_maps_repository_owner_and_name() {
     let envelope = make_envelope("pull_request", merged_pr_payload());
-    let event = convert_envelope(&envelope, "release").expect("conversion must succeed");
+    let event = convert_envelope(&envelope, "release", "v").expect("conversion must succeed");
     assert_eq!(event.repository.owner, "owner");
     assert_eq!(event.repository.name, "test-repo");
 }
@@ -412,21 +412,21 @@ fn test_convert_envelope_valid_maps_repository_owner_and_name() {
 #[test]
 fn test_convert_envelope_valid_maps_default_branch() {
     let envelope = make_envelope("pull_request", merged_pr_payload());
-    let event = convert_envelope(&envelope, "release").expect("conversion must succeed");
+    let event = convert_envelope(&envelope, "release", "v").expect("conversion must succeed");
     assert_eq!(event.repository.default_branch, "main");
 }
 
 #[test]
 fn test_convert_envelope_valid_sets_webhook_source_kind() {
     let envelope = make_envelope("pull_request", merged_pr_payload());
-    let event = convert_envelope(&envelope, "release").expect("conversion must succeed");
+    let event = convert_envelope(&envelope, "release", "v").expect("conversion must succeed");
     assert_eq!(event.source, EventSourceKind::Webhook);
 }
 
 #[test]
 fn test_convert_envelope_valid_classifies_event_type() {
     let envelope = make_envelope("pull_request", merged_pr_payload());
-    let event = convert_envelope(&envelope, "release").expect("conversion must succeed");
+    let event = convert_envelope(&envelope, "release", "v").expect("conversion must succeed");
     assert_eq!(event.event_type, EventType::PullRequestMerged);
 }
 
@@ -439,7 +439,7 @@ fn test_convert_envelope_invalid_full_name_returns_error() {
     repo.full_name = "no-slash-here".to_string();
 
     let envelope = EventEnvelope::new("push".to_string(), repo, EventPayload::new(json!({})));
-    let result = convert_envelope(&envelope, "release");
+    let result = convert_envelope(&envelope, "release", "v");
     assert!(result.is_err());
 }
 
@@ -447,7 +447,7 @@ fn test_convert_envelope_invalid_full_name_returns_error() {
 fn test_convert_envelope_payload_is_preserved() {
     let payload = merged_pr_payload();
     let envelope = make_envelope("pull_request", payload.clone());
-    let event = convert_envelope(&envelope, "release").expect("conversion must succeed");
+    let event = convert_envelope(&envelope, "release", "v").expect("conversion must succeed");
     assert_eq!(event.payload, payload);
 }
 
@@ -458,15 +458,20 @@ fn test_convert_envelope_payload_is_preserved() {
 #[test]
 fn test_is_allowed_empty_list_denies_all() {
     let (tx, _rx) = mpsc::channel(1);
-    let handler = ReleaseRegentWebhookHandler::new(tx, vec![], "release".to_string());
+    let handler =
+        ReleaseRegentWebhookHandler::new(tx, vec![], "release".to_string(), "v".to_string());
     assert!(!handler.is_allowed("owner/repo"));
 }
 
 #[test]
 fn test_is_allowed_wildcard_allows_any_repo() {
     let (tx, _rx) = mpsc::channel(1);
-    let handler =
-        ReleaseRegentWebhookHandler::new(tx, vec!["*".to_string()], "release".to_string());
+    let handler = ReleaseRegentWebhookHandler::new(
+        tx,
+        vec!["*".to_string()],
+        "release".to_string(),
+        "v".to_string(),
+    );
     assert!(handler.is_allowed("any/repo"));
     assert!(handler.is_allowed("another/project"));
 }
@@ -478,6 +483,7 @@ fn test_is_allowed_explicit_match_allows_listed_repo() {
         tx,
         vec!["owner/allowed-repo".to_string()],
         "release".to_string(),
+        "v".to_string(),
     );
     assert!(handler.is_allowed("owner/allowed-repo"));
 }
@@ -489,6 +495,7 @@ fn test_is_allowed_explicit_match_denies_unlisted_repo() {
         tx,
         vec!["owner/allowed-repo".to_string()],
         "release".to_string(),
+        "v".to_string(),
     );
     assert!(!handler.is_allowed("owner/other-repo"));
 }
@@ -500,8 +507,12 @@ fn test_is_allowed_explicit_match_denies_unlisted_repo() {
 #[tokio::test]
 async fn test_handle_event_allowed_repo_sends_processing_event() {
     let (tx, mut rx) = mpsc::channel(4);
-    let handler =
-        ReleaseRegentWebhookHandler::new(tx, vec!["*".to_string()], "release".to_string());
+    let handler = ReleaseRegentWebhookHandler::new(
+        tx,
+        vec!["*".to_string()],
+        "release".to_string(),
+        "v".to_string(),
+    );
 
     let envelope = make_envelope("pull_request", merged_pr_payload());
     handler
@@ -520,7 +531,8 @@ async fn test_handle_event_allowed_repo_sends_processing_event() {
 #[tokio::test]
 async fn test_handle_event_denied_repo_sends_nothing_to_channel() {
     let (tx, mut rx) = mpsc::channel(4);
-    let handler = ReleaseRegentWebhookHandler::new(tx, vec![], "release".to_string()); // deny all
+    let handler =
+        ReleaseRegentWebhookHandler::new(tx, vec![], "release".to_string(), "v".to_string()); // deny all
 
     let envelope = make_envelope("pull_request", merged_pr_payload());
     handler
@@ -537,8 +549,12 @@ async fn test_handle_event_denied_repo_sends_nothing_to_channel() {
 #[tokio::test]
 async fn test_handle_event_release_pr_sends_release_pr_merged_event() {
     let (tx, mut rx) = mpsc::channel(4);
-    let handler =
-        ReleaseRegentWebhookHandler::new(tx, vec!["*".to_string()], "release".to_string());
+    let handler = ReleaseRegentWebhookHandler::new(
+        tx,
+        vec!["*".to_string()],
+        "release".to_string(),
+        "v".to_string(),
+    );
 
     let envelope = make_envelope("pull_request", merged_release_pr_payload());
     handler
@@ -572,8 +588,12 @@ async fn test_handle_event_full_channel_drops_event_without_error() {
     };
     tx.try_send(filler).expect("pre-fill must succeed");
 
-    let handler =
-        ReleaseRegentWebhookHandler::new(tx, vec!["*".to_string()], "release".to_string());
+    let handler = ReleaseRegentWebhookHandler::new(
+        tx,
+        vec!["*".to_string()],
+        "release".to_string(),
+        "v".to_string(),
+    );
     let envelope = make_envelope("pull_request", merged_pr_payload());
 
     // Must not error even though the channel is full.
@@ -788,6 +808,7 @@ async fn test_receive_webhook_valid_request_invokes_handler_and_sends_event() {
         tx,
         vec!["*".to_string()],
         "release".to_string(),
+        "v".to_string(),
     ));
 
     let secret_provider = Arc::new(WebhookSecretProvider::new(SECRET));
