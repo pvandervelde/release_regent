@@ -366,12 +366,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // ── Event source + processing loop ─────────────────────────────────────
 
     // Build matched handler/source pair sharing a bounded mpsc channel.
-    // The release branch prefix is sourced from the orchestrator configuration so that the
-    // webhook classifier and the orchestrator always agree on what constitutes a release branch.
-    let release_branch_prefix =
-        release_regent_core::release_orchestrator::OrchestratorConfig::default().branch_prefix;
-    let (webhook_event_handler, event_source) =
-        handler::create_webhook_components(allowed_repos, channel_capacity, release_branch_prefix);
+    // The release branch prefix and version prefix are sourced from the orchestrator
+    // configuration so that the webhook classifier and the orchestrator always agree on
+    // what constitutes a release branch.
+    let default_orch = release_regent_core::release_orchestrator::OrchestratorConfig::default();
+    let release_branch_prefix = default_orch.branch_prefix;
+    let version_prefix = default_orch.version_prefix;
+    let (webhook_event_handler, event_source) = handler::create_webhook_components(
+        allowed_repos,
+        channel_capacity,
+        release_branch_prefix,
+        version_prefix,
+    );
 
     // Spawn the event processing loop.  It runs until the shutdown token is
     // cancelled, processing each `ProcessingEvent` from the mpsc channel.
