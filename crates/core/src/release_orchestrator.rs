@@ -69,6 +69,14 @@ pub struct OrchestratorConfig {
     /// Defaults to `"release"`.
     pub branch_prefix: String,
 
+    /// Version prefix prepended to the semver when forming branch names and PR titles.
+    ///
+    /// For example, `"v"` (the default) produces `release/v1.2.3`; an empty string
+    /// produces `release/1.2.3`.
+    ///
+    /// Defaults to `"v"`.
+    pub version_prefix: String,
+
     /// Template for the release PR title.
     ///
     /// Supports `{version}` (e.g. `"1.2.3"`) and `{version_tag}` (e.g. `"v1.2.3"`).
@@ -117,6 +125,9 @@ impl OrchestratorConfig {
     /// The default branch prefix used when no explicit configuration is provided.
     pub const DEFAULT_BRANCH_PREFIX: &'static str = "release";
 
+    /// The default version prefix used when no explicit configuration is provided.
+    pub const DEFAULT_VERSION_PREFIX: &'static str = "v";
+
     /// The default PR body template string.
     pub const DEFAULT_BODY_TEMPLATE: &'static str = "## Changelog\n\n${changelog}";
 }
@@ -162,6 +173,7 @@ impl Default for OrchestratorConfig {
         let changelog_header = extract_changelog_header(&body_template);
         Self {
             branch_prefix: Self::DEFAULT_BRANCH_PREFIX.to_string(),
+            version_prefix: Self::DEFAULT_VERSION_PREFIX.to_string(),
             title_template: "chore(release): {version_tag}".to_string(),
             changelog_header,
             body_template,
@@ -469,8 +481,9 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
         let file_updates = dedup_file_updates_by_path(file_updates);
 
         let commit_message = format!(
-            "chore(release): update release files for {}",
-            version.to_string_with_prefix(true)
+            "chore(release): update release files for {}{}",
+            self.config.version_prefix,
+            version
         );
 
         // Use `batch_commit_files_rebased` (not `batch_commit_files`) so the new
@@ -596,8 +609,9 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
         let file_updates = dedup_file_updates_by_path(file_updates);
 
         let commit_message = format!(
-            "chore(release): update release files for {}",
-            version.to_string_with_prefix(true)
+            "chore(release): update release files for {}{}",
+            self.config.version_prefix,
+            version
         );
         self.github
             .batch_commit_files_rebased(
@@ -693,17 +707,19 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
 
     // ── Naming helpers ─────────────────────────────────────────────────────
 
-    /// Returns the head-branch query prefix, e.g. `"release/v"`.
+    /// Returns the head-branch query prefix, e.g. `"release/v"` with the default config,
+    /// or `"release/"` when `version_prefix` is empty.
     fn release_branch_prefix(&self) -> String {
-        format!("{}/v", self.config.branch_prefix)
+        format!("{}/{}", self.config.branch_prefix, self.config.version_prefix)
     }
 
-    /// Construct the canonical release branch name, e.g. `"release/v1.2.3"`.
+    /// Construct the canonical release branch name, e.g. `"release/v1.2.3"` with
+    /// the default config, or `"release/1.2.3"` when `version_prefix` is empty.
     pub(crate) fn make_branch_name(&self, version: &SemanticVersion) -> String {
         format!(
-            "{}/{}",
+            "{}/{}{version}",
             self.config.branch_prefix,
-            version.to_string_with_prefix(true)
+            self.config.version_prefix,
         )
     }
 
@@ -944,7 +960,7 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
     /// for `version` (e.g. `"0.2.0"`) and `version_tag` (e.g. `"v0.2.0"`).
     fn render_title(&self, version: &SemanticVersion) -> String {
         let version_str = version.to_string();
-        let version_tag_str = version.to_string_with_prefix(true);
+        let version_tag_str = format!("{}{version_str}", self.config.version_prefix);
         self.config
             .title_template
             .replace("${version_tag}", &version_tag_str)
