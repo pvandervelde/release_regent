@@ -249,7 +249,7 @@ pub struct ReleasesConfig {
 }
 
 fn default_generate_notes() -> bool {
-    true
+    false
 }
 
 impl Default for ReleasesConfig {

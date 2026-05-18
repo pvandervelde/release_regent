@@ -1407,3 +1407,67 @@ async fn test_automate_custom_version_prefix_creates_tag_with_prefix() {
     assert_eq!(tags.len(), 1);
     assert_eq!(tags[0].0, "release-1.2.3");
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// generate_release_notes config tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_automate_generate_release_notes_true_sets_flag_in_api_call() {
+    // When AutomatorConfig::generate_release_notes is true, the API request
+    // must pass generate_release_notes: true so GitHub generates release notes.
+    let github = TestGitHub::new();
+    let config = AutomatorConfig {
+        generate_release_notes: true,
+        ..AutomatorConfig::default()
+    };
+    let automator = ReleaseAutomator::new(config, &github);
+
+    let event = make_release_pr_event(
+        "release/v1.2.3",
+        "deadbeef1234567890deadbeef1234567890abcd",
+        "## Changelog\n\n- feat: add widget [abc123def456789012345678901234567890abcd]\n",
+    );
+
+    automator
+        .automate("testorg", "testrepo", &event, "corr-001")
+        .await
+        .unwrap();
+
+    let releases = github.created_releases().await;
+    assert_eq!(releases.len(), 1);
+    assert!(
+        releases[0].generate_release_notes,
+        "generate_release_notes must be true when configured as true"
+    );
+}
+
+#[tokio::test]
+async fn test_automate_generate_release_notes_false_clears_flag_in_api_call() {
+    // When AutomatorConfig::generate_release_notes is false (the default),
+    // the API request must pass generate_release_notes: false.
+    let github = TestGitHub::new();
+    let config = AutomatorConfig {
+        generate_release_notes: false,
+        ..AutomatorConfig::default()
+    };
+    let automator = ReleaseAutomator::new(config, &github);
+
+    let event = make_release_pr_event(
+        "release/v1.2.3",
+        "deadbeef1234567890deadbeef1234567890abcd",
+        "## Changelog\n\n- feat: add widget [abc123def456789012345678901234567890abcd]\n",
+    );
+
+    automator
+        .automate("testorg", "testrepo", &event, "corr-001")
+        .await
+        .unwrap();
+
+    let releases = github.created_releases().await;
+    assert_eq!(releases.len(), 1);
+    assert!(
+        !releases[0].generate_release_notes,
+        "generate_release_notes must be false when configured as false"
+    );
+}
