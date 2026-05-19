@@ -97,7 +97,7 @@ assignees = []
 [releases]
 draft = false
 prerelease = false
-generate_notes = true
+generate_notes = false  # Opt in to GitHub-generated notes; default is false so the custom changelog is used
 cleanup_branches = true
 
 # Versioning strategy
@@ -518,7 +518,7 @@ labels = ["release", "automated"]
 [releases]
 draft = false
 prerelease = false
-generate_notes = true
+generate_notes = false  # Opt in to GitHub-generated notes; default is false so the custom changelog is used
 cleanup_branches = true
 
 [versioning]
