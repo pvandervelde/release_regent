@@ -85,6 +85,17 @@ pub struct AutomatorConfig {
     ///
     /// Defaults to `"v"`.
     pub version_prefix: String,
+
+    /// Whether to ask GitHub to auto-generate release notes from commits and
+    /// pull requests when creating the GitHub release.
+    ///
+    /// When `true` the `generate_release_notes` flag in the GitHub API
+    /// request is set, causing GitHub to append its own notes to the body.
+    /// When `false` (the default) only the changelog extracted from the PR
+    /// body is used.
+    ///
+    /// Defaults to `false`.
+    pub generate_release_notes: bool,
 }
 
 impl Default for AutomatorConfig {
@@ -93,6 +104,7 @@ impl Default for AutomatorConfig {
             branch_prefix: "release".to_string(),
             changelog_header: "## Changelog".to_string(),
             version_prefix: "v".to_string(),
+            generate_release_notes: false,
         }
     }
 }
@@ -211,7 +223,7 @@ impl<'a, G: GitHubOperations + Send + Sync> ReleaseAutomator<'a, G> {
                     body: Some(changelog),
                     draft: false,
                     prerelease: is_prerelease,
-                    generate_release_notes: false,
+                    generate_release_notes: self.config.generate_release_notes,
                     target_commitish: Some(merge_sha),
                 },
             )

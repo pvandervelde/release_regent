@@ -345,6 +345,7 @@ where
                 &repo_config.release_pr.body_template,
             ),
             version_prefix: repo_config.core.version_prefix.clone(),
+            generate_release_notes: repo_config.releases.generate_notes,
         };
 
         match ReleaseAutomator::new(

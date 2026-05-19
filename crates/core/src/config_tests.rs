@@ -81,7 +81,7 @@ fn test_default_configuration() {
     assert_eq!(config.core.branches.main, "main");
     assert!(!config.release_pr.draft);
     assert!(!config.releases.draft);
-    assert!(config.releases.generate_notes);
+    assert!(!config.releases.generate_notes);
     assert_eq!(config.error_handling.max_retries, 5);
     assert!(config.notifications.enabled);
     assert!(matches!(
