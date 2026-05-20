@@ -901,13 +901,19 @@ impl GitHubOperations for TestGitHubForLib {
         &self,
         _owner: &str,
         _repo: &str,
-        _state: Option<&str>,
+        state: Option<&str>,
         _head: Option<&str>,
         _base: Option<&str>,
         _per_page: Option<u8>,
         _page: Option<u32>,
     ) -> CoreResult<Vec<PullRequest>> {
-        Ok(self.existing_prs.clone())
+        // All seeded test PRs are considered open.  Honour the `state` filter
+        // so that callers requesting "closed" (or any other non-open state)
+        // receive an empty list rather than a misleading result.
+        match state {
+            Some(s) if s != "open" => Ok(vec![]),
+            _ => Ok(self.existing_prs.clone()),
+        }
     }
 
     async fn search_pull_requests(

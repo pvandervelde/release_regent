@@ -338,9 +338,9 @@ where
             )
             .await?;
 
-        let default_orch = release_orchestrator::OrchestratorConfig::default();
         let config = AutomatorConfig {
-            branch_prefix: default_orch.branch_prefix,
+            branch_prefix: release_orchestrator::OrchestratorConfig::DEFAULT_BRANCH_PREFIX
+                .to_string(),
             changelog_header: release_orchestrator::extract_changelog_header(
                 &repo_config.release_pr.body_template,
             ),
@@ -949,9 +949,57 @@ where
             .unwrap_or(&event.repository.default_branch)
             .to_string();
 
-        // The merge commit SHA is required: it is the head of the base branch
-        // immediately after the merge and serves as the branch point for the
-        // new release branch.
+        // Check the merged PR's head branch early to avoid running the expensive
+        // calculate_version_for_merge (tag fetching + version calculation +
+        // changelog generation) when this is a release PR merge.  We need only
+        // the repository config on that path — not the full version pipeline.
+        let merged_pr_head_ref = event
+            .payload
+            .get("pull_request")
+            .and_then(|pr| pr.get("head"))
+            .and_then(|h| h.get("ref"))
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let release_branch_prefix = format!(
+            "{}/",
+            release_orchestrator::OrchestratorConfig::DEFAULT_BRANCH_PREFIX
+        );
+        if merged_pr_head_ref.starts_with(&release_branch_prefix) {
+            use traits::configuration_provider::LoadOptions;
+            let installation_id = self.resolve_installation_id(owner, repo).await?;
+            let repo_config = self
+                .configuration_provider
+                .get_merged_config(
+                    owner,
+                    repo,
+                    LoadOptions {
+                        installation_id: Some(installation_id),
+                        default_branch: Some(base_branch.clone()),
+                        ..Default::default()
+                    },
+                )
+                .await?;
+            if release_automator::is_release_pr_branch(
+                &merged_pr_head_ref,
+                release_orchestrator::OrchestratorConfig::DEFAULT_BRANCH_PREFIX,
+                &repo_config.core.version_prefix,
+            ) {
+                return self
+                    .process_release_pr_merged(
+                        owner,
+                        repo,
+                        installation_id,
+                        correlation_id,
+                        &repo_config,
+                        event,
+                    )
+                    .await;
+            }
+        }
+
+        // Feature PR path: the merge commit SHA is required as the branch
+        // point for the new release branch.
         let base_sha = event
             .payload
             .get("pull_request")
@@ -999,24 +1047,8 @@ where
             auto_detect_manifests: repo_config.release_pr.auto_detect_manifests,
         };
 
-        // Determine whether the merged PR is itself a release PR by checking
-        // whether its head branch starts with the configured release prefix.
-        let merged_pr_head_ref = event
-            .payload
-            .get("pull_request")
-            .and_then(|pr| pr.get("head"))
-            .and_then(|h| h.get("ref"))
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string();
-        let is_release_pr = release_automator::is_release_pr_branch(
-            &merged_pr_head_ref,
-            &orch_config.branch_prefix,
-            &orch_config.version_prefix,
-        );
-
         // Resolve the merged PR number (needed to read override labels on the
-        // feature-PR path, and logged for diagnostics on the release-PR path).
+        // feature-PR path).
         let merged_pr_number: u64 = event
             .payload
             .get("pull_request")
@@ -1028,32 +1060,20 @@ where
         let orchestrator =
             release_orchestrator::ReleaseOrchestrator::new(orch_config, &scoped_github);
 
-        if is_release_pr {
-            self.process_release_pr_merged(
-                owner,
-                repo,
-                installation_id,
-                correlation_id,
-                &repo_config,
-                event,
-            )
-            .await
-        } else {
-            self.process_feature_pr_merged(
-                owner,
-                repo,
-                installation_id,
-                merged_pr_number,
-                correlation_id,
-                &orchestrator,
-                current_version.as_ref(),
-                &calc_result,
-                &changelog,
-                &base_branch,
-                &base_sha,
-            )
-            .await
-        }
+        self.process_feature_pr_merged(
+            owner,
+            repo,
+            installation_id,
+            merged_pr_number,
+            correlation_id,
+            &orchestrator,
+            current_version.as_ref(),
+            &calc_result,
+            &changelog,
+            &base_branch,
+            &base_sha,
+        )
+        .await
     }
 
     /// Load configuration and calculate the next version for a merge event.
@@ -1197,9 +1217,9 @@ where
              (arrived as PullRequestMerged; head branch matches release prefix)"
         );
 
-        let default_orch = release_orchestrator::OrchestratorConfig::default();
         let config = AutomatorConfig {
-            branch_prefix: default_orch.branch_prefix,
+            branch_prefix: release_orchestrator::OrchestratorConfig::DEFAULT_BRANCH_PREFIX
+                .to_string(),
             changelog_header: release_orchestrator::extract_changelog_header(
                 &repo_config.release_pr.body_template,
             ),
@@ -1318,19 +1338,35 @@ where
 
             // Post exactly one cleanup comment per PR, listing every kind that
             // was removed.  This avoids duplicate comments when a PR carried
-            // more than one override label.
-            let kind_list = stale_overrides
-                .iter()
-                .filter_map(|l| l.strip_prefix("rr:override-"))
-                .collect::<Vec<_>>()
-                .join(", ");
-            let cleanup_body = format!(
-                "ℹ️ **Release Regent**: The `!release {kind_list}` override on \
-                 this PR has been cleared because a new release was published \
-                 before this PR merged. If the work in this PR still warrants \
-                 a minimum bump for the next release, please re-post your \
-                 `!release` command."
-            );
+            // more than one override label.  Use the plural form and list each
+            // command individually when multiple labels were removed so the
+            // copy is grammatically correct and each label is a valid command.
+            let cleanup_body = if stale_overrides.len() == 1 {
+                let kind = stale_overrides[0]
+                    .strip_prefix("rr:override-")
+                    .unwrap_or(&stale_overrides[0]);
+                format!(
+                    "ℹ️ **Release Regent**: The `!release {kind}` override on \
+                     this PR has been cleared because a new release was published \
+                     before this PR merged. If the work in this PR still warrants \
+                     a minimum bump for the next release, please re-post your \
+                     `!release` command."
+                )
+            } else {
+                let commands = stale_overrides
+                    .iter()
+                    .filter_map(|l| l.strip_prefix("rr:override-"))
+                    .map(|kind| format!("`!release {kind}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!(
+                    "ℹ️ **Release Regent**: The {commands} overrides on \
+                     this PR have been cleared because a new release was published \
+                     before this PR merged. If the work in this PR still warrants \
+                     a minimum bump for the next release, please re-post your \
+                     `!release` command."
+                )
+            };
             if let Err(e) = scoped_github
                 .create_issue_comment(owner, repo, pr.number, &cleanup_body)
                 .await

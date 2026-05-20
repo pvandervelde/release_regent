@@ -233,6 +233,16 @@ pub enum OrchestratorResult {
     ///
     /// No new release PR is opened on this path; the next release cycle
     /// begins when the next feature PR merges.
+    ///
+    /// # Design note
+    ///
+    /// `TaggedRelease` is placed in `OrchestratorResult` as a pragmatic
+    /// shortcut so that `handle_merged_pull_request` can share a single
+    /// `CoreResult<OrchestratorResult>` return type across both paths.  A
+    /// cleaner long-term design would introduce a dedicated `ProcessorResult`
+    /// sum type as the return type of `handle_merged_pull_request`, removing
+    /// the `unreachable!()` guards that exhaustive matches on
+    /// `OrchestratorResult` must carry for this variant.
     TaggedRelease,
 }
 
