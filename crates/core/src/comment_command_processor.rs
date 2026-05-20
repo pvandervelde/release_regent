@@ -540,6 +540,12 @@ impl<'a, G: GitHubOperations + Send + Sync> CommentCommandProcessor<'a, G> {
                 "NoBumpNeeded cannot be returned by orchestrate() from a \
                  !set-version command path"
             ),
+            // TaggedRelease is produced by the release-PR merge path and is
+            // never returned by `ReleaseOrchestrator::orchestrate()`.
+            OrchestratorResult::TaggedRelease => unreachable!(
+                "TaggedRelease cannot be returned by orchestrate() from a \
+                 !set-version command path"
+            ),
         }
     }
 

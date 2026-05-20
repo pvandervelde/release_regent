@@ -1454,6 +1454,9 @@ where
             // NoBumpNeeded is returned before the orchestrator is called, so
             // there is no release PR to post the audit comment on.
             release_orchestrator::OrchestratorResult::NoBumpNeeded => None,
+            // TaggedRelease is produced by the release-PR merge path, not by the
+            // orchestrator, so there is no open release PR to comment on.
+            release_orchestrator::OrchestratorResult::TaggedRelease => None,
         };
         let Some(release_pr) = release_pr_number else {
             return;
