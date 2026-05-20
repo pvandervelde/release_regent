@@ -338,9 +338,9 @@ where
             )
             .await?;
 
-        let default_orch = release_orchestrator::OrchestratorConfig::default();
         let config = AutomatorConfig {
-            branch_prefix: default_orch.branch_prefix,
+            branch_prefix: release_orchestrator::OrchestratorConfig::DEFAULT_BRANCH_PREFIX
+                .to_string(),
             changelog_header: release_orchestrator::extract_changelog_header(
                 &repo_config.release_pr.body_template,
             ),
@@ -359,6 +359,15 @@ where
         {
             Ok(result) => {
                 tracing::info!(result = ?result, "Release automation completed");
+                // Clear stale rr:override-* labels from open feature PRs now that
+                // a new release has been published.
+                self.clear_stale_override_labels_after_release(
+                    owner,
+                    repo,
+                    event.installation_id,
+                    correlation_id,
+                )
+                .await;
                 self.try_refresh_feature_pr_status_comments(
                     owner,
                     repo,
@@ -940,9 +949,57 @@ where
             .unwrap_or(&event.repository.default_branch)
             .to_string();
 
-        // The merge commit SHA is required: it is the head of the base branch
-        // immediately after the merge and serves as the branch point for the
-        // new release branch.
+        // Check the merged PR's head branch early to avoid running the expensive
+        // calculate_version_for_merge (tag fetching + version calculation +
+        // changelog generation) when this is a release PR merge.  We need only
+        // the repository config on that path — not the full version pipeline.
+        let merged_pr_head_ref = event
+            .payload
+            .get("pull_request")
+            .and_then(|pr| pr.get("head"))
+            .and_then(|h| h.get("ref"))
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let release_branch_prefix = format!(
+            "{}/",
+            release_orchestrator::OrchestratorConfig::DEFAULT_BRANCH_PREFIX
+        );
+        if merged_pr_head_ref.starts_with(&release_branch_prefix) {
+            use traits::configuration_provider::LoadOptions;
+            let installation_id = self.resolve_installation_id(owner, repo).await?;
+            let repo_config = self
+                .configuration_provider
+                .get_merged_config(
+                    owner,
+                    repo,
+                    LoadOptions {
+                        installation_id: Some(installation_id),
+                        default_branch: Some(base_branch.clone()),
+                        ..Default::default()
+                    },
+                )
+                .await?;
+            if release_automator::is_release_pr_branch(
+                &merged_pr_head_ref,
+                release_orchestrator::OrchestratorConfig::DEFAULT_BRANCH_PREFIX,
+                &repo_config.core.version_prefix,
+            ) {
+                return self
+                    .process_release_pr_merged(
+                        owner,
+                        repo,
+                        installation_id,
+                        correlation_id,
+                        &repo_config,
+                        event,
+                    )
+                    .await;
+            }
+        }
+
+        // Feature PR path: the merge commit SHA is required as the branch
+        // point for the new release branch.
         let base_sha = event
             .payload
             .get("pull_request")
@@ -990,24 +1047,8 @@ where
             auto_detect_manifests: repo_config.release_pr.auto_detect_manifests,
         };
 
-        // Determine whether the merged PR is itself a release PR by checking
-        // whether its head branch starts with the configured release prefix.
-        let merged_pr_head_ref = event
-            .payload
-            .get("pull_request")
-            .and_then(|pr| pr.get("head"))
-            .and_then(|h| h.get("ref"))
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string();
-        let is_release_pr = release_automator::is_release_pr_branch(
-            &merged_pr_head_ref,
-            &orch_config.branch_prefix,
-            &orch_config.version_prefix,
-        );
-
         // Resolve the merged PR number (needed to read override labels on the
-        // feature-PR path, and logged for diagnostics on the release-PR path).
+        // feature-PR path).
         let merged_pr_number: u64 = event
             .payload
             .get("pull_request")
@@ -1019,35 +1060,20 @@ where
         let orchestrator =
             release_orchestrator::ReleaseOrchestrator::new(orch_config, &scoped_github);
 
-        if is_release_pr {
-            self.process_release_pr_merged(
-                owner,
-                repo,
-                installation_id,
-                correlation_id,
-                &orchestrator,
-                &calc_result.next_version,
-                &changelog,
-                &base_branch,
-                &base_sha,
-            )
-            .await
-        } else {
-            self.process_feature_pr_merged(
-                owner,
-                repo,
-                installation_id,
-                merged_pr_number,
-                correlation_id,
-                &orchestrator,
-                current_version.as_ref(),
-                &calc_result,
-                &changelog,
-                &base_branch,
-                &base_sha,
-            )
-            .await
-        }
+        self.process_feature_pr_merged(
+            owner,
+            repo,
+            installation_id,
+            merged_pr_number,
+            correlation_id,
+            &orchestrator,
+            current_version.as_ref(),
+            &calc_result,
+            &changelog,
+            &base_branch,
+            &base_sha,
+        )
+        .await
     }
 
     /// Load configuration and calculate the next version for a merge event.
@@ -1159,46 +1185,54 @@ where
         })
     }
 
-    /// Handle the release-PR path after a merged pull request.
+    /// Handle the release-PR path when a merged pull request is identified as a
+    /// release PR.
     ///
-    /// Orchestrates the next release cycle and clears stale bump-override labels
-    /// from open feature PRs that were scoped to the completed release.
-    #[allow(clippy::too_many_arguments)] // owner/repo/installation_id/correlation/orchestrator/version/changelog/branch/sha is the minimal surface
+    /// This path is taken when `handle_merged_pull_request` (the inherent method)
+    /// detects that the merged PR head branch starts with the configured release
+    /// prefix — typically because the webhook event was classified as
+    /// `PullRequestMerged` rather than `ReleasePrMerged` (the two differ when
+    /// the server's default `version_prefix` does not match the repository's
+    /// configured prefix).
+    ///
+    /// Invokes [`release_automator::ReleaseAutomator`] to create the annotated
+    /// git tag and GitHub release, then clears stale bump-override labels from
+    /// any open feature PRs.
     async fn process_release_pr_merged(
         &self,
         owner: &str,
         repo: &str,
         installation_id: u64,
         correlation_id: &str,
-        orchestrator: &release_orchestrator::ReleaseOrchestrator<'_, G>,
-        version: &versioning::SemanticVersion,
-        changelog: &str,
-        base_branch: &str,
-        base_sha: &str,
+        repo_config: &config::ReleaseRegentConfig,
+        event: &traits::event_source::ProcessingEvent,
     ) -> CoreResult<release_orchestrator::OrchestratorResult> {
+        use release_automator::{AutomatorConfig, ReleaseAutomator};
+
         tracing::info!(
             owner = %owner,
             repo = %repo,
-            version = %version,
-            base_branch = %base_branch,
             correlation_id = %correlation_id,
-            "Orchestrating for merged release PR"
+            "Handling merged release PR via automator \
+             (arrived as PullRequestMerged; head branch matches release prefix)"
         );
 
-        let orch_result = orchestrator
-            .orchestrate(
-                owner,
-                repo,
-                version,
-                changelog,
-                base_branch,
-                base_sha,
-                correlation_id,
-            )
+        let config = AutomatorConfig {
+            branch_prefix: release_orchestrator::OrchestratorConfig::DEFAULT_BRANCH_PREFIX
+                .to_string(),
+            changelog_header: release_orchestrator::extract_changelog_header(
+                &repo_config.release_pr.body_template,
+            ),
+            version_prefix: repo_config.core.version_prefix.clone(),
+            generate_release_notes: repo_config.releases.generate_notes,
+        };
+
+        ReleaseAutomator::new(config, &self.github_operations.scoped_to(installation_id))
+            .automate(owner, repo, event, correlation_id)
             .await?;
 
-        // After a release is published, clear stale rr:override-* labels from
-        // any open feature PRs. Overrides were scoped to this release cycle.
+        // After the release is published, clear stale rr:override-* labels from
+        // any open feature PRs.  These overrides were scoped to this release cycle.
         self.clear_stale_override_labels_after_release(
             owner,
             repo,
@@ -1207,10 +1241,24 @@ where
         )
         .await;
 
-        Ok(orch_result)
+        Ok(release_orchestrator::OrchestratorResult::TaggedRelease)
     }
 
     /// Clear stale bump-override labels from open feature PRs after a release.
+    ///
+    /// Enumerates all currently-open PRs via `list_pull_requests`, then
+    /// inspects each one's actual labels via `list_pr_labels`.  Only PRs that
+    /// carry at least one `rr:override-*` label are processed; all others are
+    /// skipped without any API calls.
+    ///
+    /// For each qualifying PR:
+    /// 1. Every `rr:override-*` label present is removed.
+    /// 2. Exactly **one** notification comment is posted (regardless of how many
+    ///    labels were removed), explaining that the override has been cleared
+    ///    because a new release was published.
+    ///
+    /// All errors are logged as warnings and the loop continues; this function
+    /// is intentionally best-effort and never propagates failures to callers.
     async fn clear_stale_override_labels_after_release(
         &self,
         owner: &str,
@@ -1219,60 +1267,116 @@ where
         correlation_id: &str,
     ) {
         use comment_command_processor::ALL_OVERRIDE_LABELS;
+        use std::collections::HashSet;
 
         let scoped_github = self.github_operations.scoped_to(installation_id);
 
-        for &label_name in ALL_OVERRIDE_LABELS {
-            let query = format!("is:open label:{label_name}");
-            match scoped_github
-                .search_pull_requests(owner, repo, &query)
-                .await
-            {
-                Ok(stale_prs) => {
-                    for stale_pr in stale_prs {
-                        if let Err(e) = scoped_github
-                            .remove_label(owner, repo, stale_pr.number, label_name)
-                            .await
-                        {
-                            tracing::warn!(
-                                error = %e,
-                                pr = stale_pr.number,
-                                label = label_name,
-                                correlation_id = %correlation_id,
-                                "Failed to remove stale override label; continuing"
-                            );
-                        }
-                        let kind_str = label_name
-                            .strip_prefix("rr:override-")
-                            .unwrap_or(label_name);
-                        let cleanup_body = format!(
-                            "ℹ️ **Release Regent**: The `!release {kind_str}` override on \
-                             this PR has been cleared because a new release was published \
-                             before this PR merged. If the work in this PR still warrants \
-                             a minimum bump for the next release, please re-post your \
-                             `!release` command."
-                        );
-                        if let Err(e) = scoped_github
-                            .create_issue_comment(owner, repo, stale_pr.number, &cleanup_body)
-                            .await
-                        {
-                            tracing::warn!(
-                                error = %e,
-                                pr = stale_pr.number,
-                                correlation_id = %correlation_id,
-                                "Failed to post stale-override cleanup comment; continuing"
-                            );
-                        }
-                    }
-                }
+        // The GitHubClient implementation of search_pull_requests does not
+        // filter by the `label:` qualifier (only `is:`, `head:`, and `base:`
+        // are parsed).  Using list_pull_requests + per-PR list_pr_labels
+        // guarantees we only act on PRs that actually carry override labels.
+        let open_prs = match scoped_github
+            .list_pull_requests(owner, repo, Some("open"), None, None, None, None)
+            .await
+        {
+            Ok(prs) => prs,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    owner,
+                    repo,
+                    correlation_id = %correlation_id,
+                    "Failed to list open PRs for override-label cleanup; skipping"
+                );
+                return;
+            }
+        };
+
+        let override_label_set: HashSet<&str> = ALL_OVERRIDE_LABELS.iter().copied().collect();
+
+        for pr in &open_prs {
+            // Fetch the actual labels on this PR.
+            let pr_labels = match scoped_github.list_pr_labels(owner, repo, pr.number).await {
+                Ok(labels) => labels,
                 Err(e) => {
                     tracing::warn!(
                         error = %e,
-                        label = label_name,
+                        pr = pr.number,
                         correlation_id = %correlation_id,
-                        "Failed to search for PRs with stale override label; continuing"
+                        "Failed to list labels for PR during override cleanup; skipping"
+                    );
+                    continue;
+                }
+            };
+
+            // Collect override labels that are actually present on this PR.
+            let stale_overrides: Vec<String> = pr_labels
+                .iter()
+                .filter(|l| override_label_set.contains(l.name.as_str()))
+                .map(|l| l.name.clone())
+                .collect();
+
+            if stale_overrides.is_empty() {
+                continue;
+            }
+
+            // Remove each stale override label.
+            for label_name in &stale_overrides {
+                if let Err(e) = scoped_github
+                    .remove_label(owner, repo, pr.number, label_name)
+                    .await
+                {
+                    tracing::warn!(
+                        error = %e,
+                        pr = pr.number,
+                        label = %label_name,
+                        correlation_id = %correlation_id,
+                        "Failed to remove stale override label; continuing"
                     );
                 }
+            }
+
+            // Post exactly one cleanup comment per PR, listing every kind that
+            // was removed.  This avoids duplicate comments when a PR carried
+            // more than one override label.  Use the plural form and list each
+            // command individually when multiple labels were removed so the
+            // copy is grammatically correct and each label is a valid command.
+            let cleanup_body = if stale_overrides.len() == 1 {
+                let kind = stale_overrides[0]
+                    .strip_prefix("rr:override-")
+                    .unwrap_or(&stale_overrides[0]);
+                format!(
+                    "ℹ️ **Release Regent**: The `!release {kind}` override on \
+                     this PR has been cleared because a new release was published \
+                     before this PR merged. If the work in this PR still warrants \
+                     a minimum bump for the next release, please re-post your \
+                     `!release` command."
+                )
+            } else {
+                let commands = stale_overrides
+                    .iter()
+                    .filter_map(|l| l.strip_prefix("rr:override-"))
+                    .map(|kind| format!("`!release {kind}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!(
+                    "ℹ️ **Release Regent**: The {commands} overrides on \
+                     this PR have been cleared because a new release was published \
+                     before this PR merged. If the work in this PR still warrants \
+                     a minimum bump for the next release, please re-post your \
+                     `!release` command."
+                )
+            };
+            if let Err(e) = scoped_github
+                .create_issue_comment(owner, repo, pr.number, &cleanup_body)
+                .await
+            {
+                tracing::warn!(
+                    error = %e,
+                    pr = pr.number,
+                    correlation_id = %correlation_id,
+                    "Failed to post stale-override cleanup comment; continuing"
+                );
             }
         }
     }
@@ -1454,6 +1558,9 @@ where
             // NoBumpNeeded is returned before the orchestrator is called, so
             // there is no release PR to post the audit comment on.
             release_orchestrator::OrchestratorResult::NoBumpNeeded => None,
+            // TaggedRelease is produced by the release-PR merge path, not by the
+            // orchestrator, so there is no open release PR to comment on.
+            release_orchestrator::OrchestratorResult::TaggedRelease => None,
         };
         let Some(release_pr) = release_pr_number else {
             return;

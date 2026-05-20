@@ -223,6 +223,27 @@ pub enum OrchestratorResult {
     /// outcome when a `chore:`, `docs:`, or other non-bumping PR is merged
     /// immediately after a release.
     NoBumpNeeded,
+
+    /// A merged pull request was identified as a release PR by the
+    /// [`crate::ReleaseRegentProcessor`] even though it arrived via the
+    /// `PullRequestMerged` event (misclassified by the server when its
+    /// `version_prefix` default does not match the repository's configured
+    /// prefix).  A git tag and GitHub release were created, and the release
+    /// branch was deleted.
+    ///
+    /// No new release PR is opened on this path; the next release cycle
+    /// begins when the next feature PR merges.
+    ///
+    /// # Design note
+    ///
+    /// `TaggedRelease` is placed in `OrchestratorResult` as a pragmatic
+    /// shortcut so that `handle_merged_pull_request` can share a single
+    /// `CoreResult<OrchestratorResult>` return type across both paths.  A
+    /// cleaner long-term design would introduce a dedicated `ProcessorResult`
+    /// sum type as the return type of `handle_merged_pull_request`, removing
+    /// the `unreachable!()` guards that exhaustive matches on
+    /// `OrchestratorResult` must carry for this variant.
+    TaggedRelease,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

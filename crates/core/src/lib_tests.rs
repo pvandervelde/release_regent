@@ -690,6 +690,11 @@ impl TestGitHubForLib {
         self
     }
 
+    fn with_existing_prs(mut self, prs: Vec<PullRequest>) -> Self {
+        self.existing_prs = prs;
+        self
+    }
+
     fn with_pr_labels(mut self, pr_number: u64, labels: Vec<Label>) -> Self {
         self.pr_labels.insert(pr_number, labels);
         self
@@ -816,9 +821,26 @@ impl GitHubOperations for TestGitHubForLib {
         &self,
         _owner: &str,
         _repo: &str,
-        _params: CreateReleaseParams,
+        params: CreateReleaseParams,
     ) -> CoreResult<Release> {
-        Err(CoreError::not_found("release"))
+        Ok(Release {
+            id: 1,
+            tag_name: params.tag_name,
+            target_commitish: params
+                .target_commitish
+                .unwrap_or_else(|| "main".to_string()),
+            name: params.name,
+            body: params.body,
+            draft: params.draft,
+            prerelease: params.prerelease,
+            created_at: Utc::now(),
+            published_at: if params.draft { None } else { Some(Utc::now()) },
+            author: GitUser {
+                name: "release-regent[bot]".to_string(),
+                email: "release-regent@users.noreply.github.com".to_string(),
+                login: Some("release-regent[bot]".to_string()),
+            },
+        })
     }
 
     async fn create_tag(
@@ -879,13 +901,19 @@ impl GitHubOperations for TestGitHubForLib {
         &self,
         _owner: &str,
         _repo: &str,
-        _state: Option<&str>,
+        state: Option<&str>,
         _head: Option<&str>,
         _base: Option<&str>,
         _per_page: Option<u8>,
         _page: Option<u32>,
     ) -> CoreResult<Vec<PullRequest>> {
-        Ok(self.existing_prs.clone())
+        // All seeded test PRs are considered open.  Honour the `state` filter
+        // so that callers requesting "closed" (or any other non-open state)
+        // receive an empty list rather than a misleading result.
+        match state {
+            Some(s) if s != "open" => Ok(vec![]),
+            _ => Ok(self.existing_prs.clone()),
+        }
     }
 
     async fn search_pull_requests(
@@ -1872,12 +1900,22 @@ async fn test_handle_merged_feature_pr_without_override_label_uses_calculated_ve
 #[tokio::test]
 async fn test_handle_merged_release_pr_clears_stale_override_labels_from_open_prs() {
     // Feature PR #99 has a stale rr:override-major label from a previous
-    // !release command.  It will appear in search results for all three label
-    // queries (the stub returns `search_results` regardless of the query, which
-    // exercises the cleanup loop for all three label names).
+    // !release command.  After a release PR is merged, only the labels that
+    // actually exist on the PR should be removed, and exactly one cleanup
+    // comment should be posted regardless of how many labels are removed.
     let stale_pr = make_pr(99, "feat/stale-feature", "feat: stale work");
+    let override_major = Label {
+        id: 10,
+        name: "rr:override-major".to_string(),
+        color: "b60205".to_string(),
+        description: None,
+    };
 
-    let github = TestGitHubForLib::new_empty().with_search_results(vec![stale_pr]);
+    let github = TestGitHubForLib::new_empty()
+        // list_pull_requests returns this PR as an open PR.
+        .with_existing_prs(vec![stale_pr])
+        // list_pr_labels for PR #99 returns only rr:override-major.
+        .with_pr_labels(99, vec![override_major]);
     let config = TestConfigForLib;
     let version_calc = TestVersionCalcForLib::returning("1.1.0");
 
@@ -1906,50 +1944,253 @@ async fn test_handle_merged_release_pr_clears_stale_override_labels_from_open_pr
         installation_id: 0,
     };
 
-    processor.handle_merged_pull_request(&event).await.unwrap();
+    let result = processor.handle_merged_pull_request(&event).await.unwrap();
 
-    // remove_label should have been called once per override label constant
-    // (major, minor, patch), each time on PR #99.
+    // The result must be TaggedRelease — the automator ran, not the orchestrator.
+    assert!(
+        matches!(
+            result,
+            release_orchestrator::OrchestratorResult::TaggedRelease
+        ),
+        "expected TaggedRelease (automator path), got: {result:?}"
+    );
+
+    // Only rr:override-major should be removed — not minor or patch, which are
+    // not present on PR #99.
     let removed = github.removed_labels.lock().await;
     assert_eq!(
         removed.len(),
-        3,
-        "expected 3 remove_label calls (one per override label), got: {removed:?}"
+        1,
+        "expected 1 remove_label call (only for rr:override-major), got: {removed:?}"
+    );
+    assert_eq!(
+        removed[0],
+        (99, "rr:override-major".to_string()),
+        "removal should target PR #99 / rr:override-major"
+    );
+
+    // Exactly one cleanup comment should be posted — not one per label type.
+    let comments = github.issue_comments.lock().await;
+    let cleanup_comments: Vec<_> = comments
+        .iter()
+        .filter(|(pr, body)| {
+            *pr == 99 && body.contains("cleared because a new release was published")
+        })
+        .collect();
+    assert_eq!(
+        cleanup_comments.len(),
+        1,
+        "expected exactly 1 cleanup comment on PR #99, got: {cleanup_comments:?}"
+    );
+}
+
+/// After a release PR merges the processor must invoke the release automator
+/// (creating a tag + GitHub release) instead of the release orchestrator
+/// (which would create a new release branch and PR).
+///
+/// Regression test for Bug 1: `process_release_pr_merged` was calling
+/// `orchestrator.orchestrate()` instead of `ReleaseAutomator::automate()`.
+#[tokio::test]
+async fn test_merged_release_pr_creates_tag_not_new_release_branch() {
+    let github = TestGitHubForLib::new_empty();
+    let config = TestConfigForLib;
+    let version_calc = TestVersionCalcForLib::returning("1.0.0");
+
+    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc);
+
+    let event = ProcessingEvent {
+        event_id: "evt-release-pr".into(),
+        correlation_id: "corr-release-pr".into(),
+        event_type: EventType::PullRequestMerged,
+        repository: RepositoryInfo {
+            owner: "acme".into(),
+            name: "app".into(),
+            default_branch: "main".into(),
+        },
+        payload: serde_json::json!({
+            "pull_request": {
+                "head": { "ref": "release/v1.0.0" },
+                "base": { "ref": "main" },
+                "number": 50,
+                "merge_commit_sha": "e".repeat(40)
+            }
+        }),
+        received_at: Utc::now(),
+        source: EventSourceKind::Webhook,
+        installation_id: 0,
+    };
+
+    let result = processor.handle_merged_pull_request(&event).await.unwrap();
+
+    // The automator path must be taken, not the orchestrator.
+    assert!(
+        matches!(
+            result,
+            release_orchestrator::OrchestratorResult::TaggedRelease
+        ),
+        "expected TaggedRelease (automator created tag), got: {result:?}"
+    );
+
+    // No new release PR should have been opened.
+    let created_prs = github.created_prs.lock().await;
+    assert!(
+        created_prs.is_empty(),
+        "expected no new PRs to be created (automator, not orchestrator), got: {created_prs:?}"
+    );
+
+    // No new branch should have been created.
+    let created_branches = github.create_branch_calls.lock().await;
+    assert!(
+        created_branches.is_empty(),
+        "expected no new branches (automator does not create branches), got: {created_branches:?}"
+    );
+}
+
+/// Open PRs that carry no override labels must not receive a cleanup comment
+/// after a release.
+///
+/// Regression test for Bug 3: `search_pull_requests` with a `label:` qualifier
+/// was returning all open PRs (the GitHubClient ignores the qualifier), causing
+/// spurious comments on PRs that had no override label.
+#[tokio::test]
+async fn test_clear_stale_labels_skips_prs_without_override_labels() {
+    let pr_no_label = make_pr(77, "feat/clean-pr", "feat: clean work");
+
+    let github = TestGitHubForLib::new_empty()
+        // PR #77 is open but has no override labels.
+        .with_existing_prs(vec![pr_no_label]);
+    // pr_labels map is empty → list_pr_labels returns [] for PR #77.
+
+    let config = TestConfigForLib;
+    let version_calc = TestVersionCalcForLib::returning("2.0.0");
+    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc);
+
+    let event = ProcessingEvent {
+        event_id: "evt-no-labels".into(),
+        correlation_id: "corr-no-labels".into(),
+        event_type: EventType::PullRequestMerged,
+        repository: RepositoryInfo {
+            owner: "acme".into(),
+            name: "app".into(),
+            default_branch: "main".into(),
+        },
+        payload: serde_json::json!({
+            "pull_request": {
+                "head": { "ref": "release/v2.0.0" },
+                "base": { "ref": "main" },
+                "number": 80,
+                "merge_commit_sha": "f".repeat(40)
+            }
+        }),
+        received_at: Utc::now(),
+        source: EventSourceKind::Webhook,
+        installation_id: 0,
+    };
+
+    processor.handle_merged_pull_request(&event).await.unwrap();
+
+    // No labels should be removed from PR #77.
+    let removed = github.removed_labels.lock().await;
+    assert!(
+        removed.is_empty(),
+        "expected no label removals for a PR with no override labels, got: {removed:?}"
+    );
+
+    // No cleanup comment should be posted.
+    let comments = github.issue_comments.lock().await;
+    let cleanup_comments: Vec<_> = comments
+        .iter()
+        .filter(|(_, body)| body.contains("cleared because a new release was published"))
+        .collect();
+    assert!(
+        cleanup_comments.is_empty(),
+        "expected no cleanup comments for a PR with no override labels, got: {cleanup_comments:?}"
+    );
+}
+
+/// A PR with multiple override labels must have all of them removed but still
+/// receive only a single cleanup comment.
+///
+/// Regression test for Bug 2: the old per-label loop posted one comment per
+/// label type, so a PR with three override labels received three identical
+/// comments.
+#[tokio::test]
+async fn test_clear_stale_labels_posts_one_comment_per_pr_regardless_of_label_count() {
+    let multi_label_pr = make_pr(55, "feat/multi-override", "feat: multi-override work");
+    let label_major = Label {
+        id: 1,
+        name: "rr:override-major".to_string(),
+        color: "b60205".to_string(),
+        description: None,
+    };
+    let label_minor = Label {
+        id: 2,
+        name: "rr:override-minor".to_string(),
+        color: "0075ca".to_string(),
+        description: None,
+    };
+
+    let github = TestGitHubForLib::new_empty()
+        .with_existing_prs(vec![multi_label_pr])
+        .with_pr_labels(55, vec![label_major, label_minor]);
+
+    let config = TestConfigForLib;
+    let version_calc = TestVersionCalcForLib::returning("3.0.0");
+    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc);
+
+    let event = ProcessingEvent {
+        event_id: "evt-multi-label".into(),
+        correlation_id: "corr-multi-label".into(),
+        event_type: EventType::PullRequestMerged,
+        repository: RepositoryInfo {
+            owner: "acme".into(),
+            name: "app".into(),
+            default_branch: "main".into(),
+        },
+        payload: serde_json::json!({
+            "pull_request": {
+                "head": { "ref": "release/v3.0.0" },
+                "base": { "ref": "main" },
+                "number": 60,
+                "merge_commit_sha": "a".repeat(40)
+            }
+        }),
+        received_at: Utc::now(),
+        source: EventSourceKind::Webhook,
+        installation_id: 0,
+    };
+
+    processor.handle_merged_pull_request(&event).await.unwrap();
+
+    // Both override labels must be removed from PR #55.
+    let removed = github.removed_labels.lock().await;
+    assert_eq!(
+        removed.len(),
+        2,
+        "expected 2 remove_label calls (major + minor), got: {removed:?}"
     );
     let removed_names: Vec<&str> = removed.iter().map(|(_, n)| n.as_str()).collect();
     assert!(
         removed_names.contains(&"rr:override-major"),
-        "expected rr:override-major to be removed"
+        "expected rr:override-major removal"
     );
     assert!(
         removed_names.contains(&"rr:override-minor"),
-        "expected rr:override-minor to be removed"
-    );
-    assert!(
-        removed_names.contains(&"rr:override-patch"),
-        "expected rr:override-patch to be removed"
-    );
-    assert!(
-        removed.iter().all(|(pr, _)| *pr == 99),
-        "all removals should target PR #99"
+        "expected rr:override-minor removal"
     );
 
-    // A cleanup comment should have been posted for each removal.
+    // Despite two labels being removed, only one cleanup comment must be posted.
     let comments = github.issue_comments.lock().await;
+    let cleanup_comments: Vec<_> = comments
+        .iter()
+        .filter(|(pr, body)| {
+            *pr == 55 && body.contains("cleared because a new release was published")
+        })
+        .collect();
     assert_eq!(
-        comments.len(),
-        3,
-        "expected 3 cleanup comments (one per override label), got: {comments:?}"
-    );
-    assert!(
-        comments.iter().all(|(pr, _)| *pr == 99),
-        "all cleanup comments should target PR #99"
-    );
-    assert!(
-        comments
-            .iter()
-            .any(|(_, body)| body.contains("cleared because a new release was published")),
-        "cleanup comment should explain why the label was cleared"
+        cleanup_comments.len(),
+        1,
+        "expected exactly 1 cleanup comment even with 2 override labels, got: {cleanup_comments:?}"
     );
 }
 
@@ -2117,25 +2358,32 @@ async fn test_handle_merged_feature_pr_with_patch_floor_no_effect_when_calculate
 // handle_merged_pull_request — release-PR path error tests (spec §9 Minor #5)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-/// When `search_pull_requests` fails for one override label (e.g., `rr:override-major`),
-/// a warning is logged and the cleanup for the remaining labels still proceeds.
-/// The overall event must succeed.
+/// When `list_pr_labels` fails for one open PR, a warning is logged and the
+/// cleanup loop continues for the remaining PRs.  The overall event must succeed.
 #[tokio::test]
-async fn test_handle_merged_release_pr_search_failure_for_one_label_continues() {
-    // search_results contains PR #99 which will be found for override-minor and
-    // override-patch, but the search for override-major will fail.
-    let stale_pr = make_pr(99, "feat/stale-feature", "feat: stale work");
+async fn test_handle_merged_release_pr_list_labels_failure_for_one_pr_continues() {
+    // PR #99: list_pr_labels will fail → must be skipped.
+    // PR #88: has rr:override-minor → must be cleaned up normally.
+    let pr_a = make_pr(99, "feat/pr-a", "feat: pr a");
+    let pr_b = make_pr(88, "feat/pr-b", "feat: pr b");
+    let override_minor = Label {
+        id: 20,
+        name: "rr:override-minor".to_string(),
+        color: "0075ca".to_string(),
+        description: None,
+    };
     let github = TestGitHubForLib::new_empty()
-        .with_search_results(vec![stale_pr])
-        .with_fail_search_for_label("rr:override-major");
+        .with_existing_prs(vec![pr_a, pr_b])
+        .with_pr_labels(88, vec![override_minor])
+        .with_fail_list_labels_for_pr(99);
 
     let config = TestConfigForLib;
     let version_calc = TestVersionCalcForLib::returning("1.1.0");
     let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc);
 
     let event = ProcessingEvent {
-        event_id: "evt-search-fail".into(),
-        correlation_id: "corr-search-fail".into(),
+        event_id: "evt-label-list-fail".into(),
+        correlation_id: "corr-label-list-fail".into(),
         event_type: EventType::PullRequestMerged,
         repository: RepositoryInfo {
             owner: "acme".into(),
@@ -2155,26 +2403,24 @@ async fn test_handle_merged_release_pr_search_failure_for_one_label_continues() 
         installation_id: 0,
     };
 
-    // Event must succeed despite the partial search failure.
+    // Event must succeed despite the partial failure.
     let result = processor.handle_merged_pull_request(&event).await;
     assert!(
         result.is_ok(),
-        "expected Ok when one search fails, got: {result:?}"
+        "expected Ok when list_pr_labels fails for one PR, got: {result:?}"
     );
 
-    // override-minor and override-patch searches succeeded → PR #99 was processed
-    // for at least 2 labels.  override-major search failed → no remove for that label.
+    // PR #88 must have been cleaned up normally.
     let removed = github.removed_labels.lock().await;
-    assert!(
-        removed.len() >= 2,
-        "expected at least 2 label removals (minor + patch), got: {removed:?}"
+    assert_eq!(
+        removed.len(),
+        1,
+        "expected 1 removal (rr:override-minor from PR #88), got: {removed:?}"
     );
-    let has_major_removal = removed
-        .iter()
-        .any(|(_, label)| label == "rr:override-major");
-    assert!(
-        !has_major_removal,
-        "should NOT have removed override-major (search failed), got: {removed:?}"
+    assert_eq!(
+        removed[0],
+        (88, "rr:override-minor".to_string()),
+        "removal must target PR #88 / rr:override-minor"
     );
 }
 
@@ -2183,8 +2429,15 @@ async fn test_handle_merged_release_pr_search_failure_for_one_label_continues() 
 #[tokio::test]
 async fn test_handle_merged_release_pr_remove_label_failure_still_posts_cleanup_comment() {
     let stale_pr = make_pr(99, "feat/stale-feature", "feat: stale work");
+    let override_major = Label {
+        id: 11,
+        name: "rr:override-major".to_string(),
+        color: "b60205".to_string(),
+        description: None,
+    };
     let github = TestGitHubForLib::new_empty()
-        .with_search_results(vec![stale_pr])
+        .with_existing_prs(vec![stale_pr])
+        .with_pr_labels(99, vec![override_major])
         .with_fail_remove_label_for_pr(99); // remove_label on PR #99 will fail
 
     let config = TestConfigForLib;
@@ -2220,12 +2473,17 @@ async fn test_handle_merged_release_pr_remove_label_failure_still_posts_cleanup_
         "expected Ok when remove_label fails, got: {result:?}"
     );
 
-    // Cleanup comments must still be posted on PR #99 even though remove_label failed.
+    // Cleanup comment must still be posted on PR #99 even though remove_label failed.
     let comments = github.issue_comments.lock().await;
-    let cleanup_comments: Vec<_> = comments.iter().filter(|(pr, _)| *pr == 99).collect();
+    let cleanup_comments: Vec<_> = comments
+        .iter()
+        .filter(|(pr, body)| {
+            *pr == 99 && body.contains("cleared because a new release was published")
+        })
+        .collect();
     assert!(
         !cleanup_comments.is_empty(),
-        "cleanup comments should still be posted even when remove_label fails, got: {comments:?}"
+        "cleanup comment should still be posted even when remove_label fails, got: {comments:?}"
     );
 }
 
@@ -2234,8 +2492,15 @@ async fn test_handle_merged_release_pr_remove_label_failure_still_posts_cleanup_
 #[tokio::test]
 async fn test_handle_merged_release_pr_cleanup_comment_failure_event_still_succeeds() {
     let stale_pr = make_pr(99, "feat/stale-feature", "feat: stale work");
+    let override_patch = Label {
+        id: 12,
+        name: "rr:override-patch".to_string(),
+        color: "e4e669".to_string(),
+        description: None,
+    };
     let github = TestGitHubForLib::new_empty()
-        .with_search_results(vec![stale_pr])
+        .with_existing_prs(vec![stale_pr])
+        .with_pr_labels(99, vec![override_patch])
         .with_fail_comment_for_pr(99); // comment on PR #99 will fail
 
     let config = TestConfigForLib;

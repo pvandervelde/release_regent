@@ -30,10 +30,11 @@ use git_cliff_core::{
 /// env_vars = { GIT_CLIFF_CONFIG = "/path/to/cliff.toml" }
 /// timeout_ms = 30000
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum ChangelogStrategy {
     /// Built-in template renderer.
+    #[default]
     Internal,
     /// Delegate to git-cliff-core for advanced Tera-based templating.
     GitCliff,
@@ -71,12 +72,6 @@ fn default_section_template() -> String {
 
 fn default_commit_template() -> String {
     "- {description} [{sha}]".to_string()
-}
-
-impl Default for ChangelogStrategy {
-    fn default() -> Self {
-        Self::Internal
-    }
 }
 
 /// Configuration for changelog generation.
