@@ -1,7 +1,7 @@
 # =============================================================================
-# Release Regent — repository configuration template
+# Release Regent — repository dotfile (Level 5 of 5 in the hierarchy)
 # =============================================================================
-# Copy this file to the root of your repository as `release-regent.toml`.
+# This file lives at the root of the repository as `.release-regent.toml`.
 #
 # All settings shown are optional and match the built-in defaults unless
 # noted otherwise. Remove or comment out any section you do not need to
@@ -31,12 +31,6 @@ main = "master"
 # Options: "conventional" (parse conventional commits) | "external" (custom command)
 strategy = "conventional"
 
-# Version number used when no previous releases exist.
-initial_version = "0.1.0"
-
-# Support pre-release identifiers (alpha, beta, rc).
-allow_prerelease = true
-
 # Allow contributors to override the calculated bump via a PR comment
 # (e.g. /override-bump minor).
 allow_override = true
@@ -46,24 +40,24 @@ allow_override = true
 # ─────────────────────────────────────────────────────────────────────────────
 
 [release_pr]
-# Template for the release PR title. {version} / ${version} are replaced at
-# runtime; {version_tag} includes the prefix (e.g. "v1.2.3").
-title_template = "chore(release): prepare version {version}"
+# Template for the release PR title.
+# Supported placeholders: ${version} (e.g. "1.2.3"), ${version_tag} (e.g. "v1.2.3").
+title_template = "chore(release): prepare version ${version}"
 
 # Template for the release PR body.
-# Available variables: {version}, {version_tag}, {changelog}, {commit_count}, {date}
+# Available variables: ${version}, ${version_tag}, ${changelog}, ${commit_count}, ${date}
 body_template = """
-## Release {version_tag}
+## Release ${version_tag}
 
 ### Changes
 
-{changelog}
+${changelog}
 
 ### Release Information
 
-- **Version**: {version}
-- **Commits**: {commit_count} commits since last release
-- **Generated**: {date}
+- **Version**: ${version}
+- **Commits**: ${commit_count} commits since last release
+- **Generated**: ${date}
 
 ### Checklist
 
@@ -74,10 +68,6 @@ body_template = """
 
 # Create the release PR as a draft.
 draft = false
-
-# Automatically enable auto-merge when required checks pass.
-# Requires auto-merge to be enabled in the repository settings.
-auto_merge = false
 
 # Automatically detect and update well-known manifest files
 # (Cargo.toml, package.json, pyproject.toml, composer.json).
@@ -98,178 +88,36 @@ manifest_files = [
 # GitHub releases
 # ─────────────────────────────────────────────────────────────────────────────
 # NOTE: The [releases] section is intentionally omitted.
-# publish-release.yml handles tagging and GitHub release creation when a
-# release/* PR is merged. Enabling release-regent's release creation here
-# would race with that workflow and cause duplicate-release errors.
+# .github/workflows/release.yml handles tagging and GitHub release creation
+# when a release/* PR is merged. Enabling release-regent's release creation
+# here would race with that workflow and cause duplicate-release errors.
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Changelog
 # ─────────────────────────────────────────────────────────────────────────────
 
 [changelog]
-# Include commit author names.
+# Rendering strategy: "internal" (default) | "git_cliff"
+# Use "git_cliff" to delegate to the bundled git-cliff-core Tera renderer.
+strategy = "internal"
+
+# Include commit author names in each entry.
 include_authors = true
 
-# Hyperlink individual commits.
-include_commit_links = true
+# Include short commit SHAs in each entry.
+include_shas = true
 
-# Hyperlink pull requests when detectable from the commit message.
-include_pr_links = true
+# Hyperlink commits and pull requests where detectable.
+include_links = true
 
-# How to group commits: "type" | "scope" | "none"
-group_by = "type"
+# Section heading template — {title} is replaced with the commit type.
+section_template = "### {title}\n\n{entries}\n"
 
-# How to sort commits within a group: "date" | "type" | "scope"
-sort_commits = "date"
+# Per-commit line template — {description} and {sha} are replaced at runtime.
+commit_template = "- {description} [{sha}]"
 
-# Filter out commits that do not follow the conventional commits format.
-filter_unconventional = true
-
-# Never skip a commit that contains a breaking change, even if a parser
-# rule would otherwise skip it.
-protect_breaking_commits = true
-
-# Trim leading/trailing whitespace in template output.
-trim = true
-
-# Pattern used to identify release tags.
-# Existing repo tags use no 'v' prefix (e.g. 0.0.0, 0.1.0, 0.5.0), matching
-# version_prefix = "" in [core].
-tag_pattern = "[0-9]*"
-
-# Skip pre-release tags when building the changelog.
-# Uncomment if pre-release tags are ever cut (allow_prerelease = true above).
-# skip_tags = ".*-beta.*|.*-alpha.*|.*-rc.*"
-
-# Changelog header (written once, above all release sections).
-header = """
-# Changelog
-
-All notable changes to this project will be documented in this file.
-
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-
-"""
-
-# Body template (Tera syntax; rendered once per release).
-body = """
-{%- if version -%}
-    ## [{{ version | trim_start_matches(pat="v") }}] - {{ timestamp | date(format="%Y-%m-%d") }}
-{% else -%}
-    ## [Unreleased]
-{% endif -%}
-{% for group, commits in commits | group_by(attribute="group") %}
-### {{ group | striptags | trim | upper_first }}
-{% for commit in commits | filter(attribute="scope") | sort(attribute="scope") %}
-    - **{{ commit.scope }}**: {{ commit.message | upper_first }}\
-      {%- if commit.links %} ([{{ commit.id | truncate(length=7, end="") }}]({{ commit.links[0] }})){% endif %}
-    {%- if commit.breaking %}
-      - ⚠️ **BREAKING**: {{ commit.breaking_description }}
-    {%- endif %}
-{%- endfor %}
-{% for commit in commits %}
-{%- if not commit.scope %}
-    - {{ commit.message | upper_first }}\
-      {%- if commit.links %} ([{{ commit.id | truncate(length=7, end="") }}]({{ commit.links[0] }})){% endif %}
-    {%- if commit.breaking %}
-      - ⚠️ **BREAKING**: {{ commit.breaking_description }}
-    {%- endif %}
-{%- endif %}
-{%- endfor %}
-{% endfor -%}
-"""
-
-# Changelog footer (written once, below all release sections).
-footer = """
----
-"""
-
-# ─── Commit type → changelog section label mapping ───────────────────────────
-
-[changelog.commit_types]
-feat = "Features"
-fix = "Bug Fixes"
-docs = "Documentation"
-style = "Styling"
-refactor = "Refactor"
-perf = "Performance Improvements"
-test = "Tests"
-build = "Build System"
-ci = "CI"
-chore = "Chores"
-revert = "Reverts"
-security = "Security"
-
-# ─── Commit parsers (git-cliff style) ────────────────────────────────────────
-
-[[changelog.commit_parsers]]
-message = "^feat"
-group = "Features"
-
-[[changelog.commit_parsers]]
-message = "^fix"
-group = "Bug Fixes"
-
-[[changelog.commit_parsers]]
-message = "^doc"
-group = "Documentation"
-
-[[changelog.commit_parsers]]
-message = "^perf"
-group = "Performance Improvements"
-
-[[changelog.commit_parsers]]
-message = "^refactor"
-group = "Refactor"
-
-[[changelog.commit_parsers]]
-message = "^style"
-group = "Styling"
-
-[[changelog.commit_parsers]]
-message = "^test"
-group = "Tests"
-
-[[changelog.commit_parsers]]
-message = "^build"
-group = "Build System"
-
-[[changelog.commit_parsers]]
-message = "^ci"
-group = "CI"
-
-[[changelog.commit_parsers]]
-message = "^security"
-group = "Security"
-
-# Skip release-prep commits from the changelog.
-[[changelog.commit_parsers]]
-message = "^chore\\(release\\):"
-skip = true
-
-[[changelog.commit_parsers]]
-message = "^chore"
-group = "Chores"
-
-# Skip noisy automated commits.
-[[changelog.commit_parsers]]
-message = "^Merge (branch|pull request)"
-skip = true
-
-[[changelog.commit_parsers]]
-message = "^Bump version"
-skip = true
-
-# ─── Post-processors: turn short hashes and issue refs into hyperlinks ────────
-
-[[changelog.postprocessors]]
-pattern = "\\b([0-9a-f]{7,40})\\b"
-replace = "[${1}](https://github.com/{{ github.owner }}/{{ github.repo }}/commit/${1})"
-
-[[changelog.postprocessors]]
-pattern = "\\b#(\\d+)\\b"
-replace = "[#${1}](https://github.com/{{ github.owner }}/{{ github.repo }}/issues/${1})"
+# Remote URL for link generation (leave blank to auto-detect from git remote).
+# remote_url = "https://github.com/pvandervelde/release_regent"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Error handling / retries
