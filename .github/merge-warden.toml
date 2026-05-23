@@ -33,7 +33,7 @@ label_if_missing = "pr-issue:missing-work-item"
 [policies.pullRequests.prSize]
 enabled = true
 fail_on_oversized = false
-label_prefix = "size/"
+label_prefix = "size:"
 add_comment = true
 
 # Files excluded from the line-change count (glob patterns).
