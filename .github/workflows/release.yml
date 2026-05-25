@@ -34,7 +34,7 @@ on:
 permissions:
     contents: read
     packages: write
-    id-token: write # Required for OIDC token issuance used by the GitHub Attestations API
+    id-token: write    # Required for Sigstore/Fulcio OIDC signing during attestation
     attestations: write # Required to write attestation records to the GitHub Attestations store
 
 jobs:
@@ -94,7 +94,11 @@ jobs:
                   artifact-name: sbom-source.spdx.json
                   output-file: /tmp/sbom-source.spdx.json
                   format: spdx-json
+                  # Workflow artifacts expire after 90 days and are a convenience copy only.
+                  # The permanent, verifiable copy is the OCI referrer pushed by the attest step.
                   upload-artifact: true
+                  # SBOMs are not attached to GitHub Releases; the canonical distribution
+                  # mechanism is OCI referrers and the GitHub Attestations API. See ADR-008.
                   upload-release-assets: false
 
             - name: Build and push container image
@@ -111,6 +115,9 @@ jobs:
                   # Disable BuildKit inline provenance so we generate it ourselves
                   # via actions/attest-build-provenance, avoiding duplicate records.
                   provenance: false
+                  # Explicitly disable BuildKit SBOM generation (off by default) so the
+                  # intent is clear: SBOMs are produced by anchore/sbom-action instead.
+                  sbom: false
 
             # Scan the published image with Syft to produce a full container SBOM that
             # covers all OS packages and binaries installed in the final image layer.
@@ -121,7 +128,11 @@ jobs:
                   artifact-name: sbom-container.spdx.json
                   output-file: /tmp/sbom-container.spdx.json
                   format: spdx-json
+                  # Workflow artifacts expire after 90 days and are a convenience copy only.
+                  # The permanent, verifiable copy is the OCI referrer pushed by the attest step.
                   upload-artifact: true
+                  # SBOMs are not attached to GitHub Releases; the canonical distribution
+                  # mechanism is OCI referrers and the GitHub Attestations API. See ADR-008.
                   upload-release-assets: false
 
             # Attach the Rust source SBOM as a signed attestation on the container image.
