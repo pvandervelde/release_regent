@@ -31,16 +31,19 @@ on:
             # Pre-releases: 0.1.0-beta.1, 1.0.0-rc.2
             - "[0-9]+.[0-9]+.[0-9]+-*"
 
+# Minimal workflow-level permissions. Elevated permissions are scoped to the
+# release-container job to avoid granting them to any jobs added in future.
 permissions:
     contents: read
-    packages: write
-    id-token: write    # Required for Sigstore/Fulcio OIDC signing during attestation
-    attestations: write # Required to write attestation records to the GitHub Attestations store
 
 jobs:
     release-container:
         name: Build and publish container image
         runs-on: ubuntu-latest
+        permissions:
+            packages: write    # Push container image and OCI referrer attachments to ghcr.io
+            id-token: write    # Required for Sigstore/Fulcio OIDC signing during attestation
+            attestations: write # Required to write attestation records to the GitHub Attestations store
 
         steps:
             - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4

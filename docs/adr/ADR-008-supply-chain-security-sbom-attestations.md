@@ -94,13 +94,24 @@ For every tag-triggered container release:
 
 ## Implementation notes
 
-- `id-token: write` permission is required for Sigstore/Fulcio OIDC signing.
-- `attestations: write` permission is required to write to the GitHub
-  Attestations store.
+- `id-token: write` and `attestations: write` permissions are scoped to the
+  `release-container` job, not the workflow, to follow the principle of least
+  privilege. Any jobs added to this workflow in future will not inherit these
+  elevated permissions.
 - The `steps.build.outputs.digest` output of `docker/build-push-action`
   (`sha256:…`) is used as the attestation subject for all three attestation
   steps, ensuring every record is pinned to the immutable image digest rather
   than a mutable tag.
+- **Multi-platform SBOM coverage**: The build produces a manifest list for
+  `linux/amd64` and `linux/arm64`. When Syft scans the image digest for the
+  container SBOM, it resolves the manifest list to the platform matching the
+  runner (`ubuntu-latest` = amd64). The arm64 image's OS package variants are
+  therefore not separately represented in the container SBOM. The Rust source
+  SBOM is unaffected (it scans `Cargo.lock`, which is architecture-independent).
+  The practical impact is limited to base-image OS library variants between
+  architectures. Per-platform SBOM generation would require separate scanning
+  steps with platform-pinned digest references, which is deferred until tooling
+  support for this is more mature.
 
 ## References
 
