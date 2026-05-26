@@ -31,14 +31,19 @@ on:
             # Pre-releases: 0.1.0-beta.1, 1.0.0-rc.2
             - "[0-9]+.[0-9]+.[0-9]+-*"
 
+# Minimal workflow-level permissions. Elevated permissions are scoped to the
+# release-container job to avoid granting them to any jobs added in future.
 permissions:
     contents: read
-    packages: write
 
 jobs:
     release-container:
         name: Build and publish container image
         runs-on: ubuntu-latest
+        permissions:
+            packages: write    # Push container image and OCI referrer attachments to ghcr.io
+            id-token: write    # Required for Sigstore/Fulcio OIDC signing during attestation
+            attestations: write # Required to write attestation records to the GitHub Attestations store
 
         steps:
             - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
@@ -83,7 +88,24 @@ jobs:
                       org.opencontainers.image.vendor=pvandervelde
                       org.opencontainers.image.documentation=https://github.com/pvandervelde/release_regent/blob/master/README.md
 
+            # Scan the Cargo workspace against Cargo.lock to produce a source-level SBOM
+            # before the Docker build so it is always available even if the build fails.
+            - name: Generate Rust source SBOM
+              uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+              with:
+                  path: .
+                  artifact-name: sbom-source.spdx.json
+                  output-file: /tmp/sbom-source.spdx.json
+                  format: spdx-json
+                  # Workflow artifacts expire after 90 days and are a convenience copy only.
+                  # The permanent, verifiable copy is the OCI referrer pushed by the attest step.
+                  upload-artifact: true
+                  # SBOMs are not attached to GitHub Releases; the canonical distribution
+                  # mechanism is OCI referrers and the GitHub Attestations API. See ADR-008.
+                  upload-release-assets: false
+
             - name: Build and push container image
+              id: build
               uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
               with:
                   context: .
@@ -93,3 +115,53 @@ jobs:
                   labels: ${{ steps.meta.outputs.labels }}
                   cache-from: type=gha
                   cache-to: type=gha,mode=max
+                  # Disable BuildKit inline provenance so we generate it ourselves
+                  # via actions/attest-build-provenance, avoiding duplicate records.
+                  provenance: false
+                  # Explicitly disable BuildKit SBOM generation (off by default) so the
+                  # intent is clear: SBOMs are produced by anchore/sbom-action instead.
+                  sbom: false
+
+            # Scan the published image with Syft to produce a full container SBOM that
+            # covers all OS packages and binaries installed in the final image layer.
+            - name: Generate container SBOM
+              uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+              with:
+                  image: ghcr.io/${{ github.repository_owner }}/release-regent@${{ steps.build.outputs.digest }}
+                  artifact-name: sbom-container.spdx.json
+                  output-file: /tmp/sbom-container.spdx.json
+                  format: spdx-json
+                  # Workflow artifacts expire after 90 days and are a convenience copy only.
+                  # The permanent, verifiable copy is the OCI referrer pushed by the attest step.
+                  upload-artifact: true
+                  # SBOMs are not attached to GitHub Releases; the canonical distribution
+                  # mechanism is OCI referrers and the GitHub Attestations API. See ADR-008.
+                  upload-release-assets: false
+
+            # Attach the Rust source SBOM as a signed attestation on the container image.
+            # This links Cargo dependency metadata to the published artifact.
+            - name: Attest Rust source SBOM
+              uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+              with:
+                  subject-name: ghcr.io/${{ github.repository_owner }}/release-regent
+                  subject-digest: ${{ steps.build.outputs.digest }}
+                  sbom-path: /tmp/sbom-source.spdx.json
+                  push-to-registry: true
+
+            # Attach the container SBOM as a signed attestation on the container image.
+            - name: Attest container SBOM
+              uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+              with:
+                  subject-name: ghcr.io/${{ github.repository_owner }}/release-regent
+                  subject-digest: ${{ steps.build.outputs.digest }}
+                  sbom-path: /tmp/sbom-container.spdx.json
+                  push-to-registry: true
+
+            # Generate a SLSA build provenance attestation signed via Sigstore/Fulcio
+            # using the GitHub OIDC identity of this workflow run.
+            - name: Attest build provenance
+              uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+              with:
+                  subject-name: ghcr.io/${{ github.repository_owner }}/release-regent
+                  subject-digest: ${{ steps.build.outputs.digest }}
+                  push-to-registry: true
