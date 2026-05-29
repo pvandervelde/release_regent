@@ -1958,3 +1958,118 @@ fn test_dedup_file_updates_by_path_mixed_keeps_correct_entries() {
     assert_eq!(result[1].path, "Cargo.toml");
     assert_eq!(result[1].content, "last", "last Cargo.toml entry must win");
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Property-based tests
+//
+// These tests verify structural invariants of `extract_changelog_from_pr_body`
+// that unit tests alone cannot exhaustively cover — in particular, that the
+// function is total (never panics), always returns trimmed output, and never
+// produces more header occurrences than were present in the input body.
+// ─────────────────────────────────────────────────────────────────────────────
+
+mod property_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// `extract_changelog_from_pr_body` is total: it never panics for any
+        /// combination of body and header strings, including empty strings,
+        /// unicode, and strings with embedded newlines.
+        #[test]
+        fn prop_extract_changelog_never_panics(
+            body   in proptest::arbitrary::any::<String>(),
+            header in "[^\n]{0,30}",
+        ) {
+            let _ = extract_changelog_from_pr_body(&body, &header);
+        }
+
+        /// An empty body always yields an empty result, regardless of the header.
+        #[test]
+        fn prop_extract_changelog_empty_body_yields_empty(
+            header in "[^\n]{1,30}",
+        ) {
+            let result = extract_changelog_from_pr_body("", &header);
+            prop_assert!(result.is_empty(), "empty body must produce empty output");
+        }
+
+        /// A body that does not contain the header always yields an empty result.
+        #[test]
+        fn prop_extract_changelog_absent_header_yields_empty(
+            body in "[^@]{0,200}",
+        ) {
+            // Use a sentinel that cannot appear in the generated body.
+            let result = extract_changelog_from_pr_body(&body, "@@UNREACHABLE_SENTINEL@@");
+            prop_assert!(result.is_empty(), "absent header must produce empty output");
+        }
+
+        /// The result is always trimmed: no leading or trailing ASCII whitespace.
+        #[test]
+        fn prop_extract_changelog_result_is_always_trimmed(
+            body   in proptest::arbitrary::any::<String>(),
+            header in "[^\n]{1,20}",
+        ) {
+            let result = extract_changelog_from_pr_body(&body, &header);
+            prop_assert_eq!(
+                result.as_str(),
+                result.trim(),
+                "output must be trimmed"
+            );
+        }
+
+        /// For a realistically-structured PR body (header appears exactly once at
+        /// the start of its own line, content lines contain no `#` characters), the
+        /// extracted result must not contain any occurrence of the header string.
+        #[test]
+        fn prop_extract_changelog_section_content_does_not_contain_header(
+            pre_lines  in prop::collection::vec("[^#\n]{0,40}", 0..5),
+            post_lines in prop::collection::vec("[^#\n]{0,40}", 0..5),
+            content    in prop::collection::vec("[^#\n]{0,60}", 0..10),
+            header     in "## [A-Z][a-z]{3,15}",
+        ) {
+            let pre          = pre_lines.join("\n");
+            let body_content = content.join("\n");
+            let post         = format!("## OtherSection\n{}", post_lines.join("\n"));
+            let body         = format!("{pre}\n{header}\n\n{body_content}\n\n{post}");
+
+            let result  = extract_changelog_from_pr_body(&body, &header);
+            let count   = result.matches(header.as_str()).count();
+            prop_assert_eq!(
+                count,
+                0,
+                "extracted section must not contain header '{}'; got '{}'",
+                header,
+                result
+            );
+        }
+
+        /// For any body that contains the header at least once, the output contains
+        /// strictly fewer occurrences of the header string than the original body.
+        /// This confirms that the extraction consumes (strips) at least one occurrence.
+        #[test]
+        fn prop_extract_changelog_output_has_fewer_header_occurrences_than_input(
+            prefix  in "[^\n]{0,30}",
+            content in "[^\n]{0,100}",
+            suffix  in "[^\n]{0,30}",
+            header  in "## [A-Z][a-z]{3,10}",
+        ) {
+            // The header appears at least once: after `prefix\n`.
+            let body = format!("{prefix}\n{header}\n{content}\n{suffix}");
+
+            let body_count   = body.matches(header.as_str()).count();
+            let result       = extract_changelog_from_pr_body(&body, &header);
+            let result_count = result.matches(header.as_str()).count();
+
+            if body_count > 0 {
+                prop_assert!(
+                    result_count < body_count,
+                    "result occurrences ({result_count}) must be < body occurrences ({body_count})"
+                );
+            } else {
+                // Header did not appear in the body (possible if prefix/content/suffix
+                // accidentally swallowed it, which cannot happen here — kept for safety).
+                prop_assert!(result.is_empty(), "body without header must yield empty output");
+            }
+        }
+    }
+}

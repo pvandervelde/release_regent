@@ -1427,3 +1427,144 @@ mod cross_calculator_consistency {
         );
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Property-based tests
+//
+// These tests verify structural invariants of `latest_semver_tag` that unit
+// tests alone cannot exhaustively cover — in particular, that the maximum is
+// always correctly chosen across arbitrary mixes of valid and invalid tag names.
+// ─────────────────────────────────────────────────────────────────────────────
+
+mod property_tests {
+    use super::*;
+    use proptest::prelude::*;
+    use std::cmp::Ordering;
+
+    /// Generates a tag name that is either a valid semver string (stable or
+    /// prerelease) or a non-semver label, representing the typical mix of tags
+    /// found in real repositories.
+    fn semver_or_label_strategy() -> impl Strategy<Value = String> {
+        prop_oneof![
+            // Valid stable semver with "v" prefix.
+            (0u64..50u64, 0u64..50u64, 0u64..50u64)
+                .prop_map(|(ma, mi, pa)| format!("v{ma}.{mi}.{pa}")),
+            // Valid stable semver without "v" prefix.
+            (0u64..50u64, 0u64..50u64, 0u64..50u64)
+                .prop_map(|(ma, mi, pa)| format!("{ma}.{mi}.{pa}")),
+            // Valid prerelease semver (rc style).
+            (0u64..10u64, 0u64..10u64, 0u64..10u64, 1u64..5u64)
+                .prop_map(|(ma, mi, pa, rc)| format!("v{ma}.{mi}.{pa}-rc.{rc}")),
+            // Non-semver labels that `VersionCalculator::parse_version` rejects.
+            prop_oneof![
+                Just("latest".to_string()),
+                Just("stable".to_string()),
+                Just("release-2024".to_string()),
+                Just("not-a-version".to_string()),
+                Just("HEAD".to_string()),
+            ],
+        ]
+    }
+
+    proptest! {
+        /// The result of `latest_semver_tag` is always `None` when no input tag
+        /// name parses as a valid semver, and always `Some(max)` otherwise, where
+        /// `max` is the version with the highest semver precedence in the input.
+        #[test]
+        fn prop_latest_semver_tag_result_is_none_or_maximum(
+            names in prop::collection::vec(semver_or_label_strategy(), 0..15)
+        ) {
+            let tags: Vec<GitTag> = names
+                .iter()
+                .map(|n| make_lightweight_tag(n))
+                .collect();
+            let result = latest_semver_tag(&tags, true);
+
+            let parseable: Vec<SemanticVersion> = names
+                .iter()
+                .filter_map(|n| VersionCalculator::parse_version(n).ok())
+                .collect();
+
+            if parseable.is_empty() {
+                prop_assert!(
+                    result.is_none(),
+                    "expected None when no tags parse as semver"
+                );
+            } else {
+                let found = result.expect("expected Some when parseable versions exist");
+                // Every parseable version in the input must have precedence ≤ the result.
+                for v in &parseable {
+                    prop_assert!(
+                        v.compare_precedence(&found) != Ordering::Greater,
+                        "parseable version {v} has higher precedence than the returned {found}"
+                    );
+                }
+            }
+        }
+
+        /// When `include_prerelease = false`, the returned version is never a
+        /// prerelease, regardless of what tags are in the input.
+        #[test]
+        fn prop_latest_semver_tag_result_not_prerelease_when_flag_false(
+            names in prop::collection::vec(semver_or_label_strategy(), 0..15)
+        ) {
+            let tags: Vec<GitTag> = names
+                .iter()
+                .map(|n| make_lightweight_tag(n))
+                .collect();
+
+            if let Some(v) = latest_semver_tag(&tags, false) {
+                prop_assert!(
+                    !v.is_prerelease(),
+                    "result {v} is prerelease but include_prerelease = false"
+                );
+            }
+        }
+
+        /// Semver 2.0 spec: a stable version always has higher precedence than a
+        /// prerelease with the same `major.minor.patch` core.  The function must
+        /// therefore return the stable version when both are present in the input.
+        #[test]
+        fn prop_latest_semver_tag_stable_beats_prerelease_with_same_core(
+            major in 0u64..20u64,
+            minor in 0u64..20u64,
+            patch in 0u64..20u64,
+            rc    in 1u64..5u64,
+        ) {
+            let stable_name    = format!("v{major}.{minor}.{patch}");
+            let prerelease_name = format!("v{major}.{minor}.{patch}-rc.{rc}");
+            let tags = vec![
+                make_lightweight_tag(&stable_name),
+                make_lightweight_tag(&prerelease_name),
+            ];
+            let result = latest_semver_tag(&tags, true).expect("should be Some");
+            prop_assert!(
+                !result.is_prerelease(),
+                "stable {stable_name} should beat prerelease {prerelease_name}; got {result}"
+            );
+        }
+
+        /// The returned version must always be derivable from one of the input tag
+        /// names — `latest_semver_tag` never fabricates versions out of thin air.
+        #[test]
+        fn prop_latest_semver_tag_result_is_derived_from_input(
+            names in prop::collection::vec(semver_or_label_strategy(), 1..15)
+        ) {
+            let tags: Vec<GitTag> = names
+                .iter()
+                .map(|n| make_lightweight_tag(n))
+                .collect();
+
+            if let Some(result) = latest_semver_tag(&tags, true) {
+                let parseable: Vec<SemanticVersion> = names
+                    .iter()
+                    .filter_map(|n| VersionCalculator::parse_version(n).ok())
+                    .collect();
+                prop_assert!(
+                    parseable.iter().any(|v| v == &result),
+                    "result {result} does not correspond to any parsed input version"
+                );
+            }
+        }
+    }
+}

@@ -246,3 +246,94 @@ fn test_repository_info_serde_round_trip() {
     let decoded: RepositoryInfo = serde_json::from_str(&json).expect("deserialise RepositoryInfo");
     assert_eq!(original, decoded);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Property-based tests
+//
+// These tests verify that `EventType::from` is total (never panics), that every
+// string outside the known set produces `EventType::Unknown`, and that the
+// Display → From round-trip is stable for all known variants.
+// ─────────────────────────────────────────────────────────────────────────────
+
+mod property_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// The exact set of strings that map to known (non-`Unknown`) variants.
+    const KNOWN_STRINGS: &[&str] = &[
+        "pull_request_merged",
+        "release_pr_merged",
+        "pull_request_comment_received",
+        "pull_request_opened",
+        "pull_request_updated",
+    ];
+
+    proptest! {
+        /// `EventType::from` never panics for any input string, including empty
+        /// strings, unicode, and strings with embedded control characters.
+        #[test]
+        fn prop_event_type_from_str_never_panics(
+            s in proptest::arbitrary::any::<String>()
+        ) {
+            let _ = EventType::from(s.as_str());
+        }
+
+        /// Any lowercase-alphanumeric-underscore string that is not one of the
+        /// five recognised event-type strings must produce `EventType::Unknown`,
+        /// and the inner value must equal the original input exactly.
+        #[test]
+        fn prop_event_type_unknown_strings_produce_unknown_with_original_value(
+            s in "[a-z_]{0,40}",
+        ) {
+            prop_assume!(!KNOWN_STRINGS.contains(&s.as_str()));
+
+            let et = EventType::from(s.as_str());
+            match et {
+                EventType::Unknown(inner) => {
+                    prop_assert_eq!(inner, s, "Unknown inner value must equal the input");
+                }
+                other => prop_assert!(
+                    false,
+                    "expected Unknown for '{s}', got {other:?}"
+                ),
+            }
+        }
+
+        /// For every known event-type string, `EventType::from` must NOT produce
+        /// `Unknown`, and `Display` must reproduce the original string (round-trip).
+        #[test]
+        fn prop_event_type_known_strings_display_round_trip(
+            idx in 0usize..5usize
+        ) {
+            let known = KNOWN_STRINGS[idx];
+            let et = EventType::from(known);
+            prop_assert!(
+                !matches!(et, EventType::Unknown(_)),
+                "known string '{known}' must not produce Unknown"
+            );
+            let displayed = et.to_string();
+            prop_assert_eq!(
+                displayed.as_str(),
+                known,
+                "Display must round-trip for known string '{}'",
+                known
+            );
+        }
+
+        /// `EventType::from(&str)` and `EventType::from(String)` must produce
+        /// identical results for the same input value.
+        #[test]
+        fn prop_event_type_from_str_and_from_string_agree(
+            s in "[a-z_]{0,40}"
+        ) {
+            let from_ref   = EventType::from(s.as_str());
+            let from_owned = EventType::from(s.clone());
+            prop_assert_eq!(
+                from_ref,
+                from_owned,
+                "from_str and from_String must agree for '{}'",
+                s
+            );
+        }
+    }
+}
