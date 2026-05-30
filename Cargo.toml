@@ -8,6 +8,8 @@ members = [
     "crates/testing",
     "crates/config_provider",
 ]
+# The fuzz crate declares its own [workspace] and must not be a member here.
+exclude = ["fuzz"]
 
 [workspace.package]
 version = "0.1.0"

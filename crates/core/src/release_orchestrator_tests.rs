@@ -17,6 +17,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tracing_test::traced_test;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Inline test double
@@ -1375,6 +1376,111 @@ fn test_merge_changelog_sections_appends_new_entry_with_short_sha() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Mutation kill tests for merge_changelog_sections
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Lines whose `[...]` bracket token contains non-hex characters must NOT be
+/// treated as commit-SHA entries.
+///
+/// Kills the `&&` → `||` mutation at line 1257 of `extract_sha` inside
+/// `merge_changelog_sections`: with `||`, a 7-char non-hex token satisfies the
+/// length check alone and is falsely treated as a SHA.
+#[test]
+fn test_merge_changelog_sections_non_hex_bracket_token_not_treated_as_sha() {
+    let sha = "aaaaaaa";
+    let existing = format!("- fix: old thing [{sha}]");
+    // `[ZZZZZZZ]` is 7 chars but Z is not a hex digit.
+    let new_section = "- feat: new entry [ZZZZZZZ]";
+
+    let merged = merge_changelog_sections(&existing, new_section);
+
+    // The new entry has no valid SHA so it must be ignored (not added).
+    assert!(
+        !merged.contains("new entry"),
+        "non-hex bracket token must not be recognised as a SHA; merged:\n{merged}"
+    );
+}
+
+/// A section header (`### …`) already present in the existing section must NOT
+/// be re-emitted when merging new entries under the same header.
+///
+/// Kills the `&&` → `||` mutation at line 1292: with `||`, the condition is
+/// true on the very first new entry even when the header already exists,
+/// causing it to be duplicated.
+#[test]
+fn test_merge_changelog_sections_does_not_duplicate_existing_header() {
+    let sha_old = "1111111111111111111111111111111111111111";
+    let sha_new = "2222222222222222222222222222222222222222";
+
+    let existing = format!("### Fixed\n\n- fix: old fix [{sha_old}]");
+    let new_section =
+        format!("### Fixed\n\n- fix: old fix [{sha_old}]\n- fix: new fix [{sha_new}]");
+
+    let merged = merge_changelog_sections(&existing, &new_section);
+
+    assert_eq!(
+        merged.matches("### Fixed").count(),
+        1,
+        "### Fixed header must appear exactly once; merged:\n{merged}"
+    );
+    assert!(
+        merged.contains("new fix"),
+        "new entry must be present; merged:\n{merged}"
+    );
+}
+
+/// When `existing_section` is empty the merged output must not begin with a
+/// leading newline.
+///
+/// Kills the `delete !` mutation at line 1307:8 (`if result.is_empty() && …`)
+/// and the `&&` → `||` mutation at line 1307:27: both cause `push('\n')` to
+/// fire on an empty result, prepending a spurious newline.
+#[test]
+fn test_merge_changelog_sections_empty_existing_no_leading_newline() {
+    let sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let new_section = format!("- feat: new thing [{sha}]");
+
+    let merged = merge_changelog_sections("", &new_section);
+
+    assert!(
+        !merged.starts_with('\n'),
+        "merged must not start with a newline when existing is empty; merged: {:?}",
+        merged
+    );
+    assert!(
+        merged.contains("new thing"),
+        "new entry must be present; merged:\n{merged}"
+    );
+}
+
+/// When `existing_section` ends with a newline the merged output must NOT
+/// contain a double-newline separator before the appended entries.
+///
+/// Kills the `delete !` mutation at line 1307:30 (`… && result.ends_with('\n')`)
+/// which pushes an extra newline when the existing content already ends with one.
+#[test]
+fn test_merge_changelog_sections_trailing_newline_no_double_newline() {
+    let sha_old = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let sha_new = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    // existing_section explicitly ends with '\n'.
+    let existing = format!("- fix: old fix [{sha_old}]\n");
+    let new_section = format!("- feat: new thing [{sha_new}]");
+
+    let merged = merge_changelog_sections(&existing, &new_section);
+
+    assert!(
+        !merged.contains("\n\n"),
+        "merged must not contain a double-newline separator; merged: {:?}",
+        merged
+    );
+    assert!(
+        merged.contains("new thing"),
+        "new entry must be present; merged:\n{merged}"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Unit tests for build_changelog_file_content
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1526,6 +1632,88 @@ fn test_build_changelog_file_content_rejects_non_hash_prefix_as_file_header() {
     assert!(
         result.contains("## [1.0.0]"),
         "version section must be present; got:\n{result}"
+    );
+}
+
+/// Replacing an existing version section preserves subsequent section content
+/// at the exact correct byte offset.
+///
+/// Kills the `+ with -` and `+ with *` mutations at lines 1232:63 and 1233:24
+/// inside `skip_existing_version_section`: those mutations shift the slice
+/// start by ±1 or via multiplication, corrupting the content of the section
+/// that follows the replaced one.
+#[test]
+fn test_build_changelog_file_content_skip_preserves_subsequent_section_exactly() {
+    let existing = concat!(
+        "# Changelog\n\n",
+        "## [1.0.0] - 2024-01-15\n\n",
+        "### Added\n\n",
+        "- feat: first run [aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa]\n\n",
+        "## [0.9.0] - 2024-01-01\n\n",
+        "### Fixed\n\n",
+        "- fix: old thing [bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb]\n",
+    );
+
+    let result = build_changelog_file_content(
+        existing,
+        "1.0.0",
+        "2024-01-15",
+        "### Added\n\n- feat: second run [cccccccccccccccccccccccccccccccccccccccc]",
+    );
+
+    // The 0.9.0 heading must appear byte-exact — not shifted by ±1 character.
+    assert!(
+        result.contains("## [0.9.0] - 2024-01-01"),
+        "subsequent section heading must be byte-exact; got:\n{result}"
+    );
+    assert!(
+        result.contains("- fix: old thing"),
+        "subsequent section body must be preserved; got:\n{result}"
+    );
+    let pos_100 = result.find("## [1.0.0]").expect("1.0.0 section missing");
+    let pos_090 = result.find("## [0.9.0]").expect("0.9.0 section missing");
+    assert!(
+        pos_100 < pos_090,
+        "1.0.0 must precede 0.9.0; got:\n{result}"
+    );
+    assert_eq!(
+        result.matches("## [1.0.0]").count(),
+        1,
+        "version section must not be duplicated; got:\n{result}"
+    );
+}
+
+/// `merge_changelog_bodies` must strip the changelog section header from the
+/// merged output.
+///
+/// Kills the `+ with *` mutation at line 1010 of the private
+/// `extract_changelog_from_body` method: when the header is at position 0 in
+/// the PR body, `i * header.len()` evaluates to 0 and returns the full body
+/// (header included) instead of the content after the header.
+#[test]
+fn test_merge_changelog_bodies_strips_header_from_extracted_section() {
+    let sha_existing = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let sha_new = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    // Header at position 0 — maximises the visible difference when `+` becomes `*`.
+    let pr_body = format!("## Changelog\n\n- fix: existing thing [{sha_existing}]\n");
+    let new_changelog = format!("- feat: new thing [{sha_new}]");
+
+    let github = TestGitHub::new();
+    let orchestrator = ReleaseOrchestrator::new(default_config(), &github);
+    let merged = orchestrator.merge_changelog_bodies(&pr_body, &new_changelog);
+
+    assert!(
+        !merged.contains("## Changelog"),
+        "merge_changelog_bodies must strip the changelog header; got:\n{merged}"
+    );
+    assert!(
+        merged.contains("existing thing"),
+        "existing entry must be retained; got:\n{merged}"
+    );
+    assert!(
+        merged.contains("new thing"),
+        "new entry must be merged in; got:\n{merged}"
     );
 }
 
@@ -1957,6 +2145,99 @@ fn test_dedup_file_updates_by_path_mixed_keeps_correct_entries() {
     assert_eq!(result[0].content, "unique");
     assert_eq!(result[1].path, "Cargo.toml");
     assert_eq!(result[1].content, "last", "last Cargo.toml entry must win");
+}
+
+/// `dedup_file_updates_by_path` must emit a `warn!` when duplicate paths are
+/// present (kills the `delete !` mutation at line 1116 that inverts the guard
+/// to `if duplicates.is_empty()`).
+#[test]
+#[traced_test]
+fn test_dedup_file_updates_by_path_warns_when_duplicates_present() {
+    let updates = vec![
+        FileUpdate {
+            path: "Cargo.toml".to_string(),
+            content: "first".to_string(),
+        },
+        FileUpdate {
+            path: "Cargo.toml".to_string(),
+            content: "second".to_string(),
+        },
+    ];
+    let _ = dedup_file_updates_by_path(updates);
+    assert!(
+        logs_contain("Duplicate manifest paths"),
+        "warning must be emitted when duplicates are present"
+    );
+}
+
+/// `dedup_file_updates_by_path` must NOT emit the duplicate warning when all
+/// paths are unique (kills the inverted `delete !` mutation at line 1116).
+#[test]
+#[traced_test]
+fn test_dedup_file_updates_by_path_no_warning_when_no_duplicates() {
+    let updates = vec![
+        FileUpdate {
+            path: "Cargo.toml".to_string(),
+            content: "v1".to_string(),
+        },
+        FileUpdate {
+            path: "package.json".to_string(),
+            content: "v2".to_string(),
+        },
+    ];
+    let _ = dedup_file_updates_by_path(updates);
+    assert!(
+        !logs_contain("Duplicate manifest paths"),
+        "warning must NOT be emitted when there are no duplicates"
+    );
+}
+
+/// `collect_manifest_updates` must populate the file-update list with
+/// version-updated content for auto-detected manifests.
+///
+/// Kills the mutation that replaces the entire `collect_manifest_updates` body
+/// with `()`: with that mutation the `Cargo.toml` update is never appended and
+/// the batch commit does not contain it.
+#[tokio::test]
+async fn test_orchestrate_create_pr_includes_manifest_file_update() {
+    // Pre-load Cargo.toml on the release branch so `collect_manifest_updates` finds it.
+    let cargo_toml_initial = "[package]\nname = \"myapp\"\nversion = \"0.1.0\"\n";
+    let github = TestGitHub::new()
+        .with_file_content("Cargo.toml", "release/v1.2.3", cargo_toml_initial)
+        .await;
+
+    let orchestrator = ReleaseOrchestrator::new(default_config(), &github);
+
+    orchestrator
+        .orchestrate(
+            "testorg",
+            "testrepo",
+            &ver(1, 2, 3),
+            "- feat: add thing [abc1234567890123456789012345678901234567a]",
+            "main",
+            "sha-manifest-001",
+            "corr-manifest-001",
+        )
+        .await
+        .expect("orchestrate should succeed");
+
+    let file_updates = github.rebased_batch_file_updates().await;
+    assert_eq!(
+        file_updates.len(),
+        1,
+        "expected exactly one rebased batch commit"
+    );
+
+    let cargo_update = file_updates[0]
+        .iter()
+        .find(|f| f.path == "Cargo.toml")
+        .expect("Cargo.toml must be present in the committed file updates");
+
+    assert!(
+        cargo_update.content.contains("1.2.3"),
+        "Cargo.toml update must contain the new version string; got:\n{}",
+        cargo_update.content
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

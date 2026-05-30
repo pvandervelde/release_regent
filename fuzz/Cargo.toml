@@ -1,0 +1,48 @@
+[package]
+name = "release-regent-core-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+# This crate is a standalone fuzz workspace, not a member of the parent
+# workspace.  It is compiled with `cargo +nightly fuzz run <target>` from
+# inside the fuzz/ directory, or via `cargo +nightly fuzz run <target>` from
+# the workspace root using `--manifest-path fuzz/Cargo.toml`.
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.release-regent-core]
+path = "../crates/core"
+
+[[bin]]
+name = "fuzz_extract_version_from_pr"
+path = "fuzz_targets/fuzz_extract_version_from_pr.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_extract_version_from_branch"
+path = "fuzz_targets/fuzz_extract_version_from_branch.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_extract_changelog_from_pr_body"
+path = "fuzz_targets/fuzz_extract_changelog_from_pr_body.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_event_type_from_str"
+path = "fuzz_targets/fuzz_event_type_from_str.rs"
+test = false
+doc = false
+bench = false
