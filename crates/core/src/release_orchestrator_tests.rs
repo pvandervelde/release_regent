@@ -2341,16 +2341,12 @@ mod property_tests {
             let result       = extract_changelog_from_pr_body(&body, &header);
             let result_count = result.matches(header.as_str()).count();
 
-            if body_count > 0 {
-                prop_assert!(
-                    result_count < body_count,
-                    "result occurrences ({result_count}) must be < body occurrences ({body_count})"
-                );
-            } else {
-                // Header did not appear in the body (possible if prefix/content/suffix
-                // accidentally swallowed it, which cannot happen here — kept for safety).
-                prop_assert!(result.is_empty(), "body without header must yield empty output");
-            }
+            // body is constructed as `"{prefix}\n{header}\n{content}\n{suffix}"` so
+            // body_count is always ≥ 1 — the header is unconditionally present.
+            prop_assert!(
+                result_count < body_count,
+                "result occurrences ({result_count}) must be < body occurrences ({body_count})"
+            );
         }
     }
 }
