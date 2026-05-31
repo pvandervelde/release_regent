@@ -188,6 +188,38 @@ jobs:
           fi
 
           echo "Smoke test passed: binary exits with expected credential error"
+
+  fuzz:
+    name: fuzz-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+
+      - name: Install Rust nightly
+        run: rustup update nightly && rustup +nightly target add x86_64-unknown-linux-gnu
+
+      - name: Install cargo-fuzz
+        uses: taiki-e/install-action@92f69c195229fe62d58b4d697ab4bc75def98e76 # v2
+        with:
+          tool: cargo-fuzz
+
+      - uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2
+
+      - name: Run fuzz targets
+        run: |
+          cargo +nightly fuzz run --target x86_64-unknown-linux-gnu fuzz_extract_version_from_pr fuzz/seeds/fuzz_extract_version_from_pr -- -max_total_time=30
+          cargo +nightly fuzz run --target x86_64-unknown-linux-gnu fuzz_extract_version_from_branch fuzz/seeds/fuzz_extract_version_from_branch -- -max_total_time=30
+          cargo +nightly fuzz run --target x86_64-unknown-linux-gnu fuzz_extract_changelog_from_pr_body fuzz/seeds/fuzz_extract_changelog_from_pr_body -- -max_total_time=30
+          cargo +nightly fuzz run --target x86_64-unknown-linux-gnu fuzz_event_type_from_str fuzz/seeds/fuzz_event_type_from_str -- -max_total_time=30
+
+      - name: Upload fuzz artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts/
+
   # bench_test:
   #   name: bench-tests
   #   runs-on: ubuntu-latest

@@ -29,6 +29,7 @@ toml_edit = { workspace = true }
 regex = { workspace = true }
 
 [dev-dependencies]
+proptest = { workspace = true }
 tokio-test = { workspace = true }
 tracing-test = { workspace = true }
 release_regent_testing = { path = "../testing" }

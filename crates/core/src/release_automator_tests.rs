@@ -1471,3 +1471,130 @@ async fn test_automate_generate_release_notes_false_clears_flag_in_api_call() {
         "generate_release_notes must be false when configured as false"
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Property-based tests
+//
+// These tests verify that `extract_version_from_branch` and
+// `extract_version_from_pr` behave correctly for arbitrary inputs: they never
+// panic, successful parses always yield valid round-trippable semver, and the
+// branch-wins invariant holds when the branch is a valid release branch.
+// ─────────────────────────────────────────────────────────────────────────────
+
+mod property_tests {
+    use super::*;
+    use crate::versioning::VersionCalculator;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// A branch of the form `release/v{M}.{N}.{P}` always parses successfully
+        /// and yields exactly the embedded major, minor, and patch components.
+        #[test]
+        fn prop_extract_version_from_branch_valid_triple_always_succeeds(
+            major in 0u64..=9_999u64,
+            minor in 0u64..=9_999u64,
+            patch in 0u64..=9_999u64,
+        ) {
+            let branch = format!("release/v{major}.{minor}.{patch}");
+            let result = extract_version_from_branch(&branch, "release", "v");
+            prop_assert!(result.is_ok(), "valid branch should parse Ok; got {result:?}");
+            let v = result.unwrap();
+            prop_assert_eq!(v.major, major);
+            prop_assert_eq!(v.minor, minor);
+            prop_assert_eq!(v.patch, patch);
+            prop_assert!(v.prerelease.is_none());
+        }
+
+        /// When extraction succeeds for an arbitrary branch string, the resulting
+        /// version must be non-empty and must survive a round-trip through
+        /// `VersionCalculator::parse_version`.
+        #[test]
+        fn prop_extract_version_from_branch_ok_is_round_trippable(
+            branch in "[a-zA-Z0-9./_-]{0,50}",
+        ) {
+            let result = extract_version_from_branch(&branch, "release", "v");
+            if let Ok(v) = result {
+                let s = v.to_string();
+                prop_assert!(!s.is_empty());
+                let reparsed = VersionCalculator::parse_version(&s);
+                prop_assert!(reparsed.is_ok(), "re-parse of '{s}' failed");
+                prop_assert_eq!(reparsed.unwrap(), v);
+            }
+        }
+
+        /// A branch whose prefix does not match `release/v` must always yield
+        /// an error, regardless of what valid semver version appears in the suffix.
+        #[test]
+        fn prop_extract_version_from_branch_wrong_prefix_always_errors(
+            major in 0u64..=999u64,
+            minor in 0u64..=999u64,
+            patch in 0u64..=999u64,
+        ) {
+            let branch = format!("feature/v{major}.{minor}.{patch}");
+            let result = extract_version_from_branch(&branch, "release", "v");
+            prop_assert!(result.is_err(), "wrong prefix must yield Err");
+        }
+
+        /// When the PR head branch is a valid release branch, `extract_version_from_pr`
+        /// always returns `Ok` with the version from the branch, regardless of the PR
+        /// title and body (branch name takes priority in the fallback chain).
+        #[test]
+        fn prop_extract_version_from_pr_valid_branch_overrides_title_and_body(
+            major in 0u64..=999u64,
+            minor in 0u64..=999u64,
+            patch in 0u64..=999u64,
+            title in "[a-zA-Z0-9: ().-]{0,60}",
+            body  in "[a-zA-Z0-9: ().-]{0,100}",
+        ) {
+            let branch = format!("release/v{major}.{minor}.{patch}");
+            let result = extract_version_from_pr(&branch, &title, &body, "release", "v");
+            prop_assert!(result.is_ok(), "valid branch must yield Ok");
+            let v = result.unwrap();
+            prop_assert_eq!(v.major, major);
+            prop_assert_eq!(v.minor, minor);
+            prop_assert_eq!(v.patch, patch);
+        }
+
+        /// `extract_version_from_pr` never panics for arbitrary inputs; when it
+        /// returns `Ok`, the version must be non-empty and round-trippable through
+        /// `VersionCalculator::parse_version`.
+        #[test]
+        fn prop_extract_version_from_pr_ok_result_is_always_valid_semver(
+            branch in "[a-zA-Z0-9./_-]{0,50}",
+            title  in "[a-zA-Z0-9: ()v.-]{0,80}",
+            body   in "[a-zA-Z0-9: ()v.\n-]{0,200}",
+        ) {
+            let result = extract_version_from_pr(&branch, &title, &body, "release", "v");
+            if let Ok(v) = result {
+                let s = v.to_string();
+                prop_assert!(!s.is_empty());
+                let reparsed = VersionCalculator::parse_version(&s);
+                prop_assert!(reparsed.is_ok());
+                prop_assert_eq!(reparsed.unwrap(), v);
+            }
+        }
+
+        /// The custom `version_prefix` parameter is respected: a branch of the form
+        /// `release/{prefix}{M}.{N}.{P}` succeeds, while the same branch with the
+        /// default `"v"` prefix fails when the configured prefix is different.
+        #[test]
+        fn prop_extract_version_from_branch_custom_prefix_accepted(
+            major in 0u64..=99u64,
+            minor in 0u64..=99u64,
+            patch in 0u64..=99u64,
+        ) {
+            // With an empty version prefix the branch has no "v" before the version.
+            let branch = format!("release/{major}.{minor}.{patch}");
+            let result_empty = extract_version_from_branch(&branch, "release", "");
+            prop_assert!(result_empty.is_ok(), "empty prefix branch should parse Ok");
+            let v = result_empty.unwrap();
+            prop_assert_eq!(v.major, major);
+            prop_assert_eq!(v.minor, minor);
+            prop_assert_eq!(v.patch, patch);
+
+            // The same branch must fail with the default "v" prefix.
+            let result_v = extract_version_from_branch(&branch, "release", "v");
+            prop_assert!(result_v.is_err(), "branch without v should fail with v prefix");
+        }
+    }
+}

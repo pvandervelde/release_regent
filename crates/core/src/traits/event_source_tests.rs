@@ -41,6 +41,18 @@ fn test_event_type_from_str_pull_request_comment_received_returns_expected() {
 }
 
 #[test]
+fn test_event_type_from_str_pull_request_opened_returns_expected() {
+    let et: EventType = "pull_request_opened".into();
+    assert_eq!(et, EventType::PullRequestOpened);
+}
+
+#[test]
+fn test_event_type_from_str_pull_request_updated_returns_expected() {
+    let et: EventType = "pull_request_updated".into();
+    assert_eq!(et, EventType::PullRequestUpdated);
+}
+
+#[test]
 fn test_event_type_from_str_unknown_string_returns_unknown_variant() {
     let et: EventType = "issue_opened".into();
     assert_eq!(et, EventType::Unknown("issue_opened".to_string()));
@@ -122,6 +134,24 @@ fn test_event_type_serde_round_trip_pull_request_comment_received() {
         serde_json::to_string(&original).expect("serialise EventType::PullRequestCommentReceived");
     let decoded: EventType =
         serde_json::from_str(&json).expect("deserialise EventType::PullRequestCommentReceived");
+    assert_eq!(original, decoded);
+}
+
+#[test]
+fn test_event_type_serde_round_trip_pull_request_opened() {
+    let original = EventType::PullRequestOpened;
+    let json = serde_json::to_string(&original).expect("serialise EventType::PullRequestOpened");
+    let decoded: EventType =
+        serde_json::from_str(&json).expect("deserialise EventType::PullRequestOpened");
+    assert_eq!(original, decoded);
+}
+
+#[test]
+fn test_event_type_serde_round_trip_pull_request_updated() {
+    let original = EventType::PullRequestUpdated;
+    let json = serde_json::to_string(&original).expect("serialise EventType::PullRequestUpdated");
+    let decoded: EventType =
+        serde_json::from_str(&json).expect("deserialise EventType::PullRequestUpdated");
     assert_eq!(original, decoded);
 }
 
@@ -211,6 +241,22 @@ fn test_event_type_display_pull_request_comment_received_matches_wire_format() {
 }
 
 #[test]
+fn test_event_type_display_pull_request_opened_matches_wire_format() {
+    assert_eq!(
+        EventType::PullRequestOpened.to_string(),
+        "pull_request_opened"
+    );
+}
+
+#[test]
+fn test_event_type_display_pull_request_updated_matches_wire_format() {
+    assert_eq!(
+        EventType::PullRequestUpdated.to_string(),
+        "pull_request_updated"
+    );
+}
+
+#[test]
 fn test_event_type_display_unknown_returns_inner_string_not_variant_name() {
     assert_eq!(
         EventType::Unknown("deployment_created".to_string()).to_string(),
@@ -225,6 +271,8 @@ fn test_event_type_display_matches_from_round_trip() {
         EventType::PullRequestMerged,
         EventType::ReleasePrMerged,
         EventType::PullRequestCommentReceived,
+        EventType::PullRequestOpened,
+        EventType::PullRequestUpdated,
     ];
     for variant in &variants {
         let displayed = variant.to_string();
@@ -245,4 +293,94 @@ fn test_repository_info_serde_round_trip() {
     let json = serde_json::to_string(&original).expect("serialise RepositoryInfo");
     let decoded: RepositoryInfo = serde_json::from_str(&json).expect("deserialise RepositoryInfo");
     assert_eq!(original, decoded);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Property-based tests
+//
+// These tests verify that `EventType::from` is total (never panics), that every
+// string outside the known set produces `EventType::Unknown`, and that the
+// Display → From round-trip is stable for all known variants.
+// ─────────────────────────────────────────────────────────────────────────────
+
+mod property_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// The exact set of strings that map to known (non-`Unknown`) variants.
+    const KNOWN_STRINGS: &[&str] = &[
+        "pull_request_merged",
+        "release_pr_merged",
+        "pull_request_comment_received",
+        "pull_request_opened",
+        "pull_request_updated",
+    ];
+
+    proptest! {
+        /// `EventType::from` never panics for any input string, including empty
+        /// strings, unicode, and strings with embedded control characters.
+        #[test]
+        fn prop_event_type_from_str_never_panics(
+            s in proptest::arbitrary::any::<String>()
+        ) {
+            let _ = EventType::from(s.as_str());
+        }
+
+        /// Any lowercase-alphanumeric-underscore string that is not one of the
+        /// five recognised event-type strings must produce `EventType::Unknown`,
+        /// and the inner value must equal the original input exactly.
+        #[test]
+        fn prop_event_type_unknown_strings_produce_unknown_with_original_value(
+            s in "[a-z_]{0,40}",
+        ) {
+            prop_assume!(!KNOWN_STRINGS.contains(&s.as_str()));
+
+            let et = EventType::from(s.as_str());
+            match et {
+                EventType::Unknown(inner) => {
+                    prop_assert_eq!(inner, s, "Unknown inner value must equal the input");
+                }
+                other => prop_assert!(
+                    false,
+                    "expected Unknown for '{s}', got {other:?}"
+                ),
+            }
+        }
+
+        /// For every known event-type string, `EventType::from` must NOT produce
+        /// `Unknown`, and `Display` must reproduce the original string (round-trip).
+        #[test]
+        fn prop_event_type_known_strings_display_round_trip(
+            known in proptest::sample::select(KNOWN_STRINGS)
+        ) {
+            let et = EventType::from(known);
+            prop_assert!(
+                !matches!(et, EventType::Unknown(_)),
+                "known string '{known}' must not produce Unknown"
+            );
+            let displayed = et.to_string();
+            prop_assert_eq!(
+                displayed.as_str(),
+                known,
+                "Display must round-trip for known string '{}'",
+                known
+            );
+        }
+
+        /// `EventType::from(&str)` and `EventType::from(String)` must produce
+        /// identical results for the same input value.
+        #[test]
+        fn prop_event_type_from_str_and_from_string_agree(
+            s in "[a-z_]{0,40}"
+        ) {
+            let from_ref   = EventType::from(s.as_str());
+            let from_owned = EventType::from(s.clone());
+            prop_assert_eq!(
+                from_ref,
+                from_owned,
+                "from_str and from_String must agree for '{}'",
+                s
+            );
+        }
+    }
 }
