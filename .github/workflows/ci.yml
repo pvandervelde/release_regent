@@ -208,10 +208,10 @@ jobs:
 
       - name: Run fuzz targets
         run: |
-          cargo +nightly fuzz run --target x86_64-unknown-linux-gnu fuzz_extract_version_from_pr fuzz/corpus/fuzz_extract_version_from_pr -- -max_total_time=30
-          cargo +nightly fuzz run --target x86_64-unknown-linux-gnu fuzz_extract_version_from_branch fuzz/corpus/fuzz_extract_version_from_branch -- -max_total_time=30
-          cargo +nightly fuzz run --target x86_64-unknown-linux-gnu fuzz_extract_changelog_from_pr_body fuzz/corpus/fuzz_extract_changelog_from_pr_body -- -max_total_time=30
-          cargo +nightly fuzz run --target x86_64-unknown-linux-gnu fuzz_event_type_from_str fuzz/corpus/fuzz_event_type_from_str -- -max_total_time=30
+          cargo +nightly fuzz run --target x86_64-unknown-linux-gnu fuzz_extract_version_from_pr fuzz/seeds/fuzz_extract_version_from_pr -- -max_total_time=30
+          cargo +nightly fuzz run --target x86_64-unknown-linux-gnu fuzz_extract_version_from_branch fuzz/seeds/fuzz_extract_version_from_branch -- -max_total_time=30
+          cargo +nightly fuzz run --target x86_64-unknown-linux-gnu fuzz_extract_changelog_from_pr_body fuzz/seeds/fuzz_extract_changelog_from_pr_body -- -max_total_time=30
+          cargo +nightly fuzz run --target x86_64-unknown-linux-gnu fuzz_event_type_from_str fuzz/seeds/fuzz_event_type_from_str -- -max_total_time=30
 
       - name: Upload fuzz artifacts on failure
         if: failure()
