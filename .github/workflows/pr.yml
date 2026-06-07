@@ -1,0 +1,229 @@
+name: PR Pipeline
+
+on:
+    pull_request:
+        branches:
+            - master
+
+concurrency:
+    group: pr-${{ github.ref }}
+    cancel-in-progress: true
+
+permissions:
+    contents: read
+
+jobs:
+    # ── Security gate (runs first) ─────────────────────────────
+
+    osv-scan:
+        name: OSV Vulnerability Scan
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+            - uses: google-github-actions/osv-scanner-action@v2
+              with:
+                  scan-args: |-
+                      --lockfile=Cargo.lock
+
+    cargo-audit:
+        name: Cargo Audit
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+            - uses: rustsec/audit-check-action@v2
+              with:
+                  token: ${{ secrets.GITHUB_TOKEN }}
+
+    socket-scan:
+        name: Socket Supply Chain Analysis
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+            - uses: SocketDev/socket-security-action@v2
+              with:
+                  api-key: ${{ secrets.SOCKET_API_KEY }}
+
+    security-gate:
+        name: Security Gate
+        needs: [osv-scan, cargo-audit, socket-scan]
+        runs-on: ubuntu-latest
+        steps:
+            - run: echo "All security checks passed"
+
+    # ── CI (blocked until gate passes) ────────────────────────
+
+    check:
+        name: Check
+        needs: [security-gate]
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+            - uses: dtolnay/rust-toolchain@stable # v1
+              with:
+                  profile: minimal
+                  toolchain: stable
+                  override: true
+            - uses: actions-rs/cargo@844f36862e911db73fe0815f00a4a2602c279505 # v1
+              with:
+                  command: check
+
+    rustfmt:
+        name: rustfmt
+        needs: [security-gate]
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+            - name: Install Rust
+              uses: dtolnay/rust-toolchain@stable # v1
+              with:
+                  toolchain: stable
+                  profile: minimal
+                  override: true
+                  components: rustfmt
+            - uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2
+            - name: Check formatting
+              run: cargo fmt --all -- --check
+
+    clippy:
+        name: Clippy
+        needs: [security-gate]
+        runs-on: ubuntu-latest
+        permissions:
+            checks: write
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+            - name: Install Rust
+              uses: dtolnay/rust-toolchain@stable # v1
+              with:
+                  toolchain: stable
+                  profile: minimal
+                  override: true
+                  components: clippy
+            - uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2
+            - uses: giraffate/clippy-action@v1
+              with:
+                  github_token: ${{ secrets.GITHUB_TOKEN }}
+                  clippy_flags: --all-targets --all-features -- -D warnings
+
+    test:
+        name: unit-tests
+        needs: [security-gate]
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+
+            - name: Install Rust
+              run: rustup update stable
+
+            - name: Install cargo-llvm-cov
+              uses: taiki-e/install-action@92f69c195229fe62d58b4d697ab4bc75def98e76 # v2
+              with:
+                  tool: cargo-llvm-cov@0.6.10
+
+            - uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2
+
+            - name: Generate code coverage
+              run:
+                  cargo llvm-cov --all-features --workspace --codecov --output-path
+                  codecov.json
+            - name: Upload coverage to Codecov
+              uses: codecov/codecov-action@18283e04ce6e62d37312384ff67231eb8fd56d24 # v5
+              with:
+                  token: ${{ secrets.CODECOV_TOKEN }} # not required for public repos
+                  files: codecov.json
+                  fail_ci_if_error: true
+
+    doc_test:
+        name: doc-tests
+        needs: [security-gate]
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+
+            - name: Install Rust
+              run: rustup update stable
+
+            - uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2
+
+            - name: Run doc-tests
+              run: cargo test --doc --all-features
+
+    docker-build:
+        name: docker-build
+        needs: [security-gate]
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+
+            - name: Set up Docker Buildx
+              uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+            - name: Build Docker image
+              uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+              with:
+                  context: .
+                  push: false
+                  load: true
+                  tags: release-regent:ci-test
+                  cache-from: type=gha
+                  cache-to: type=gha,mode=max
+
+            - name: Smoke-test container startup
+              run: |
+                  # Without credentials the server must exit non-zero with a clear
+                  # message identifying which environment variable is missing.
+                  # timeout 10 prevents a hung binary from blocking the job indefinitely.
+                  set +e
+                  output=$(timeout 10 docker run --rm release-regent:ci-test 2>&1)
+                  exit_code=$?
+                  set -e
+
+                  echo "Exit code : ${exit_code}"
+                  echo "Output    : ${output}"
+
+                  if [ "${exit_code}" -eq 0 ]; then
+                    echo "ERROR: server should have exited due to missing credentials" >&2
+                    exit 1
+                  fi
+
+                  if ! echo "${output}" | grep -q "GITHUB_WEBHOOK_SECRET"; then
+                    printf 'ERROR: expected GITHUB_WEBHOOK_SECRET in error output, got:\n%s\n' \
+                      "${output}" >&2
+                    exit 1
+                  fi
+
+                  echo "Smoke test passed: binary exits with expected credential error"
+
+    fuzz:
+        name: fuzz-tests
+        needs: [security-gate]
+        runs-on: ubuntu-latest
+        timeout-minutes: 10
+        steps:
+            - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+
+            - name: Install Rust nightly
+              run: rustup update nightly && rustup +nightly target add x86_64-unknown-linux-gnu
+
+            - name: Install cargo-fuzz
+              uses: taiki-e/install-action@92f69c195229fe62d58b4d697ab4bc75def98e76 # v2
+              with:
+                  tool: cargo-fuzz
+
+            - uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2
+
+            - name: Run fuzz targets
+              run: |
+                  cargo +nightly fuzz run --target x86_64-unknown-linux-gnu fuzz_extract_version_from_pr fuzz/seeds/fuzz_extract_version_from_pr -- -max_total_time=30
+                  cargo +nightly fuzz run --target x86_64-unknown-linux-gnu fuzz_extract_version_from_branch fuzz/seeds/fuzz_extract_version_from_branch -- -max_total_time=30
+                  cargo +nightly fuzz run --target x86_64-unknown-linux-gnu fuzz_extract_changelog_from_pr_body fuzz/seeds/fuzz_extract_changelog_from_pr_body -- -max_total_time=30
+                  cargo +nightly fuzz run --target x86_64-unknown-linux-gnu fuzz_event_type_from_str fuzz/seeds/fuzz_event_type_from_str -- -max_total_time=30
+
+            - name: Upload fuzz artifacts on failure
+              if: failure()
+              uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+              with:
+                  name: fuzz-artifacts
+                  path: fuzz/artifacts/
