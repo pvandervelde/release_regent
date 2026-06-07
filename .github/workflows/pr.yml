@@ -15,7 +15,7 @@ permissions:
 jobs:
   # ── Security gate (runs first) ─────────────────────────────
 
-  osv-scan:
+  osv-scan-rust:
     name: OSV Rust Scan
     runs-on: ubuntu-latest
     steps:
@@ -79,9 +79,6 @@ jobs:
                                       if "fixed" in event:
                                           fixable = True
 
-                      if fixable:
-                          has_fixable = True
-
                       if info_tags:
                           label = ", ".join(sorted(info_tags))
                           status = "⚠️ warn"
@@ -96,6 +93,12 @@ jobs:
                       else:
                           label = "—"
                           status = "⚠️ warn"
+
+                      # Only block the build for non-informational vulnerabilities that
+                      # have a patched version — informational advisories (e.g. unmaintained)
+                      # are warnings even when a fixed version exists.
+                      if status == "❌ fail":
+                          has_fixable = True
 
                       rows.append((name, version, ids, label, status, fixable))
 
@@ -160,7 +163,7 @@ jobs:
 
   security-gate:
     name: Security Gate
-    needs: [osv-scan, cargo-audit]
+    needs: [osv-scan-rust, cargo-audit]
     runs-on: ubuntu-latest
     steps:
       - run: echo "All security checks passed"
