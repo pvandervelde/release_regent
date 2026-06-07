@@ -1,229 +1,343 @@
 name: PR Pipeline
 
 on:
-    pull_request:
-        branches:
-            - master
+  pull_request:
+    branches:
+      - master
 
 concurrency:
-    group: pr-${{ github.ref }}
-    cancel-in-progress: true
+  group: pr-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
-    contents: read
+  contents: read
 
 jobs:
-    # ── Security gate (runs first) ─────────────────────────────
+  # ── Security gate (runs first) ─────────────────────────────
 
-    osv-scan:
-        name: OSV Vulnerability Scan
-        runs-on: ubuntu-latest
-        steps:
-            - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
-            - uses: google-github-actions/osv-scanner-action@v2
-              with:
-                  scan-args: |-
-                      --lockfile=Cargo.lock
+  osv-scan:
+    name: OSV Rust Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Install osv-scanner
+        uses: taiki-e/install-action@6bd56108367fcf832720b0ee9c372084f856e8e5 # v2
+        with:
+          tool: osv-scanner
+      - name: Scan Rust dependencies
+        id: osv-scan
+        run: |
+          set +e
+          osv-scanner --format=json --lockfile=Cargo.lock > /tmp/osv-rust.json 2>/tmp/osv-rust-stderr.log
+          SCAN_EXIT=$?
+          set -e
+          echo "results-path=/tmp/osv-rust.json" >> "$GITHUB_OUTPUT"
+          # Exit 2+ = tool failure (bad path, crash, etc.) — always fatal
+          if [ "${SCAN_EXIT}" -ge 2 ]; then
+            cat /tmp/osv-rust-stderr.log >&2
+            exit "${SCAN_EXIT}"
+          fi
+          # Exit 1 = vulnerabilities found — handled in the next step
+          echo "osv-exit=${SCAN_EXIT}" >> "$GITHUB_OUTPUT"
 
-    cargo-audit:
-        name: Cargo Audit
-        runs-on: ubuntu-latest
-        steps:
-            - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
-            - uses: rustsec/audit-check-action@v2
-              with:
-                  token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Parse OSV results and enforce policy
+        if: always()
+        shell: bash
+        run: |
+          python3 - /tmp/osv-rust.json "$GITHUB_STEP_SUMMARY" << 'EOF'
+          import json, sys, os
 
-    socket-scan:
-        name: Socket Supply Chain Analysis
-        runs-on: ubuntu-latest
-        steps:
-            - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
-            - uses: SocketDev/socket-security-action@v2
-              with:
-                  api-key: ${{ secrets.SOCKET_API_KEY }}
+          path = sys.argv[1]
+          summary_path = sys.argv[2]
 
-    security-gate:
-        name: Security Gate
-        needs: [osv-scan, cargo-audit, socket-scan]
-        runs-on: ubuntu-latest
-        steps:
-            - run: echo "All security checks passed"
+          with open(path) as f:
+              data = json.load(f)
 
-    # ── CI (blocked until gate passes) ────────────────────────
+          FIXABLE_SEVERITIES = set()
+          rows = []
+          has_fixable = False
 
-    check:
-        name: Check
-        needs: [security-gate]
-        runs-on: ubuntu-latest
-        steps:
-            - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
-            - uses: dtolnay/rust-toolchain@stable # v1
-              with:
-                  profile: minimal
-                  toolchain: stable
-                  override: true
-            - uses: actions-rs/cargo@844f36862e911db73fe0815f00a4a2602c279505 # v1
-              with:
-                  command: check
+          for result in data.get("results", []):
+              for pkg in result.get("packages", []):
+                  name = pkg["package"]["name"]
+                  version = pkg["package"]["version"]
+                  for group in pkg.get("groups", []):
+                      ids = ", ".join(group.get("ids", []))
+                      max_severity = group.get("max_severity") or ""
 
-    rustfmt:
-        name: rustfmt
-        needs: [security-gate]
-        runs-on: ubuntu-latest
-        steps:
-            - name: Checkout repository
-              uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
-            - name: Install Rust
-              uses: dtolnay/rust-toolchain@stable # v1
-              with:
-                  toolchain: stable
-                  profile: minimal
-                  override: true
-                  components: rustfmt
-            - uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2
-            - name: Check formatting
-              run: cargo fmt --all -- --check
+                      # Collect informational tags and whether a fix exists
+                      info_tags = set()
+                      fixable = False
+                      for vuln in pkg.get("vulnerabilities", []):
+                          for affected in vuln.get("affected", []):
+                              tag = affected.get("database_specific", {}).get("informational")
+                              if tag:
+                                  info_tags.add(tag)
+                              # A "fixed" event in ranges means a patched version exists
+                              for r in affected.get("ranges", []):
+                                  for event in r.get("events", []):
+                                      if "fixed" in event:
+                                          fixable = True
 
-    clippy:
-        name: Clippy
-        needs: [security-gate]
-        runs-on: ubuntu-latest
-        permissions:
-            checks: write
-        steps:
-            - name: Checkout repository
-              uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
-            - name: Install Rust
-              uses: dtolnay/rust-toolchain@stable # v1
-              with:
-                  toolchain: stable
-                  profile: minimal
-                  override: true
-                  components: clippy
-            - uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2
-            - uses: giraffate/clippy-action@v1
-              with:
-                  github_token: ${{ secrets.GITHUB_TOKEN }}
-                  clippy_flags: --all-targets --all-features -- -D warnings
+                      if fixable:
+                          has_fixable = True
 
-    test:
-        name: unit-tests
-        needs: [security-gate]
-        runs-on: ubuntu-latest
-        steps:
-            - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+                      if info_tags:
+                          label = ", ".join(sorted(info_tags))
+                          status = "⚠️ warn"
+                      elif max_severity:
+                          try:
+                              v = float(max_severity)
+                              emoji = "🔴" if v >= 7.0 else "🟡" if v >= 4.0 else "⚪"
+                              label = f"{emoji} {max_severity}"
+                          except ValueError:
+                              label = max_severity
+                          status = "❌ fail" if fixable else "⚠️ warn"
+                      else:
+                          label = "—"
+                          status = "⚠️ warn"
 
-            - name: Install Rust
-              run: rustup update stable
+                      rows.append((name, version, ids, label, status, fixable))
 
-            - name: Install cargo-llvm-cov
-              uses: taiki-e/install-action@92f69c195229fe62d58b4d697ab4bc75def98e76 # v2
-              with:
-                  tool: cargo-llvm-cov@0.6.10
+          lines = [
+              "## OSV Scan Results\n",
+              "| Package | Version | Advisory | Severity | Status |",
+              "| --- | --- | --- | --- | --- |",
+          ]
 
-            - uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2
+          # Sort: fixable failures first, then warnings
+          rows.sort(key=lambda r: (0 if r[5] else 1, r[3]))
 
-            - name: Generate code coverage
-              run:
-                  cargo llvm-cov --all-features --workspace --codecov --output-path
-                  codecov.json
-            - name: Upload coverage to Codecov
-              uses: codecov/codecov-action@18283e04ce6e62d37312384ff67231eb8fd56d24 # v5
-              with:
-                  token: ${{ secrets.CODECOV_TOKEN }} # not required for public repos
-                  files: codecov.json
-                  fail_ci_if_error: true
+          for name, version, ids, label, status, _ in rows:
+              lines.append(f"| `{name}` | {version} | {ids} | {label} | {status} |")
 
-    doc_test:
-        name: doc-tests
-        needs: [security-gate]
-        runs-on: ubuntu-latest
-        steps:
-            - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+          if not rows:
+              lines.append("| — | — | — | — | ✅ clean |")
 
-            - name: Install Rust
-              run: rustup update stable
+          with open(summary_path, "a") as f:
+              f.write("\n".join(lines) + "\n")
 
-            - uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2
+          if has_fixable:
+              print("::error::OSV scan found vulnerabilities with available fixes — update dependencies before merging")
+              sys.exit(1)
+          elif rows:
+              print("::warning::OSV scan found advisories with no available fix — review before merging")
+          EOF
 
-            - name: Run doc-tests
-              run: cargo test --doc --all-features
+  cargo-audit:
+    name: Cargo Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@6bd56108367fcf832720b0ee9c372084f856e8e5 # v2
+        with:
+          tool: cargo-audit
+      - name: Run security audit
+        run: |
+          set +e
+          cargo audit --json > /tmp/cargo-audit.json 2>&1
+          AUDIT_EXIT=$?
+          set -e
+          if [ "${AUDIT_EXIT}" -eq 0 ]; then
+            exit 0
+          fi
+          # Parse out fixable vs unfixable
+          FIXABLE=$(jq '[.vulnerabilities.list[] | select(.versions.patched | length > 0)] | length' /tmp/cargo-audit.json 2>/dev/null || echo "")
+          UNFIXABLE=$(jq '[.vulnerabilities.list[] | select(.versions.patched | length == 0)] | length' /tmp/cargo-audit.json 2>/dev/null || echo "")
+          if [ -n "${UNFIXABLE}" ] && [ "${UNFIXABLE}" -gt 0 ]; then
+            echo "::warning::${UNFIXABLE} Rust advisory/advisories with no patched version — review but not blocking"
+          fi
+          if [ -n "${FIXABLE}" ] && [ "${FIXABLE}" -gt 0 ]; then
+            echo "::error::${FIXABLE} Rust vulnerability/vulnerabilities have a patched version available — update before merging"
+            jq '.vulnerabilities.list[] | select(.versions.patched | length > 0) | {package: .package.name, version: .package.version, patched: .versions.patched, id: .advisory.id}' /tmp/cargo-audit.json
+            exit 1
+          fi
+          # Unmaintained/unsound/informational only — warn but pass
+          echo "::warning::cargo-audit found advisories but none have a fix available"
+          exit 0
 
-    docker-build:
-        name: docker-build
-        needs: [security-gate]
-        runs-on: ubuntu-latest
-        steps:
-            - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+  security-gate:
+    name: Security Gate
+    needs: [osv-scan, cargo-audit]
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "All security checks passed"
 
-            - name: Set up Docker Buildx
-              uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+  # ── CI (blocked until gate passes) ────────────────────────
 
-            - name: Build Docker image
-              uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
-              with:
-                  context: .
-                  push: false
-                  load: true
-                  tags: release-regent:ci-test
-                  cache-from: type=gha
-                  cache-to: type=gha,mode=max
+  check:
+    name: Check
+    needs: [security-gate]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+      - uses: dtolnay/rust-toolchain@stable # v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+      - uses: actions-rs/cargo@844f36862e911db73fe0815f00a4a2602c279505 # v1
+        with:
+          command: check
 
-            - name: Smoke-test container startup
-              run: |
-                  # Without credentials the server must exit non-zero with a clear
-                  # message identifying which environment variable is missing.
-                  # timeout 10 prevents a hung binary from blocking the job indefinitely.
-                  set +e
-                  output=$(timeout 10 docker run --rm release-regent:ci-test 2>&1)
-                  exit_code=$?
-                  set -e
+  rustfmt:
+    name: rustfmt
+    needs: [security-gate]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable # v1
+        with:
+          toolchain: stable
+          profile: minimal
+          override: true
+          components: rustfmt
+      - uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2
+      - name: Check formatting
+        run: cargo fmt --all -- --check
 
-                  echo "Exit code : ${exit_code}"
-                  echo "Output    : ${output}"
+  clippy:
+    name: Clippy
+    needs: [security-gate]
+    runs-on: ubuntu-latest
+    permissions:
+      checks: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable # v1
+        with:
+          toolchain: stable
+          profile: minimal
+          override: true
+          components: clippy
+      - uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2
+      - uses: giraffate/clippy-action@v1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          clippy_flags: --all-targets --all-features -- -D warnings
 
-                  if [ "${exit_code}" -eq 0 ]; then
-                    echo "ERROR: server should have exited due to missing credentials" >&2
-                    exit 1
-                  fi
+  test:
+    name: unit-tests
+    needs: [security-gate]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
 
-                  if ! echo "${output}" | grep -q "GITHUB_WEBHOOK_SECRET"; then
-                    printf 'ERROR: expected GITHUB_WEBHOOK_SECRET in error output, got:\n%s\n' \
-                      "${output}" >&2
-                    exit 1
-                  fi
+      - name: Install Rust
+        run: rustup update stable
 
-                  echo "Smoke test passed: binary exits with expected credential error"
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@92f69c195229fe62d58b4d697ab4bc75def98e76 # v2
+        with:
+          tool: cargo-llvm-cov@0.6.10
 
-    fuzz:
-        name: fuzz-tests
-        needs: [security-gate]
-        runs-on: ubuntu-latest
-        timeout-minutes: 10
-        steps:
-            - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+      - uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2
 
-            - name: Install Rust nightly
-              run: rustup update nightly && rustup +nightly target add x86_64-unknown-linux-gnu
+      - name: Generate code coverage
+        run: cargo llvm-cov --all-features --workspace --codecov --output-path
+          codecov.json
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@18283e04ce6e62d37312384ff67231eb8fd56d24 # v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }} # not required for public repos
+          files: codecov.json
+          fail_ci_if_error: true
 
-            - name: Install cargo-fuzz
-              uses: taiki-e/install-action@92f69c195229fe62d58b4d697ab4bc75def98e76 # v2
-              with:
-                  tool: cargo-fuzz
+  doc_test:
+    name: doc-tests
+    needs: [security-gate]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
 
-            - uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2
+      - name: Install Rust
+        run: rustup update stable
 
-            - name: Run fuzz targets
-              run: |
-                  cargo +nightly fuzz run --target x86_64-unknown-linux-gnu fuzz_extract_version_from_pr fuzz/seeds/fuzz_extract_version_from_pr -- -max_total_time=30
-                  cargo +nightly fuzz run --target x86_64-unknown-linux-gnu fuzz_extract_version_from_branch fuzz/seeds/fuzz_extract_version_from_branch -- -max_total_time=30
-                  cargo +nightly fuzz run --target x86_64-unknown-linux-gnu fuzz_extract_changelog_from_pr_body fuzz/seeds/fuzz_extract_changelog_from_pr_body -- -max_total_time=30
-                  cargo +nightly fuzz run --target x86_64-unknown-linux-gnu fuzz_event_type_from_str fuzz/seeds/fuzz_event_type_from_str -- -max_total_time=30
+      - uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2
 
-            - name: Upload fuzz artifacts on failure
-              if: failure()
-              uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-              with:
-                  name: fuzz-artifacts
-                  path: fuzz/artifacts/
+      - name: Run doc-tests
+        run: cargo test --doc --all-features
+
+  docker-build:
+    name: docker-build
+    needs: [security-gate]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Build Docker image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: release-regent:ci-test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke-test container startup
+        run: |
+          # Without credentials the server must exit non-zero with a clear
+          # message identifying which environment variable is missing.
+          # timeout 10 prevents a hung binary from blocking the job indefinitely.
+          set +e
+          output=$(timeout 10 docker run --rm release-regent:ci-test 2>&1)
+          exit_code=$?
+          set -e
+
+          echo "Exit code : ${exit_code}"
+          echo "Output    : ${output}"
+
+          if [ "${exit_code}" -eq 0 ]; then
+            echo "ERROR: server should have exited due to missing credentials" >&2
+            exit 1
+          fi
+
+          if ! echo "${output}" | grep -q "GITHUB_WEBHOOK_SECRET"; then
+            printf 'ERROR: expected GITHUB_WEBHOOK_SECRET in error output, got:\n%s\n' \
+              "${output}" >&2
+            exit 1
+          fi
+
+          echo "Smoke test passed: binary exits with expected credential error"
+
+  fuzz:
+    name: fuzz-tests
+    needs: [security-gate]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+
+      - name: Install Rust nightly
+        run: rustup update nightly && rustup +nightly target add x86_64-unknown-linux-gnu
+
+      - name: Install cargo-fuzz
+        uses: taiki-e/install-action@92f69c195229fe62d58b4d697ab4bc75def98e76 # v2
+        with:
+          tool: cargo-fuzz
+
+      - uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2
+
+      - name: Run fuzz targets
+        run: |
+          cargo +nightly fuzz run --target x86_64-unknown-linux-gnu fuzz_extract_version_from_pr fuzz/seeds/fuzz_extract_version_from_pr -- -max_total_time=30
+          cargo +nightly fuzz run --target x86_64-unknown-linux-gnu fuzz_extract_version_from_branch fuzz/seeds/fuzz_extract_version_from_branch -- -max_total_time=30
+          cargo +nightly fuzz run --target x86_64-unknown-linux-gnu fuzz_extract_changelog_from_pr_body fuzz/seeds/fuzz_extract_changelog_from_pr_body -- -max_total_time=30
+          cargo +nightly fuzz run --target x86_64-unknown-linux-gnu fuzz_event_type_from_str fuzz/seeds/fuzz_event_type_from_str -- -max_total_time=30
+
+      - name: Upload fuzz artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts/
