@@ -244,6 +244,7 @@ impl GitOperations for GitHubClient {
 
         let installation = self.installation().await?;
         let sdk_commit = installation
+            .repositories()
             .get_commit(owner, repo, commit_sha)
             .await
             .map_err(map_sdk_error)?;
@@ -262,6 +263,7 @@ impl GitOperations for GitHubClient {
 
         let installation = self.installation().await?;
         let sdk_tags = installation
+            .repositories()
             .list_tags(owner, repo)
             .await
             .map_err(map_sdk_error)?;
@@ -292,6 +294,7 @@ impl GitOperations for GitHubClient {
         // SDK doesn't have get_tag, so we list all tags and find the one we need
         let installation = self.installation().await?;
         let sdk_tags = installation
+            .repositories()
             .list_tags(owner, repo)
             .await
             .map_err(map_sdk_error)?;
@@ -330,7 +333,8 @@ impl GitOperations for GitHubClient {
             b.to_string()
         } else {
             let repo_info = installation
-                .get_repository(owner, repo)
+                .repositories()
+                .get(owner, repo)
                 .await
                 .map_err(map_sdk_error)?;
             repo_info.default_branch
@@ -338,11 +342,13 @@ impl GitOperations for GitHubClient {
 
         // Get the branch to find its commit SHA
         let branch_info = installation
+            .repositories()
             .get_branch(owner, repo, &branch_name)
             .await
             .map_err(map_sdk_error)?;
 
         let sdk_commit = installation
+            .repositories()
             .get_commit(owner, repo, &branch_info.commit.sha)
             .await
             .map_err(map_sdk_error)?;
@@ -356,7 +362,8 @@ impl GitOperations for GitHubClient {
 
         let installation = self.installation().await?;
         let sdk_repo = installation
-            .get_repository(owner, repo)
+            .repositories()
+            .get(owner, repo)
             .await
             .map_err(map_sdk_error)?;
 
@@ -392,12 +399,13 @@ impl GitHubOperations for GitHubClient {
             base: params.base,
             body: params.body,
             draft: Some(params.draft),
-            maintainer_can_modify: Some(params.maintainer_can_modify),
             milestone: None,
+            maintainer_can_modify: Some(params.maintainer_can_modify),
         };
 
         let sdk_pr = installation
-            .create_pull_request(owner, repo, request)
+            .pull_requests()
+            .create(owner, repo, request)
             .await
             .map_err(map_sdk_error)?;
 
@@ -426,7 +434,8 @@ impl GitHubOperations for GitHubClient {
         };
 
         let sdk_release = installation
-            .create_release(owner, repo, request)
+            .releases()
+            .create(owner, repo, request)
             .await
             .map_err(map_sdk_error)?;
 
@@ -447,8 +456,9 @@ impl GitHubOperations for GitHubClient {
 
         let installation = self.installation().await?;
 
-        // Use the SDK's create_tag method
+        // Use the SDK's create_tag method via repositories sub-client
         let _sdk_tag = installation
+            .repositories()
             .create_tag(owner, repo, tag_name, commit_sha)
             .await
             .map_err(map_sdk_error)?;
@@ -468,7 +478,7 @@ impl GitHubOperations for GitHubClient {
 
         let installation = self.installation().await?;
 
-        match installation.get_latest_release(owner, repo).await {
+        match installation.releases().get_latest(owner, repo).await {
             Ok(sdk_release) => Ok(Some(convert_sdk_release_to_release_regent_release(
                 sdk_release,
             ))),
@@ -488,7 +498,8 @@ impl GitHubOperations for GitHubClient {
 
         let installation = self.installation().await?;
         let sdk_pr = installation
-            .get_pull_request(owner, repo, pr_number)
+            .pull_requests()
+            .get(owner, repo, pr_number)
             .await
             .map_err(map_sdk_error)?;
 
@@ -501,7 +512,8 @@ impl GitHubOperations for GitHubClient {
 
         let installation = self.installation().await?;
         let sdk_release = installation
-            .get_release_by_tag(owner, repo, tag)
+            .releases()
+            .get_by_tag(owner, repo, tag)
             .await
             .map_err(map_sdk_error)?;
 
@@ -520,7 +532,8 @@ impl GitHubOperations for GitHubClient {
 
         let installation = self.installation().await?;
         let sdk_releases = installation
-            .list_releases(owner, repo)
+            .releases()
+            .list(owner, repo)
             .await
             .map_err(map_sdk_error)?;
 
@@ -549,11 +562,11 @@ impl GitHubOperations for GitHubClient {
             body,
             state,
             base: None,
-            milestone: None,
         };
 
         let sdk_pr = installation
-            .update_pull_request(owner, repo, pr_number, request)
+            .pull_requests()
+            .update(owner, repo, pr_number, request)
             .await
             .map_err(map_sdk_error)?;
 
@@ -772,7 +785,8 @@ impl GitHubOperations for GitHubClient {
         };
 
         let sdk_release = installation
-            .update_release(owner, repo, release_id, request)
+            .releases()
+            .update(owner, repo, release_id, request)
             .await
             .map_err(map_sdk_error)?;
 
@@ -792,7 +806,8 @@ impl GitHubOperations for GitHubClient {
         let installation = self.installation().await?;
 
         installation
-            .create_branch(owner, repo, branch_name, sha)
+            .repositories()
+            .create_ref(owner, repo, &format!("refs/heads/{branch_name}"), sha)
             .await
             .map_err(|e| {
                 // The SDK may surface the GitHub 422 "Reference already exists" response
@@ -822,7 +837,8 @@ impl GitHubOperations for GitHubClient {
         let installation = self.installation().await?;
 
         installation
-            .delete_git_ref(owner, repo, &format!("heads/{branch_name}"))
+            .repositories()
+            .delete_ref(owner, repo, &format!("heads/{branch_name}"))
             .await
             .map_err(map_sdk_error)?;
 
@@ -842,7 +858,8 @@ impl GitHubOperations for GitHubClient {
         let installation = self.installation().await?;
 
         installation
-            .update_git_ref(owner, repo, &format!("heads/{branch_name}"), sha, true)
+            .repositories()
+            .update_ref(owner, repo, &format!("heads/{branch_name}"), sha, true)
             .await
             .map_err(map_sdk_error)?;
 
@@ -865,7 +882,8 @@ impl GitHubOperations for GitHubClient {
         };
 
         installation
-            .create_issue_comment(owner, repo, issue_number, request)
+            .issues()
+            .create_comment(owner, repo, issue_number, request)
             .await
             .map_err(map_sdk_error)?;
 
@@ -2117,6 +2135,15 @@ fn map_sdk_error(error: ApiError) -> CoreError {
 
         // ── Permanent: JSON parsing error ────────────────────────────────────
         ApiError::JsonError(e) => CoreError::github(e),
+
+        // ── Permanent: GraphQL errors ────────────────────────────────────────
+        ApiError::GraphQlError { message } => CoreError::GitHub {
+            source: Box::new(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("GitHub GraphQL error: {message}"),
+            )),
+            context: None,
+        },
     }
 }
 
