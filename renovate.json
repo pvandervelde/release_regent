@@ -14,7 +14,7 @@
     "automerge": false
   },
   "osvVulnerabilityAlerts": true,
-  "minimumReleaseAge": "48 hours",
+  "minimumReleaseAge": "3 days",
   "internalChecksFilter": "strict",
   "packageRules": [
     {
