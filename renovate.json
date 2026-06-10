@@ -62,8 +62,9 @@
       "before 4am on Monday"
     ]
   },
-  "prConcurrentLimit": 10,
+  "prConcurrentLimit": 20,
   "prHourlyLimit": 2,
+  "prCreation": "not-pending",
   "postUpdateOptions": [],
   "ignoreScripts": true
 }
