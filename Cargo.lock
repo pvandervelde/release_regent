@@ -3100,7 +3100,7 @@ dependencies = [
  "chrono",
  "github-bot-sdk",
  "hex",
- "hmac 0.12.1",
+ "hmac 0.13.0",
  "hyper",
  "release-regent-core",
  "release-regent-github-client",
