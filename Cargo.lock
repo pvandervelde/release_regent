@@ -3147,7 +3147,7 @@ dependencies = [
  "chrono",
  "http",
  "pretty_assertions",
- "rand 0.9.4",
+ "rand 0.10.1",
  "release-regent-core",
  "reqwest",
  "serde",
