@@ -55,7 +55,7 @@ clap = { version = "4.4", features = ["derive"] }
 # Observability
 opentelemetry = "0.30"
 opentelemetry-jaeger = "0.22"
-opentelemetry_sdk = "0.30"
+opentelemetry_sdk = "0.32"
 
 # Azure
 azure_identity = "0.35"
