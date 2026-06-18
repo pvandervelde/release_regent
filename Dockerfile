@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1
+# syntax=docker/dockerfile:1@sha256:87999aa3d42bdc6bea60565083ee17e86d1f3339802f543c0d03998580f9cb89
 # =============================================================================
 # Release Regent — multi-stage Docker build
 #
@@ -34,7 +34,7 @@
 # Pin to a specific Rust release so that builds on different days produce
 # identical binaries.  Update this together with rust-version in Cargo.toml
 # when raising the MSRV.  Current stable at the time of writing: 1.95.
-FROM rust:1.95-slim AS deps
+FROM rust:1.95-slim@sha256:e14e87345b4d5964ddcc3491d27ee046a0f23820f340c3c1e24da6880141f7c0 AS deps
 
 # TARGETARCH is injected by BuildKit (values: amd64, arm64, etc.).
 # cmake, clang, pkg-config are required on all platforms by aws-lc-sys.
@@ -118,7 +118,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 # bookworm-slim only ships glibc 2.36 and would fail with a version-not-found
 # error at startup.  Keep this in sync with the FROM in the deps stage.
 # =============================================================================
-FROM debian:trixie-slim AS runtime
+FROM debian:trixie-slim@sha256:4e401d95de7083948053197a9c3913343cd06b706bf15eb6a0c3ccd26f436a0e AS runtime
 
 # ca-certificates is required for outbound TLS connections to the GitHub API.
 # wget is used by the HEALTHCHECK instruction below.
