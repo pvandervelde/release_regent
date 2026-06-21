@@ -18,20 +18,15 @@
   "internalChecksFilter": "strict",
   "packageRules": [
     {
-      "description": "Security patches bypass the 48h delay — merge fast but still require review",
+      "description": "Batch noisy minor/patch updates into one weekly PR instead of daily ratcheting",
       "matchUpdateTypes": [
         "minor",
         "patch"
       ],
-      "matchCategories": [
-        "security"
+      "schedule": [
+        "before 4am on Monday"
       ],
-      "minimumReleaseAge": "0 hours",
-      "automerge": false,
-      "labels": [
-        "security",
-        "dependencies"
-      ]
+      "minimumReleaseAge": "1 day"
     },
     {
       "description": "Major version bumps need manual review and an extended stabilisation window",
@@ -52,6 +47,25 @@
       "groupName": "install-action",
       "schedule": [
         "on the first day of the month"
+      ]
+    },
+    {
+      "description": "Security patches bypass the 48h delay — merge fast but still require review",
+      "matchUpdateTypes": [
+        "minor",
+        "patch"
+      ],
+      "matchCategories": [
+        "security"
+      ],
+      "minimumReleaseAge": "0 hours",
+      "schedule": [
+        "at any time"
+      ],
+      "automerge": false,
+      "labels": [
+        "security",
+        "dependencies"
       ]
     }
   ],
