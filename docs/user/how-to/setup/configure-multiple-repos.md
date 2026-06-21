@@ -36,17 +36,26 @@ in `ALLOWED_REPOS` (or `ALLOWED_REPOS` is `*`).
 ## Per-repository configuration
 
 Release Regent reads configuration from a `.release-regent.toml` file at the root of each
-repository. There is no global configuration file that applies to all repositories — each
-repository controls its own versioning rules, changelog format, and PR templates.
+repository. Each repository controls its own versioning rules, changelog format, and PR
+templates for any settings that have not been locked by a higher level.
 
-The server finds configuration files using the `CONFIG_DIR` environment variable as the base
-path, combined with the repository name. If `CONFIG_DIR` is unset, the server looks in the
-current working directory.
+The server finds the app-level baseline configuration using the `CONFIG_DIR` environment
+variable. If `CONFIG_DIR` is unset, the server looks in the current working directory.
+
+## Organisation-wide policy (metadata repository)
+
+For larger deployments you can enforce settings across every repository in your organisation
+without modifying individual dotfiles. Create a repository named `.release-regent` in your
+GitHub organisation and add a `global.toml` file. Release Regent auto-discovers this
+repository and merges its settings over the app-level config for every event in the org.
+
+You can also apply per-group defaults by adding files under `groups/` and having repositories
+declare `group = "name"` in their dotfiles.
 
 !!! tip
-    If you want every repository to start from the same baseline, create a shared
-    `.release-regent.toml` template in your organisation's documentation and ask teams to
-    copy it into their repository and customise it.
+    See [Set up the metadata repository](metadata-repository.md) for step-by-step
+    instructions and [Configuration hierarchy](../../explanation/configuration-hierarchy.md)
+    for the full mental model.
 
 ## Webhook routing
 

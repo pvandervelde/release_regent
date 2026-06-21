@@ -81,6 +81,28 @@ main = "main"
 
 ---
 
+## `group` — group membership
+
+**Type**: string
+**Default**: *(absent)*
+
+Declares the [configuration group](../explanation/configuration-hierarchy.md#group-membership)
+this repository belongs to. When set, Release Regent fetches
+`{org}/.release-regent/groups/{group}.toml` from the metadata repository and merges it as an
+additional policy layer above the global policy.
+
+This field is meaningful **only** in repository dotfiles. If it appears in `global.toml` or a
+group policy file it is silently ignored.
+
+```toml
+group = "backend"
+```
+
+See [Set up the metadata repository](../how-to/setup/metadata-repository.md) for how platform
+teams create group policy files.
+
+---
+
 ## `versioning` — version calculation
 
 ### `versioning.strategy`
@@ -442,6 +464,46 @@ strategy = "slack"
 webhook_url = "https://hooks.slack.com/services/T00/B00/xxx"
 channel = "#releases"
 ```
+
+---
+
+## `locked_fields` — policy locks
+
+**Type**: list of strings
+**Default**: `[]`
+**Valid in**: `global.toml` and group policy files in the metadata repository only
+
+A list of dotted field paths that lower configuration levels cannot override. Repository
+dotfiles cannot set this field — if present, the field is silently ignored with a `warn!`.
+
+```toml
+# global.toml — lock versioning strategy and PR overrides org-wide
+locked_fields = ["versioning.strategy", "versioning.allow_override"]
+
+[versioning]
+strategy = "conventional"
+allow_override = false
+```
+
+The following fields may be locked:
+
+| Field path | Description |
+| :--- | :--- |
+| `versioning.strategy` | Versioning algorithm |
+| `versioning.allow_override` | Whether PR comment override commands are permitted |
+| `releases.draft` | Whether GitHub releases are created as drafts |
+| `releases.prerelease` | Whether GitHub releases are marked pre-release |
+| `releases.generate_notes` | Whether GitHub auto-generates release notes |
+| `core.branches.main` | Name of the default/main branch |
+| `core.version_prefix` | Prefix prepended to version tags |
+| `error_handling.max_retries` | Maximum retry count |
+| `error_handling.backoff_multiplier` | Exponential backoff multiplier |
+| `error_handling.initial_delay_ms` | Initial retry delay |
+
+All `release_pr.*` and `notifications.*` fields are never lockable.
+
+For the full rules on lock accumulation and conflict handling, see
+[Configuration hierarchy — per-field locks](../explanation/configuration-hierarchy.md#per-field-locks).
 
 ---
 
