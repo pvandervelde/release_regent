@@ -10,7 +10,12 @@ optional — the tool works with sensible defaults if the file is absent.
 
 ## Supported file names
 
-Release Regent searches for configuration files in the following order:
+Release Regent uses configuration files in two different ways depending on how you deploy it.
+
+### Local file discovery (CLI and app-level config)
+
+When the CLI or the server reads configuration from the local file system, it searches for
+files in the following order inside `CONFIG_DIR` (or the current directory):
 
 | File name | Format |
 | :--- | :--- |
@@ -20,11 +25,24 @@ Release Regent searches for configuration files in the following order:
 
 **`rr init` creates `release-regent.toml` by default.**
 
+### Repository dotfile (server, fetched via GitHub API)
+
+When the server processes a webhook event, it fetches the per-repository dotfile from the
+target repository over the GitHub API. The server probes exactly one path:
+
+| File name | Format |
+| :--- | :--- |
+| `.release-regent.toml` (leading dot) | TOML |
+
+This filename with a leading dot is the convention for repository-level dotfiles fetched
+from GitHub. It is **not** part of the local file discovery list above.
+
 !!! note "Migrating from YAML"
     Previous versions of Release Regent also accepted `.release-regent.yml` and related YAML
     file names. YAML support has been removed. If your repository uses a `.release-regent.yml`
-    file, rename it to `.release-regent.toml` and convert the contents to TOML syntax before
-    upgrading. See [Migrating from YAML configuration](../how-to/configuration/migrate-from-yaml.md)
+    file, rename it to `.release-regent.toml` (keeping the leading dot — this is the
+    GitHub-fetched dotfile) and convert the contents to TOML syntax before upgrading.
+    See [Migrating from YAML configuration](../how-to/configuration/migrate-from-yaml.md)
     for step-by-step instructions.
 
 ## File structure
@@ -95,7 +113,7 @@ this repository belongs to. When set, Release Regent fetches
 additional policy layer above the global policy.
 
 This field is meaningful **only** in repository dotfiles. If it appears in `global.toml` or a
-group policy file it is silently ignored.
+group policy file it is silently ignored with a `warn!` log entry.
 
 ```toml
 group = "backend"
