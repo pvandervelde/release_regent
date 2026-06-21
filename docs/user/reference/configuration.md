@@ -30,6 +30,9 @@ Release Regent searches for configuration files in the following order:
 ## File structure
 
 ```toml
+# group = "name"       # Optional: group policy membership (repo dotfile only)
+# locked_fields = []   # Optional: field locks (global.toml / group files only)
+
 [core]
 # Version prefix and branch settings
 

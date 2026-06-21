@@ -118,7 +118,7 @@ continue to work without any changes.
 A repository declares its group in its dotfile using a top-level `group` field:
 
 ```toml
-# .release-regent.toml in myorg/platform-api
+# myorg/platform-api/release-regent.toml
 group = "backend"
 
 [versioning]
@@ -191,6 +191,11 @@ Locks accumulate downward through the hierarchy. A group policy can add new lock
 global locks, but cannot remove a lock that global already set. Repository dotfiles cannot
 add or remove locks.
 
+If a group policy lists a field in `locked_fields` that global has already locked, the entry
+is a no-op (the field remains locked) and a `warn!` is emitted. Platform teams should expect
+this log noise when global and group policies overlap and can safely remove the duplicate
+entry from the group file.
+
 ### Lock conflict handling
 
 When a lower-level config supplies a value for a locked field, Release Regent:
@@ -233,10 +238,17 @@ The corrected file is picked up on the next event without a server restart.
 | Group file present but invalid | Hard-fail events for repos in that group |
 | Repository dotfile absent | Skip repo level; continue |
 | Repository dotfile present but invalid | Hard-fail that event only |
+| Repository dotfile API error (503, network timeout) | Hard-fail that event only |
 
 The asymmetry between "absent → skip silently" and "present but invalid → hard fail" is
 intentional: absence is a valid operational state (not yet configured), while an invalid file
 is a configuration error that must be fixed.
+
+Note the second asymmetry: transient API errors on the **metadata repository** are skipped
+with a warn (the org-level policy is optional infrastructure), but transient errors on the
+**repository dotfile** hard-fail the event. The repo dotfile is the primary per-repository
+config source, and silently skipping a transient failure there could produce a release with
+incorrect settings.
 
 ---
 

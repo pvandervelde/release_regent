@@ -44,9 +44,13 @@ Create a new GitHub repository named exactly `.release-regent` in your organisat
 ## Step 2 — Install the GitHub App on the metadata repository
 
 1. Go to **GitHub → Settings → Installations → \<your app\> → Configure**.
-2. Under **Repository access**, ensure **All repositories** is selected, or add
-   `.release-regent` explicitly.
+2. Under **Repository access**, ensure **All repositories** is selected.
 3. Click **Save**.
+
+!!! warning "Do not use a repository-scoped installation"
+    Do not restrict the installation to only the `.release-regent` repository. Release Regent
+    uses the metadata-repo installation to fetch dotfiles from *other* repositories in the
+    org. A repository-scoped installation will return `403` for those fetches.
 
 Release Regent discovers the App installation automatically when it processes the first event
 for a repository in your organisation.
@@ -108,7 +112,7 @@ title_template = "chore(release): ${version} [backend]"
 Repositories opt in to a group by adding a `group` field to their own dotfile:
 
 ```toml
-# myorg/platform-api/.release-regent.toml
+# myorg/platform-api/release-regent.toml
 group = "backend"
 
 [versioning]
