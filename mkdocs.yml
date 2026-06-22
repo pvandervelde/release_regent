@@ -76,6 +76,7 @@ nav:
           - Deploy the server: how-to/setup/install-server.md
           - Set up the GitHub App: how-to/setup/github-app-setup.md
           - Configure multiple repositories: how-to/setup/configure-multiple-repos.md
+          - Set up the metadata repository: how-to/setup/metadata-repository.md
       - Manage releases:
           - Override the version: how-to/releases/override-version.md
           - Trigger a release manually: how-to/releases/trigger-release-manually.md
@@ -101,6 +102,7 @@ nav:
       - GitHub App authentication: explanation/github-app-model.md
       - Release branch ownership: explanation/release-branch-ownership.md
       - Architecture: explanation/architecture.md
+      - Configuration hierarchy: explanation/configuration-hierarchy.md
 
 extra:
   social:

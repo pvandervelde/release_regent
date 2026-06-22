@@ -21,3 +21,5 @@ effectively and make better decisions.
   ownership of `release/v*` branches and what that means for your workflow
 - [Architecture](architecture.md) — how the crates fit together and what deployment shapes are
   possible
+- [Configuration hierarchy](configuration-hierarchy.md) — how the five configuration levels
+  merge, how the per-org metadata repository works, and how platform teams enforce policy
