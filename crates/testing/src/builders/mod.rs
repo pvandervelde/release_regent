@@ -45,7 +45,7 @@ pub trait TestDataBuilder<T> {
 /// Helper functions for generating realistic test data
 pub mod helpers {
     use chrono::{DateTime, Utc};
-    use rand::Rng;
+    use rand::RngExt;
 
     /// Generate a realistic Git SHA
     ///

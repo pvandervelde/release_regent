@@ -33,8 +33,8 @@
 # =============================================================================
 # Pin to a specific Rust release so that builds on different days produce
 # identical binaries.  Update this together with rust-version in Cargo.toml
-# when raising the MSRV.  Current stable at the time of writing: 1.95.
-FROM rust:1.95-slim@sha256:e14e87345b4d5964ddcc3491d27ee046a0f23820f340c3c1e24da6880141f7c0 AS deps
+# when raising the MSRV.  Current stable at the time of writing: 1.96.
+FROM rust:1.96-slim@sha256:3b05f7c617a200c41c3506097f0d15fc193a1c93bfd8f141007b47cac8f95d3c AS deps
 
 # TARGETARCH is injected by BuildKit (values: amd64, arm64, etc.).
 # cmake, clang, pkg-config are required on all platforms by aws-lc-sys.
@@ -114,7 +114,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 #
 # Must use the same Debian release as the builder image so that the compiled
 # binary and the glibc version in the runtime layer match.
-# rust:1.95-slim is based on Debian trixie (glibc 2.41).
+# rust:1.96-slim is based on Debian trixie (glibc 2.41).
 # bookworm-slim only ships glibc 2.36 and would fail with a version-not-found
 # error at startup.  Keep this in sync with the FROM in the deps stage.
 # =============================================================================
