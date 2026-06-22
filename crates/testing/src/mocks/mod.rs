@@ -170,7 +170,7 @@ impl MockState {
     /// Determine if this call should simulate a failure
     #[must_use]
     pub fn should_simulate_failure(&self) -> bool {
-        use rand::Rng;
+        use rand::RngExt;
 
         if !self.config.simulate_failures {
             return false;
