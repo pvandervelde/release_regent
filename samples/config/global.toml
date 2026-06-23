@@ -1,0 +1,114 @@
+# =============================================================================
+# Release Regent — org-wide global policy (Level 3 of 5 in the hierarchy)
+# =============================================================================
+# This file lives at the root of the metadata repository:
+#
+#   {org}/.release-regent/global.toml
+#
+# Settings here apply to EVERY repository in the organisation.
+# This level overrides the app-level config (Level 2) for unlocked fields,
+# and is itself overridden by group policy (Level 4) and each repository's
+# own dotfile (Level 5).
+#
+# Fields listed in locked_fields cannot be changed by any lower level.
+# An invalid global.toml hard-fails ALL events in the org — review carefully
+# and prefer locking only what is truly non-negotiable.
+#
+# Full reference: docs/user/reference/configuration.md
+# Hierarchy guide: docs/user/explanation/configuration-hierarchy.md
+# =============================================================================
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Locked fields
+# ─────────────────────────────────────────────────────────────────────────────
+# These field paths cannot be overridden by group policy or repository dotfiles.
+# Start with an empty list and add locks only when you are confident in the
+# policy — a lock cannot be softened without editing this file.
+
+locked_fields = [
+  # Enforce conventional commits org-wide; no external version scripts allowed.
+  "versioning.strategy",
+  # Prevent individual repos from disabling PR override commands.
+  # Remove this if teams need autonomy over bump overrides.
+  # "versioning.allow_override",
+]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Core settings
+# ─────────────────────────────────────────────────────────────────────────────
+
+[core]
+# Standard "v" prefix for all org releases (e.g. v1.2.3).
+version_prefix = "v"
+
+[core.branches]
+# Almost all repositories in this org use "main" as the default branch.
+# Repositories that use a different name (e.g. "master") override this in
+# their own dotfile (not locked, so they can).
+main = "main"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Versioning
+# ─────────────────────────────────────────────────────────────────────────────
+
+[versioning]
+# conventional is the only permitted strategy (see locked_fields above).
+strategy = "conventional"
+
+# Allow contributors to bump via PR comment by default; individual repos may
+# disable this if not locked.
+allow_override = true
+
+# Suppress version comments for common bot accounts.
+excluded_pr_authors = ["dependabot[bot]", "renovate[bot]"]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GitHub releases
+# ─────────────────────────────────────────────────────────────────────────────
+
+[releases]
+# Publish releases immediately (not as drafts).
+draft = false
+
+# No pre-release marker by default; groups or repos can override if needed.
+prerelease = false
+
+# Include GitHub's auto-generated notes alongside our changelog.
+generate_notes = true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Release pull request
+# ─────────────────────────────────────────────────────────────────────────────
+# release_pr fields are never lockable — each repository can always customise
+# its PR title and body without platform-team intervention.
+
+[release_pr]
+title_template = "chore(release): ${version}"
+body_template = """
+## Changelog
+
+${changelog}
+"""
+draft = false
+auto_detect_manifests = true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Error handling / retries
+# ─────────────────────────────────────────────────────────────────────────────
+
+[error_handling]
+max_retries = 5
+backoff_multiplier = 2.0
+initial_delay_ms = 1000
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Notifications
+# ─────────────────────────────────────────────────────────────────────────────
+
+[notifications]
+enabled = true
+strategy = "github_issue"
+
+[notifications.github_issue]
+labels = ["release-regent", "bug"]
+assignees = []

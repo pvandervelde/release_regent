@@ -1,0 +1,100 @@
+# =============================================================================
+# Release Regent — group policy: mobile apps (Level 4 of 5)
+# =============================================================================
+# This file lives in the metadata repository at:
+#
+#   {org}/.release-regent/groups/mobile.toml
+#
+# It applies to every repository that declares:
+#
+#   group = "mobile"
+#
+# in its own .release-regent.toml dotfile.
+#
+# Full reference: docs/user/reference/configuration.md
+# Hierarchy guide: docs/user/explanation/configuration-hierarchy.md
+# =============================================================================
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Locked fields (mobile-specific additions)
+# ─────────────────────────────────────────────────────────────────────────────
+
+locked_fields = [
+  # Mobile releases go through the store review process, so all GitHub releases
+  # must be pre-releases until the app is approved.
+  "releases.prerelease",
+]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Core settings
+# ─────────────────────────────────────────────────────────────────────────────
+
+[core]
+# Mobile apps use a numeric-only version for store compatibility (e.g. 1.2.3).
+version_prefix = ""
+
+[core.branches]
+main = "main"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Versioning
+# ─────────────────────────────────────────────────────────────────────────────
+
+[versioning]
+strategy = "conventional"
+allow_override = true
+excluded_pr_authors = ["dependabot[bot]", "renovate[bot]"]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GitHub releases
+# ─────────────────────────────────────────────────────────────────────────────
+
+[releases]
+draft = false
+# Locked above — all mobile releases are marked pre-release until store approval.
+prerelease = true
+generate_notes = true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Release pull request
+# ─────────────────────────────────────────────────────────────────────────────
+
+[release_pr]
+title_template = "chore(release): ${version} [mobile]"
+body_template = """
+## Release ${version}
+
+### Changes
+
+${changelog}
+
+### Store submission checklist
+
+- [ ] Screenshots updated for all supported screen sizes
+- [ ] Release notes written in all supported languages
+- [ ] Version number updated in App Store Connect / Google Play Console
+- [ ] Build submitted for review
+"""
+draft = false
+auto_detect_manifests = true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Error handling / retries
+# ─────────────────────────────────────────────────────────────────────────────
+
+[error_handling]
+max_retries = 5
+backoff_multiplier = 2.0
+initial_delay_ms = 1000
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Notifications
+# ─────────────────────────────────────────────────────────────────────────────
+
+[notifications]
+enabled = true
+strategy = "slack"
+
+[notifications.slack]
+webhook_url = "https://hooks.slack.com/services/YOUR_WORKSPACE_ID/YOUR_CHANNEL_ID/YOUR_TOKEN"
+channel = "#mobile-releases"

@@ -1,0 +1,175 @@
+# =============================================================================
+# Release Regent — repository dotfile (Level 5 of 5 in the hierarchy)
+# =============================================================================
+# This file lives at the root of each repository as .release-regent.toml
+# (note the leading dot).
+#
+# This is the highest-priority configuration level — it overrides app-level,
+# global policy, and group policy for any field that is not locked by a
+# higher level.
+#
+# All settings are optional. If this file is absent, Release Regent uses
+# whatever the lower levels resolved to.
+#
+# Full reference: docs/user/reference/configuration.md
+# Hierarchy guide: docs/user/explanation/configuration-hierarchy.md
+# =============================================================================
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Group membership (optional)
+# ─────────────────────────────────────────────────────────────────────────────
+# Declare which group policy applies to this repository.
+# Release Regent fetches {org}/.release-regent/groups/{group}.toml and merges
+# it between global policy and this dotfile.
+# Remove or comment out if this repo does not belong to a group.
+#
+# group = "backend"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Core settings
+# ─────────────────────────────────────────────────────────────────────────────
+
+[core]
+# Prefix prepended to version numbers in tags and PR titles.
+# Common values: "v" (tags like v1.2.3), "" (bare numbers), "release-"
+version_prefix = "v"
+
+[core.branches]
+# The default branch of this repository.
+main = "main"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Versioning
+# ─────────────────────────────────────────────────────────────────────────────
+
+[versioning]
+# Calculate the next version from conventional commit messages.
+strategy = "conventional"
+
+# Allow contributors to override the calculated bump with a PR comment
+# (e.g. /override-bump minor).
+allow_override = true
+
+# Suppress version comments for bots that open dependency PRs.
+excluded_pr_authors = ["dependabot[bot]", "renovate[bot]"]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Release pull request
+# ─────────────────────────────────────────────────────────────────────────────
+
+[release_pr]
+# Placeholders available: ${version}, ${version_tag}, ${changelog},
+# ${commit_count}, ${date}
+title_template = "chore(release): ${version}"
+
+body_template = """
+## Release ${version_tag}
+
+### Changes
+
+${changelog}
+
+### Release information
+
+- **Version**: ${version}
+- **Commits**: ${commit_count} commits since last release
+- **Date**: ${date}
+"""
+
+# Create the release PR as a draft PR.
+draft = false
+
+# Automatically detect and update Cargo.toml, package.json, pyproject.toml,
+# and composer.json at the repository root.
+auto_detect_manifests = true
+
+# Explicit manifest files to update (processed in addition to auto-detected ones).
+# Uncomment and adjust as needed.
+#
+# [[release_pr.manifest_files]]
+# path = "Cargo.toml"
+# format = "toml"
+# version_key = "package.version"
+#
+# [[release_pr.manifest_files]]
+# path = "package.json"
+# format = "json"
+# version_key = "version"
+#
+# [[release_pr.manifest_files]]
+# path = "VERSION"
+# format = "plain_text"
+# version_key = "^([0-9]+\\.[0-9]+\\.[0-9]+)$"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GitHub releases
+# ─────────────────────────────────────────────────────────────────────────────
+
+[releases]
+# Publish releases immediately (set true to require manual publish).
+draft = false
+
+# Mark as pre-release in the GitHub UI.
+prerelease = false
+
+# Include GitHub's auto-generated notes alongside the changelog.
+generate_notes = true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Changelog
+# ─────────────────────────────────────────────────────────────────────────────
+
+[changelog]
+# Strategy: "internal" (default) | "git_cliff" | external command (see below)
+strategy = "internal"
+
+include_authors = true
+include_shas = true
+include_links = true
+
+section_template = "### {title}\n\n{entries}\n"
+commit_template = "- {description} [{sha}]"
+
+# Override the remote URL used for link generation (auto-detected if blank).
+# remote_url = "https://github.com/myorg/myrepo"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Error handling / retries
+# ─────────────────────────────────────────────────────────────────────────────
+
+[error_handling]
+max_retries = 5
+backoff_multiplier = 2.0
+initial_delay_ms = 1000
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Notifications
+# ─────────────────────────────────────────────────────────────────────────────
+
+[notifications]
+enabled = true
+
+# Options: "github_issue" | "webhook" | "slack" | "none"
+strategy = "github_issue"
+
+[notifications.github_issue]
+labels = ["release-regent", "bug"]
+assignees = []
+
+# Webhook notification (uncomment to use instead of github_issue)
+# [notifications]
+# strategy = "webhook"
+#
+# [notifications.webhook]
+# url = "https://hooks.example.com/release-regent"
+#
+# [notifications.webhook.headers]
+# Authorization = "Bearer mytoken"
+
+# Slack notification (uncomment to use instead of github_issue)
+# [notifications]
+# strategy = "slack"
+#
+# [notifications.slack]
+# webhook_url = "https://hooks.slack.com/services/T00/B00/xxx"
+# channel = "#releases"

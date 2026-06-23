@@ -260,3 +260,15 @@ incorrect settings.
   repository dotfile
 - [ADR-007: Enterprise configuration hierarchy](../../adr/ADR-007-enterprise-config-hierarchy.md)
   — the architectural decision record that introduced this design
+
+### Sample files
+
+Ready-to-copy example files for each level are in the
+[`samples/config/`](../../../samples/config/) directory:
+
+| Level | Sample file |
+| :---- | :---------- |
+| 2 — App-level | [`samples/config/release-regent.toml`](../../../samples/config/release-regent.toml) |
+| 3 — Global policy | [`samples/config/global.toml`](../../../samples/config/global.toml) |
+| 4 — Group policy | [`samples/config/groups/backend.toml`](../../../samples/config/groups/backend.toml), [`samples/config/groups/mobile.toml`](../../../samples/config/groups/mobile.toml) |
+| 5 — Repository dotfile | [`samples/config/.release-regent.toml`](../../../samples/config/.release-regent.toml) |

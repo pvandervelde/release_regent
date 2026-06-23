@@ -62,6 +62,11 @@ for a repository in your organisation.
 Create a `global.toml` file at the root of the metadata repository. This file applies to
 every repository in your organisation.
 
+Copy [`samples/config/global.toml`](../../../../samples/config/global.toml) as a starting
+point, then adjust the locked fields and defaults for your organisation.
+
+Minimal example to get started:
+
 ```toml
 # myorg/.release-regent/global.toml
 
@@ -94,7 +99,14 @@ myorg/.release-regent/
     mobile.toml
 ```
 
-Example group file:
+Copy the sample group files as a starting point:
+
+- [`samples/config/groups/backend.toml`](../../../../samples/config/groups/backend.toml) —
+  example for backend services (draft releases, Slack notifications)
+- [`samples/config/groups/mobile.toml`](../../../../samples/config/groups/mobile.toml) —
+  example for mobile apps (pre-release flag, store submission checklist)
+
+Minimal example group file:
 
 ```toml
 # myorg/.release-regent/groups/backend.toml
@@ -109,10 +121,12 @@ draft = true
 title_template = "chore(release): ${version} [backend]"
 ```
 
-Repositories opt in to a group by adding a `group` field to their own dotfile:
+Repositories opt in to a group by adding a `group` field to their own dotfile. Use
+[`samples/config/.release-regent.toml`](../../../../samples/config/.release-regent.toml)
+as a starting point for the repository dotfile:
 
 ```toml
-# myorg/platform-api/release-regent.toml
+# myorg/platform-api/.release-regent.toml
 group = "backend"
 
 [versioning]

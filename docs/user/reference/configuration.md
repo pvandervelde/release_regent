@@ -528,6 +528,23 @@ For the full rules on lock accumulation and conflict handling, see
 
 ---
 
+## Sample files
+
+Ready-to-copy example files for each configuration level are in the
+[`samples/config/`](../../../samples/config/) directory:
+
+| Level | Sample file |
+| :---- | :---------- |
+| 2 — App-level | [`samples/config/release-regent.toml`](../../../samples/config/release-regent.toml) |
+| 3 — Global policy | [`samples/config/global.toml`](../../../samples/config/global.toml) |
+| 4 — Group policy | [`samples/config/groups/backend.toml`](../../../samples/config/groups/backend.toml), [`samples/config/groups/mobile.toml`](../../../samples/config/groups/mobile.toml) |
+| 5 — Repository dotfile | [`samples/config/.release-regent.toml`](../../../samples/config/.release-regent.toml) |
+
+See the [configuration hierarchy](../explanation/configuration-hierarchy.md) for how these
+levels interact and where each file is deployed.
+
+---
+
 ## Complete example
 
 ```toml
