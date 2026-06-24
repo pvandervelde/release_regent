@@ -8,11 +8,9 @@ members = [
     "crates/testing",
     "crates/config_provider",
 ]
-# The fuzz crate declares its own [workspace] and must not be a member here.
-exclude = ["fuzz"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.5.0"
 edition = "2021"
 rust-version = "1.70"
 authors = ["Release Regent Contributors"]
@@ -24,7 +22,7 @@ repository = "https://github.com/pvandervelde/release_regent"
 # Core async and concurrency
 async-trait = "0.1"
 futures = "0.3"
-tokio = { version = "1.47", features = ["full"] }
+tokio = { version = "1.45", features = ["full"] }
 tokio-util = { version = "0.7" }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "time"] }
@@ -35,58 +33,58 @@ thiserror = "2.0"
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-toml = "1.0"
-toml_edit = "0.25"
+toml = "0.8"
+toml_edit = "0.22"
 
 # GitHub integration
-github-bot-sdk = "0.2.0"
-octocrab = "0.53"
+github-bot-sdk = { git = "https://github.com/pvandervelde/github-bot-sdk", rev = "5ea985e" }
+octocrab = "0.49"
 reqwest = { version = "0.13", features = ["json", "rustls"] }
 
 # Crypto and security
-jsonwebtoken = "10.0"
+jsonwebtoken = "9.2"
 secrecy = "0.10"
 chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1.20", features = ["v4", "serde"] }
+uuid = { version = "1.6", features = ["v4", "serde"] }
 
 # CLI
 clap = { version = "4.4", features = ["derive"] }
 
 # Observability
-opentelemetry = "0.32"
-opentelemetry_sdk = "0.32"
+opentelemetry = "0.30"
+opentelemetry-jaeger = "0.22"
+opentelemetry_sdk = "0.30"
 
 # Azure
-azure_identity = "1.0"
-azure_security_keyvault_secrets = "1.0"
+azure_identity = "0.31"
+azure_security_keyvault_secrets = "0.10"
 
 # Test dependencies
-tempfile = "3.27"
+tempfile = "3.8"
 tracing-test = "0.2"
 tokio-test = "0.4"
-mockall = "0.14"
+mockall = "0.13"
 pretty_assertions = "=1.4.1"
-serial_test = "=3.5.0"
+serial_test = "=3.2.0"
 wiremock = "0.6"
-hmac = "0.13"
-proptest = "1.7"
-sha2 = "0.11"
+hmac = "0.12"
+sha2 = "0.10"
 hex = "0.4"
 
 # Additional utilities
 base64 = "0.22"
-dirs = "6.0"
-walkdir = "2.5"
-jsonschema = "0.46"
-once_cell = "1.21"
-regex = "1.12"
-rand = "0.10"
+dirs = "5.0"
+walkdir = "2.4"
+jsonschema = "0.18"
+once_cell = "1.19"
+regex = "1.10"
+rand = "0.9"
 http = "1"
-bytes = "1.11"
+bytes = "1.0"
 
 # Version calculation
-git-conventional = "1.0"
+git-conventional = "0.12"
 
 # Web framework
 axum = "0.8"
-hyper = "1.10"
+hyper = "1.6"
