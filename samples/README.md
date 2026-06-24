@@ -279,6 +279,21 @@ samples/
   create-test-repo.ps1       Test repository generator
   .env.example               Credential template (copy to .env and fill in values)
   config/
-    release-regent.toml      Sample server configuration mounted into Docker
+    release-regent.toml      Level 2 — app-level config (mounted into Docker at /config)
+    global.toml              Level 3 — org-wide global policy sample (metadata repo root)
+    groups/
+      backend.toml           Level 4 — group policy sample for backend services
+      mobile.toml            Level 4 — group policy sample for mobile apps
+    .release-regent.toml     Level 5 — repository dotfile sample (repo root)
   README.md                  This file
 ```
+
+The four config sample files correspond to the four configurable levels of the
+[configuration hierarchy](../docs/user/explanation/configuration-hierarchy.md):
+
+| Level | Sample file | Deployed location |
+| :---- | :---------- | :---------------- |
+| 2 — App-level | `config/release-regent.toml` | `CONFIG_DIR/release-regent.toml` on the server host |
+| 3 — Global policy | `config/global.toml` | `{org}/.release-regent/global.toml` in the metadata repository |
+| 4 — Group policy | `config/groups/backend.toml`, `config/groups/mobile.toml` | `{org}/.release-regent/groups/{group}.toml` in the metadata repository |
+| 5 — Repository dotfile | `config/.release-regent.toml` | `.release-regent.toml` at each repository root |

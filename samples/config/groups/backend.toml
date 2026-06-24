@@ -1,0 +1,109 @@
+# =============================================================================
+# Release Regent — group policy: backend services (Level 4 of 5)
+# =============================================================================
+# This file lives in the metadata repository at:
+#
+#   {org}/.release-regent/groups/backend.toml
+#
+# It applies to every repository that declares:
+#
+#   group = "backend"
+#
+# in its own .release-regent.toml dotfile.
+#
+# This level overrides global policy (Level 3) for unlocked fields and is
+# itself overridden by each repository's own dotfile (Level 5).
+# Locks added here accumulate on top of global locks; they cannot remove
+# a lock already set by global.toml.
+#
+# Full reference: docs/user/reference/configuration.md
+# Hierarchy guide: docs/user/explanation/configuration-hierarchy.md
+# =============================================================================
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Locked fields (backend-specific additions)
+# ─────────────────────────────────────────────────────────────────────────────
+# These add to any locks already declared in global.toml.
+
+locked_fields = [
+  # Backend services must never publish a release directly — always draft
+  # so the on-call engineer can review before going public.
+  "releases.draft",
+  # Pre-release flag is controlled here, not by individual service teams.
+  "releases.prerelease",
+]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Core settings
+# ─────────────────────────────────────────────────────────────────────────────
+
+[core]
+# Backend repos follow the org default; listed here for explicitness.
+version_prefix = "v"
+
+[core.branches]
+main = "main"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Versioning
+# ─────────────────────────────────────────────────────────────────────────────
+
+[versioning]
+# Inherited from global policy (and locked there); listed for readability.
+strategy = "conventional"
+allow_override = true
+excluded_pr_authors = ["dependabot[bot]", "renovate[bot]"]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GitHub releases
+# ─────────────────────────────────────────────────────────────────────────────
+
+[releases]
+# Locked above — backend releases are always draft until manually published.
+draft = true
+prerelease = false
+generate_notes = true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Release pull request
+# ─────────────────────────────────────────────────────────────────────────────
+
+[release_pr]
+# Tag backend releases in the PR title so they are easy to identify in
+# cross-repo PR lists and Slack notifications.
+title_template = "chore(release): ${version} [backend]"
+body_template = """
+## Changelog
+
+${changelog}
+
+---
+*Backend service release — draft GitHub release will be published by on-call after review.*
+"""
+draft = false
+auto_detect_manifests = true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Error handling / retries
+# ─────────────────────────────────────────────────────────────────────────────
+# Backend services run in a higher-reliability environment; use more aggressive
+# retry settings than the global default.
+
+[error_handling]
+max_retries = 8
+backoff_multiplier = 2.0
+initial_delay_ms = 500
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Notifications
+# ─────────────────────────────────────────────────────────────────────────────
+# Backend teams use Slack for incident response; route errors there instead of
+# opening GitHub issues (which are for product bugs, not tooling errors).
+
+[notifications]
+enabled = true
+strategy = "slack"
+
+[notifications.slack]
+webhook_url = "https://hooks.slack.com/services/YOUR_WORKSPACE_ID/YOUR_CHANNEL_ID/YOUR_TOKEN"
+channel = "#backend-releases"
