@@ -616,10 +616,15 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
             path: "CHANGELOG.md".to_string(),
             content: changelog_file_content,
         }];
+        // Read manifests from the *base* branch (e.g. master), not the release
+        // branch head.  The release branch head contains the bot's own previous
+        // output, which may have stale dependency versions from an earlier rebase.
+        // The base branch is always authoritative for dependency content; only the
+        // version key should differ.  This mirrors the CHANGELOG.md fetch above.
         self.collect_manifest_updates(
             owner,
             repo,
-            &fresh_pr.head.ref_name,
+            &fresh_pr.base.ref_name,
             version,
             &mut file_updates,
         )
