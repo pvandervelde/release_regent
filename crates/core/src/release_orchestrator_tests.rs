@@ -1793,6 +1793,84 @@ async fn test_update_release_pr_reads_changelog_from_base_branch() {
     );
 }
 
+/// `update_release_pr` reads manifest files (e.g. `Cargo.toml`) from the PR
+/// *base* branch (e.g. `main`), not from the PR head branch.
+///
+/// Regression guard for the bug where manifests were read from the release
+/// branch head, causing dependency versions to be silently downgraded on every
+/// rebase cycle.  The head branch carries the bot's own previous output; the
+/// base branch is always authoritative for dependency content.
+#[tokio::test]
+async fn test_update_release_pr_reads_manifests_from_base_branch() {
+    let version = ver(1, 0, 0);
+
+    // Head branch has a stale Cargo.toml with old dependency versions.
+    let stale_head_cargo =
+        "[package]\nname = \"myapp\"\nversion = \"0.1.0\"\n\n[dependencies]\ntokio = \"1.0\"\n";
+    // Base branch has the current Cargo.toml with up-to-date dependency versions.
+    let fresh_base_cargo =
+        "[package]\nname = \"myapp\"\nversion = \"0.1.0\"\n\n[dependencies]\ntokio = \"1.47\"\n";
+
+    let existing_body =
+        "## Changelog\n\n- feat: something [1234567890abcdef1234567890abcdef12345678]";
+    let existing_pr = make_open_release_pr(55, "release/v1.0.0", Some(existing_body));
+
+    let github = TestGitHub::new()
+        .with_search_results(vec![existing_pr.clone()])
+        .await
+        .with_pr_by_number(existing_pr)
+        .await
+        // Stale content on the head branch — must NOT be used.
+        .with_file_content("Cargo.toml", "release/v1.0.0", stale_head_cargo)
+        .await
+        // Fresh content on the base branch — must be used.
+        .with_file_content("Cargo.toml", "main", fresh_base_cargo)
+        .await;
+
+    let orchestrator = ReleaseOrchestrator::new(default_config(), &github);
+
+    orchestrator
+        .orchestrate(
+            "testorg",
+            "testrepo",
+            &version,
+            "- feat: new feature [1234567890abcdef1234567890abcdef12345678]",
+            "main",
+            "sha-base-002",
+            "corr-update-002",
+        )
+        .await
+        .expect("orchestrate should succeed");
+
+    let file_updates = github.rebased_batch_file_updates().await;
+    assert_eq!(
+        file_updates.len(),
+        1,
+        "expected exactly one rebased batch commit"
+    );
+
+    let cargo_update = file_updates[0]
+        .iter()
+        .find(|f| f.path == "Cargo.toml")
+        .expect("Cargo.toml must be present in the committed file updates");
+
+    assert!(
+        cargo_update.content.contains("tokio = \"1.47\""),
+        "committed Cargo.toml must have dep versions from the base branch; got:\n{}",
+        cargo_update.content
+    );
+    assert!(
+        !cargo_update.content.contains("tokio = \"1.0\""),
+        "stale dep versions from the head branch must not appear; got:\n{}",
+        cargo_update.content
+    );
+    assert!(
+        cargo_update.content.contains("1.0.0"),
+        "version key must be updated to the release version; got:\n{}",
+        cargo_update.content
+    );
+}
+
 /// When `search_pull_requests` returns multiple open release PRs the
 /// orchestrator selects the highest-versioned one, not the first match.
 #[tokio::test]
@@ -2200,10 +2278,11 @@ fn test_dedup_file_updates_by_path_no_warning_when_no_duplicates() {
 /// the batch commit does not contain it.
 #[tokio::test]
 async fn test_orchestrate_create_pr_includes_manifest_file_update() {
-    // Pre-load Cargo.toml on the release branch so `collect_manifest_updates` finds it.
+    // Pre-load Cargo.toml on the base branch; the create path now reads manifests
+    // from the base branch (not the release branch head) so fresh deps are used.
     let cargo_toml_initial = "[package]\nname = \"myapp\"\nversion = \"0.1.0\"\n";
     let github = TestGitHub::new()
-        .with_file_content("Cargo.toml", "release/v1.2.3", cargo_toml_initial)
+        .with_file_content("Cargo.toml", "main", cargo_toml_initial)
         .await;
 
     let orchestrator = ReleaseOrchestrator::new(default_config(), &github);

@@ -493,7 +493,12 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
             path: "CHANGELOG.md".to_string(),
             content: changelog_file_content,
         }];
-        self.collect_manifest_updates(owner, repo, &actual_branch, version, &mut file_updates)
+        // Read manifests from the base branch so that the conflict/recovery case
+        // (branch already exists from a prior failed run) gets fresh content instead
+        // of whatever stale versions were left on the old release branch head.
+        // On a freshly-created branch this is equivalent since it was just branched
+        // from base_sha.
+        self.collect_manifest_updates(owner, repo, base_branch, version, &mut file_updates)
             .await;
 
         // Deduplicate by path — detect_standard_manifests may emit two configs for
