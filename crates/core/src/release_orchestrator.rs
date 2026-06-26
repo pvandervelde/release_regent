@@ -493,7 +493,12 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
             path: "CHANGELOG.md".to_string(),
             content: changelog_file_content,
         }];
-        self.collect_manifest_updates(owner, repo, &actual_branch, version, &mut file_updates)
+        // Read manifests from the base branch so that the conflict/recovery case
+        // (branch already exists from a prior failed run) gets fresh content instead
+        // of whatever stale versions were left on the old release branch head.
+        // On a freshly-created branch this is equivalent since it was just branched
+        // from base_sha.
+        self.collect_manifest_updates(owner, repo, base_branch, version, &mut file_updates)
             .await;
 
         // Deduplicate by path — detect_standard_manifests may emit two configs for
@@ -616,10 +621,15 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
             path: "CHANGELOG.md".to_string(),
             content: changelog_file_content,
         }];
+        // Read manifests from the *base* branch (e.g. master), not the release
+        // branch head.  The release branch head contains the bot's own previous
+        // output, which may have stale dependency versions from an earlier rebase.
+        // The base branch is always authoritative for dependency content; only the
+        // version key should differ.  This mirrors the CHANGELOG.md fetch above.
         self.collect_manifest_updates(
             owner,
             repo,
-            &fresh_pr.head.ref_name,
+            &fresh_pr.base.ref_name,
             version,
             &mut file_updates,
         )
