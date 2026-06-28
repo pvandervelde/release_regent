@@ -404,8 +404,8 @@ dependencies = [
 
 #[test]
 fn update_cargo_lock_workspace_version_bumps_workspace_packages() {
-    let updated = update_cargo_lock_workspace_version(SAMPLE_CARGO_LOCK, "1.2.3")
-        .expect("should succeed");
+    let updated =
+        update_cargo_lock_workspace_version(SAMPLE_CARGO_LOCK, "1.2.3").expect("should succeed");
 
     // Workspace packages (no source field) are updated.
     assert!(
@@ -420,8 +420,8 @@ fn update_cargo_lock_workspace_version_bumps_workspace_packages() {
 
 #[test]
 fn update_cargo_lock_workspace_version_leaves_external_crates_unchanged() {
-    let updated = update_cargo_lock_workspace_version(SAMPLE_CARGO_LOCK, "1.2.3")
-        .expect("should succeed");
+    let updated =
+        update_cargo_lock_workspace_version(SAMPLE_CARGO_LOCK, "1.2.3").expect("should succeed");
 
     // External crate (has source field) must not be changed.
     assert!(

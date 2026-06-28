@@ -2362,7 +2362,11 @@ async fn test_orchestrate_create_pr_updates_cargo_lock_workspace_versions() {
         .expect("orchestrate should succeed");
 
     let file_updates = github.rebased_batch_file_updates().await;
-    assert_eq!(file_updates.len(), 1, "expected exactly one rebased batch commit");
+    assert_eq!(
+        file_updates.len(),
+        1,
+        "expected exactly one rebased batch commit"
+    );
 
     let lock_update = file_updates[0]
         .iter()
@@ -2414,7 +2418,11 @@ async fn test_orchestrate_create_pr_succeeds_when_cargo_lock_absent() {
         .expect("orchestrate should succeed even without a Cargo.lock");
 
     let file_updates = github.rebased_batch_file_updates().await;
-    assert_eq!(file_updates.len(), 1, "expected exactly one rebased batch commit");
+    assert_eq!(
+        file_updates.len(),
+        1,
+        "expected exactly one rebased batch commit"
+    );
 
     // Cargo.lock must not appear in the commit — it wasn't present.
     assert!(
@@ -2473,7 +2481,11 @@ async fn test_orchestrate_explicit_manifest_config_also_updates_cargo_lock() {
         .expect("orchestrate should succeed");
 
     let file_updates = github.rebased_batch_file_updates().await;
-    assert_eq!(file_updates.len(), 1, "expected exactly one rebased batch commit");
+    assert_eq!(
+        file_updates.len(),
+        1,
+        "expected exactly one rebased batch commit"
+    );
 
     let lock_update = file_updates[0]
         .iter()
