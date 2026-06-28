@@ -2386,6 +2386,107 @@ async fn test_orchestrate_create_pr_updates_cargo_lock_workspace_versions() {
     );
 }
 
+/// When Cargo.lock is absent from the base branch the orchestrator silently
+/// skips the lock-file update and still succeeds.
+///
+/// Regression guard for the `Ok(None)` branch in `collect_manifest_updates`.
+#[tokio::test]
+async fn test_orchestrate_create_pr_succeeds_when_cargo_lock_absent() {
+    // Cargo.toml present, Cargo.lock absent.
+    let cargo_toml = "[workspace]\npackage.version = \"0.1.0\"\nmembers = []\n";
+    let github = TestGitHub::new()
+        .with_file_content("Cargo.toml", "main", cargo_toml)
+        .await;
+
+    let orchestrator = ReleaseOrchestrator::new(default_config(), &github);
+
+    orchestrator
+        .orchestrate(
+            "testorg",
+            "testrepo",
+            &ver(1, 2, 3),
+            "- feat: thing [abc1234567890123456789012345678901234567a]",
+            "main",
+            "sha-nolock-001",
+            "corr-nolock-001",
+        )
+        .await
+        .expect("orchestrate should succeed even without a Cargo.lock");
+
+    let file_updates = github.rebased_batch_file_updates().await;
+    assert_eq!(file_updates.len(), 1, "expected exactly one rebased batch commit");
+
+    // Cargo.lock must not appear in the commit — it wasn't present.
+    assert!(
+        file_updates[0].iter().all(|f| f.path != "Cargo.lock"),
+        "Cargo.lock must not be in the commit when it is absent from the branch"
+    );
+    // Cargo.toml update must still be present.
+    assert!(
+        file_updates[0].iter().any(|f| f.path == "Cargo.toml"),
+        "Cargo.toml must still be committed"
+    );
+}
+
+/// When `auto_detect_manifests` is disabled and Cargo.toml is listed explicitly,
+/// the Cargo.lock update block still fires because it runs after both manifest
+/// branches.
+#[tokio::test]
+async fn test_orchestrate_explicit_manifest_config_also_updates_cargo_lock() {
+    let cargo_toml = "[package]\nname = \"my-app\"\nversion = \"0.1.0\"\n";
+    let cargo_lock = concat!(
+        "version = 4\n\n",
+        "[[package]]\n",
+        "name = \"my-app\"\n",
+        "version = \"0.1.0\"\n",
+    );
+
+    let config = OrchestratorConfig {
+        auto_detect_manifests: false,
+        manifest_files: vec![crate::manifest::ManifestFileConfig {
+            path: "Cargo.toml".to_string(),
+            format: crate::manifest::ManifestFormat::Toml,
+            version_key: "package.version".to_string(),
+        }],
+        ..OrchestratorConfig::default()
+    };
+
+    let github = TestGitHub::new()
+        .with_file_content("Cargo.toml", "main", cargo_toml)
+        .await
+        .with_file_content("Cargo.lock", "main", cargo_lock)
+        .await;
+
+    let orchestrator = ReleaseOrchestrator::new(config, &github);
+
+    orchestrator
+        .orchestrate(
+            "testorg",
+            "testrepo",
+            &ver(2, 0, 0),
+            "- feat: explicit [abc1234567890123456789012345678901234567a]",
+            "main",
+            "sha-explicit-001",
+            "corr-explicit-001",
+        )
+        .await
+        .expect("orchestrate should succeed");
+
+    let file_updates = github.rebased_batch_file_updates().await;
+    assert_eq!(file_updates.len(), 1, "expected exactly one rebased batch commit");
+
+    let lock_update = file_updates[0]
+        .iter()
+        .find(|f| f.path == "Cargo.lock")
+        .expect("Cargo.lock must be updated even in explicit-manifest mode");
+
+    assert!(
+        lock_update.content.contains("version = \"2.0.0\""),
+        "Cargo.lock workspace version must be bumped to 2.0.0; got:\n{}",
+        lock_update.content
+    );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Property-based tests
 //

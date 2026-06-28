@@ -270,6 +270,15 @@ pub fn detect_standard_manifests(existing_paths: &[&str]) -> Vec<ManifestFileCon
 /// Returns the updated lock-file content, or the original unchanged if there
 /// are no `[[package]]` entries or none qualify as workspace members.
 ///
+/// # Known limitation
+///
+/// Path dependencies that live **outside** the workspace (e.g.
+/// `path = "../sister-repo"`) also have no `source` field in `Cargo.lock`,
+/// so this function would incorrectly bump their version entry alongside the
+/// true workspace packages.  This layout is unusual but valid Cargo usage.
+/// A pure-text heuristic cannot reliably distinguish the two cases without
+/// also reading `[workspace].members` from the root `Cargo.toml`.
+///
 /// # Errors
 ///
 /// Returns [`CoreError::InvalidInput`] if `content` cannot be parsed as TOML.

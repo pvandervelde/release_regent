@@ -992,7 +992,9 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
         // fails because the lock file still records the old workspace version.
         // We read Cargo.lock from `branch` (the base branch) for the same reason
         // we read Cargo.toml from there: the base branch is always authoritative.
-        if updates.iter().any(|f| f.path == "Cargo.toml") {
+        if updates.iter().any(|f| f.path == "Cargo.toml")
+            && !updates.iter().any(|f| f.path == "Cargo.lock")
+        {
             match self
                 .github
                 .get_file_content(owner, repo, "Cargo.lock", branch)
