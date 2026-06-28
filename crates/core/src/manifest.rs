@@ -261,6 +261,52 @@ pub fn detect_standard_manifests(existing_paths: &[&str]) -> Vec<ManifestFileCon
     result
 }
 
+/// Update the `version` field of all workspace packages in a `Cargo.lock` file.
+///
+/// Workspace packages are identified by the **absence** of a `source` field in
+/// their `[[package]]` entry.  External crates always carry a `source` pointing
+/// to the crates.io registry or a git URL; path-local workspace members do not.
+///
+/// Returns the updated lock-file content, or the original unchanged if there
+/// are no `[[package]]` entries or none qualify as workspace members.
+///
+/// # Known limitation
+///
+/// Path dependencies that live **outside** the workspace (e.g.
+/// `path = "../sister-repo"`) also have no `source` field in `Cargo.lock`,
+/// so this function would incorrectly bump their version entry alongside the
+/// true workspace packages.  This layout is unusual but valid Cargo usage.
+/// A pure-text heuristic cannot reliably distinguish the two cases without
+/// also reading `[workspace].members` from the root `Cargo.toml`.
+///
+/// # Errors
+///
+/// Returns [`CoreError::InvalidInput`] if `content` cannot be parsed as TOML.
+#[allow(clippy::result_large_err)]
+pub fn update_cargo_lock_workspace_version(content: &str, new_version: &str) -> CoreResult<String> {
+    let mut doc: toml_edit::DocumentMut = content.parse().map_err(|e| {
+        CoreError::invalid_input("manifest", format!("Failed to parse Cargo.lock: {e}"))
+    })?;
+
+    let packages = match doc
+        .get_mut("package")
+        .and_then(|p| p.as_array_of_tables_mut())
+    {
+        Some(p) => p,
+        None => return Ok(content.to_string()),
+    };
+
+    for pkg in packages.iter_mut() {
+        if pkg.get("source").is_none() {
+            if let Some(v) = pkg.get_mut("version") {
+                *v = toml_edit::value(new_version);
+            }
+        }
+    }
+
+    Ok(doc.to_string())
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Private helpers
 // ─────────────────────────────────────────────────────────────────────────────

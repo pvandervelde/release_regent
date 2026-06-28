@@ -775,7 +775,9 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
         version: &SemanticVersion,
         updates: &mut Vec<FileUpdate>,
     ) {
-        use crate::manifest::{detect_standard_manifests, update_manifest_content};
+        use crate::manifest::{
+            detect_standard_manifests, update_cargo_lock_workspace_version, update_manifest_content,
+        };
 
         let version_str = version.to_string();
 
@@ -980,6 +982,50 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
                             "Failed to apply version to manifest file; skipping"
                         );
                     }
+                }
+            }
+        }
+
+        // If a root Cargo.toml was updated, also update Cargo.lock so that
+        // the workspace package version entries stay consistent with the new
+        // version declared in Cargo.toml.  Without this, `cargo build --locked`
+        // fails because the lock file still records the old workspace version.
+        // We read Cargo.lock from `branch` (the base branch) for the same reason
+        // we read Cargo.toml from there: the base branch is always authoritative.
+        if updates.iter().any(|f| f.path == "Cargo.toml")
+            && !updates.iter().any(|f| f.path == "Cargo.lock")
+        {
+            match self
+                .github
+                .get_file_content(owner, repo, "Cargo.lock", branch)
+                .await
+            {
+                Ok(Some(lock_content)) => {
+                    match update_cargo_lock_workspace_version(&lock_content, &version_str) {
+                        Ok(updated_lock) => {
+                            updates.push(FileUpdate {
+                                path: "Cargo.lock".to_string(),
+                                content: updated_lock,
+                            });
+                            debug!(
+                                version = %version_str,
+                                "Cargo.lock workspace package versions queued for update"
+                            );
+                        }
+                        Err(e) => {
+                            warn!(
+                                error = %e,
+                                "Failed to update Cargo.lock workspace versions; skipping"
+                            );
+                        }
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    warn!(
+                        error = %e,
+                        "Failed to read Cargo.lock; skipping workspace version update"
+                    );
                 }
             }
         }
