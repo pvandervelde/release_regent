@@ -2319,6 +2319,73 @@ async fn test_orchestrate_create_pr_includes_manifest_file_update() {
     );
 }
 
+/// When Cargo.toml is updated as part of a release commit, the orchestrator
+/// must also include an updated Cargo.lock whose workspace package version
+/// entries match the new release version.
+///
+/// Without this, `cargo build --locked` fails in Docker because the lock file
+/// still records the old workspace version while Cargo.toml declares the new one.
+#[tokio::test]
+async fn test_orchestrate_create_pr_updates_cargo_lock_workspace_versions() {
+    let cargo_toml = "[workspace]\npackage.version = \"0.1.0\"\nmembers = []\n";
+    // Cargo.lock with one workspace package (no source field) and one external crate.
+    let cargo_lock = concat!(
+        "version = 4\n\n",
+        "[[package]]\n",
+        "name = \"my-app\"\n",
+        "version = \"0.1.0\"\n\n",
+        "[[package]]\n",
+        "name = \"serde\"\n",
+        "version = \"1.0.0\"\n",
+        "source = \"registry+https://github.com/rust-lang/crates.io-index\"\n",
+    );
+
+    let github = TestGitHub::new()
+        .with_file_content("Cargo.toml", "main", cargo_toml)
+        .await
+        .with_file_content("Cargo.lock", "main", cargo_lock)
+        .await;
+
+    let orchestrator = ReleaseOrchestrator::new(default_config(), &github);
+
+    orchestrator
+        .orchestrate(
+            "testorg",
+            "testrepo",
+            &ver(1, 2, 3),
+            "- feat: add thing [abc1234567890123456789012345678901234567a]",
+            "main",
+            "sha-lock-001",
+            "corr-lock-001",
+        )
+        .await
+        .expect("orchestrate should succeed");
+
+    let file_updates = github.rebased_batch_file_updates().await;
+    assert_eq!(file_updates.len(), 1, "expected exactly one rebased batch commit");
+
+    let lock_update = file_updates[0]
+        .iter()
+        .find(|f| f.path == "Cargo.lock")
+        .expect("Cargo.lock must be present in the committed file updates");
+
+    assert!(
+        lock_update.content.contains("name = \"my-app\""),
+        "Cargo.lock update must contain the workspace package; got:\n{}",
+        lock_update.content
+    );
+    assert!(
+        lock_update.content.contains("version = \"1.2.3\""),
+        "workspace package version must be updated to 1.2.3; got:\n{}",
+        lock_update.content
+    );
+    assert!(
+        lock_update.content.contains("version = \"1.0.0\""),
+        "external crate serde must keep its version; got:\n{}",
+        lock_update.content
+    );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Property-based tests
 //
