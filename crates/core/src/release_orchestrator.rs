@@ -466,7 +466,7 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
         };
 
         let title = self.render_title(version);
-        let body = self.render_body(changelog);
+        let body = self.render_body(changelog, version);
 
         // Fetch the existing CHANGELOG.md from the base branch so we can
         // prepend the new version section rather than overwriting history.
@@ -569,7 +569,7 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
 
         let merged_changelog =
             self.merge_changelog_bodies(fresh_pr.body.as_deref().unwrap_or(""), new_changelog);
-        let new_body = self.render_body(&merged_changelog);
+        let new_body = self.render_body(&merged_changelog, version);
         let new_title = self.render_title(version);
 
         // Only send the title when it has actually changed; avoids a spurious
@@ -1046,10 +1046,31 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
             .replace("{version}", &version_str)
     }
 
-    /// Render the PR body by substituting `${changelog}` in the configured
-    /// body template with the current release's changelog entries.
-    fn render_body(&self, changelog: &str) -> String {
-        self.config.body_template.replace("${changelog}", changelog)
+    /// Render the PR body by substituting template variables in the configured
+    /// body template with the current release's values.
+    ///
+    /// Supported variables:
+    /// - `${changelog}` — the release changelog entries
+    /// - `${version}` — the version number (e.g. `"0.7.1"`)
+    /// - `${version_tag}` — the version tag (e.g. `"v0.7.1"`)
+    /// - `${date}` — today's date in `YYYY-MM-DD` format
+    /// - `${commit_count}` — number of changelog entries (lines starting with `- `)
+    fn render_body(&self, changelog: &str, version: &SemanticVersion) -> String {
+        let version_str = version.to_string();
+        let version_tag_str = format!("{}{version_str}", self.config.version_prefix);
+        let date_str = Utc::now().format("%Y-%m-%d").to_string();
+        let commit_count = changelog
+            .lines()
+            .filter(|l| l.trim_start().starts_with("- "))
+            .count()
+            .to_string();
+        self.config
+            .body_template
+            .replace("${version_tag}", &version_tag_str)
+            .replace("${version}", &version_str)
+            .replace("${date}", &date_str)
+            .replace("${commit_count}", &commit_count)
+            .replace("${changelog}", changelog)
     }
 
     /// Extract the changelog section from a PR body.
