@@ -1,0 +1,3 @@
+{
+    "window.title": "release-regent - ${activeRepositoryBranchName}${separator}${activeEditorShort}${dirty}"
+}
