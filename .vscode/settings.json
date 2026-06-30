@@ -1,0 +1,4 @@
+// .vscode/settings.json  (inside the worktree folder, e.g. myrepo/feature-x/)
+{
+    "window.title": "release-regent - ${activeRepositoryBranchName}${separator}${activeEditorShort}${dirty}"
+}
