@@ -1235,7 +1235,7 @@ async fn test_body_template_is_used_in_pr_body() {
             "template prefix missing; body:\n{body}"
         );
         assert!(
-            body.ends_with("---\n*auto-generated*"),
+            body.contains("---\n*auto-generated*"),
             "template suffix missing; body:\n{body}"
         );
         // Only current-release entries are present.
@@ -2608,4 +2608,527 @@ mod property_tests {
             );
         }
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// render_body template variable substitution
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// `${version}` in the body template is replaced with the plain version string.
+#[tokio::test]
+async fn test_body_template_version_variable_is_substituted() {
+    let config = OrchestratorConfig {
+        body_template: "Release ${version} is here.".to_string(),
+        ..OrchestratorConfig::default()
+    };
+    let github = TestGitHub::new();
+    let orchestrator = ReleaseOrchestrator::new(config, &github);
+
+    orchestrator
+        .orchestrate(
+            "testorg",
+            "testrepo",
+            &ver(2, 3, 4),
+            "- feat: something [ab12cd34ef5678901234abcdef12345678901234]",
+            "main",
+            "sha-rv-001",
+            "corr-rv-001",
+        )
+        .await
+        .expect("orchestrate should succeed");
+
+    let prs = github.created_prs().await;
+    let body = prs[0].body.as_deref().unwrap_or("");
+    assert!(
+        body.contains("Release 2.3.4 is here."),
+        "body must contain substituted version; body:\n{body}"
+    );
+}
+
+/// `${version_tag}` in the body template is replaced with the prefixed version.
+#[tokio::test]
+async fn test_body_template_version_tag_variable_is_substituted() {
+    let config = OrchestratorConfig {
+        body_template: "Tag: ${version_tag}".to_string(),
+        ..OrchestratorConfig::default()
+    };
+    let github = TestGitHub::new();
+    let orchestrator = ReleaseOrchestrator::new(config, &github);
+
+    orchestrator
+        .orchestrate(
+            "testorg",
+            "testrepo",
+            &ver(1, 0, 0),
+            "- feat: something [ab12cd34ef5678901234abcdef12345678901234]",
+            "main",
+            "sha-rvt-001",
+            "corr-rvt-001",
+        )
+        .await
+        .expect("orchestrate should succeed");
+
+    let prs = github.created_prs().await;
+    let body = prs[0].body.as_deref().unwrap_or("");
+    assert!(
+        body.contains("Tag: v1.0.0"),
+        "body must contain substituted version_tag; body:\n{body}"
+    );
+}
+
+/// `${date}` in the body template is replaced with a full ISO 8601 timestamp.
+#[tokio::test]
+async fn test_body_template_date_variable_is_iso8601_timestamp() {
+    let config = OrchestratorConfig {
+        body_template: "Generated: ${date}".to_string(),
+        ..OrchestratorConfig::default()
+    };
+    let github = TestGitHub::new();
+    let orchestrator = ReleaseOrchestrator::new(config, &github);
+
+    orchestrator
+        .orchestrate(
+            "testorg",
+            "testrepo",
+            &ver(1, 0, 0),
+            "- feat: something [ab12cd34ef5678901234abcdef12345678901234]",
+            "main",
+            "sha-date-001",
+            "corr-date-001",
+        )
+        .await
+        .expect("orchestrate should succeed");
+
+    let prs = github.created_prs().await;
+    let body = prs[0].body.as_deref().unwrap_or("");
+    // The date must follow ISO 8601 full format: YYYY-MM-DDTHH:MM:SSZ
+    let iso8601_pattern =
+        regex::Regex::new(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z").expect("valid regex");
+    assert!(
+        iso8601_pattern.is_match(body),
+        "body must contain a full ISO 8601 timestamp; body:\n{body}"
+    );
+}
+
+/// `${commit_count}` in the body template is replaced with the count of
+/// changelog entries (lines starting with `- `).
+#[tokio::test]
+async fn test_body_template_commit_count_variable_is_substituted() {
+    let changelog = "- feat: first [aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1]\n\
+                     - fix: second [aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa2]\n\
+                     - chore: third [aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa3]";
+    let config = OrchestratorConfig {
+        body_template: "Count: ${commit_count}".to_string(),
+        ..OrchestratorConfig::default()
+    };
+    let github = TestGitHub::new();
+    let orchestrator = ReleaseOrchestrator::new(config, &github);
+
+    orchestrator
+        .orchestrate(
+            "testorg",
+            "testrepo",
+            &ver(1, 0, 0),
+            changelog,
+            "main",
+            "sha-cc-001",
+            "corr-cc-001",
+        )
+        .await
+        .expect("orchestrate should succeed");
+
+    let prs = github.created_prs().await;
+    let body = prs[0].body.as_deref().unwrap_or("");
+    assert!(
+        body.contains("Count: 3"),
+        "body must contain commit count of 3; body:\n{body}"
+    );
+}
+
+/// `${correlation_id}` in the body template is replaced with the tracing ID
+/// passed to `orchestrate`.
+#[tokio::test]
+async fn test_body_template_correlation_id_variable_is_substituted() {
+    let config = OrchestratorConfig {
+        body_template: "Trace: ${correlation_id}".to_string(),
+        ..OrchestratorConfig::default()
+    };
+    let github = TestGitHub::new();
+    let orchestrator = ReleaseOrchestrator::new(config, &github);
+
+    orchestrator
+        .orchestrate(
+            "testorg",
+            "testrepo",
+            &ver(1, 0, 0),
+            "- feat: something [ab12cd34ef5678901234abcdef12345678901234]",
+            "main",
+            "sha-cid-001",
+            "trace-abc-123",
+        )
+        .await
+        .expect("orchestrate should succeed");
+
+    let prs = github.created_prs().await;
+    let body = prs[0].body.as_deref().unwrap_or("");
+    assert!(
+        body.contains("Trace: trace-abc-123"),
+        "body must contain correlation_id; body:\n{body}"
+    );
+}
+
+/// `${repository}` in the body template is replaced with `"owner/repo"`.
+#[tokio::test]
+async fn test_body_template_repository_variable_is_substituted() {
+    let config = OrchestratorConfig {
+        body_template: "Repo: ${repository}".to_string(),
+        ..OrchestratorConfig::default()
+    };
+    let github = TestGitHub::new();
+    let orchestrator = ReleaseOrchestrator::new(config, &github);
+
+    orchestrator
+        .orchestrate(
+            "myorg",
+            "myrepo",
+            &ver(1, 0, 0),
+            "- feat: something [ab12cd34ef5678901234abcdef12345678901234]",
+            "main",
+            "sha-repo-001",
+            "corr-repo-001",
+        )
+        .await
+        .expect("orchestrate should succeed");
+
+    let prs = github.created_prs().await;
+    let body = prs[0].body.as_deref().unwrap_or("");
+    assert!(
+        body.contains("Repo: myorg/myrepo"),
+        "body must contain owner/repo format; body:\n{body}"
+    );
+}
+
+/// `${branch}` in the body template is replaced with the base branch name.
+#[tokio::test]
+async fn test_body_template_branch_variable_is_substituted() {
+    let config = OrchestratorConfig {
+        body_template: "Branch: ${branch}".to_string(),
+        ..OrchestratorConfig::default()
+    };
+    let github = TestGitHub::new();
+    let orchestrator = ReleaseOrchestrator::new(config, &github);
+
+    orchestrator
+        .orchestrate(
+            "testorg",
+            "testrepo",
+            &ver(1, 0, 0),
+            "- feat: something [ab12cd34ef5678901234abcdef12345678901234]",
+            "develop",
+            "sha-branch-001",
+            "corr-branch-001",
+        )
+        .await
+        .expect("orchestrate should succeed");
+
+    let prs = github.created_prs().await;
+    let body = prs[0].body.as_deref().unwrap_or("");
+    assert!(
+        body.contains("Branch: develop"),
+        "body must contain branch name; body:\n{body}"
+    );
+}
+
+/// `${previous_version}` defaults to `"initial release"` when there is no
+/// prior release PR (create path).
+#[tokio::test]
+async fn test_body_template_previous_version_defaults_to_initial_release() {
+    let config = OrchestratorConfig {
+        body_template: "Previous: ${previous_version}".to_string(),
+        ..OrchestratorConfig::default()
+    };
+    let github = TestGitHub::new();
+    let orchestrator = ReleaseOrchestrator::new(config, &github);
+
+    orchestrator
+        .orchestrate(
+            "testorg",
+            "testrepo",
+            &ver(1, 0, 0),
+            "- feat: first [ab12cd34ef5678901234abcdef12345678901234]",
+            "main",
+            "sha-pv-none-001",
+            "corr-pv-none-001",
+        )
+        .await
+        .expect("orchestrate should succeed");
+
+    let prs = github.created_prs().await;
+    let body = prs[0].body.as_deref().unwrap_or("");
+    assert!(
+        body.contains("Previous: initial release"),
+        "body must show 'initial release' when no prior version; body:\n{body}"
+    );
+}
+
+/// `${previous_version}` is populated with the old PR's version when an
+/// existing lower-version PR is renamed (rename path).
+#[tokio::test]
+async fn test_body_template_previous_version_set_when_renaming_existing_pr() {
+    let config = OrchestratorConfig {
+        body_template: "Previous: ${previous_version}".to_string(),
+        ..OrchestratorConfig::default()
+    };
+
+    // Existing PR at v1.0.0 — lower than the incoming v2.0.0.
+    let old_pr = make_open_release_pr(10, "release/v1.0.0", None);
+
+    let github = TestGitHub::new()
+        .with_search_results(vec![old_pr.clone()])
+        .await;
+
+    let orchestrator = ReleaseOrchestrator::new(config, &github);
+
+    let result = orchestrator
+        .orchestrate(
+            "testorg",
+            "testrepo",
+            &ver(2, 0, 0),
+            "- feat: big feature [ab12cd34ef5678901234abcdef12345678901234]",
+            "main",
+            "sha-pv-rename-001",
+            "corr-pv-rename-001",
+        )
+        .await
+        .expect("orchestrate should succeed");
+
+    assert!(
+        matches!(result, OrchestratorResult::Renamed { .. }),
+        "expected Renamed result; got {result:?}"
+    );
+
+    let prs = github.created_prs().await;
+    assert_eq!(prs.len(), 1, "one new PR should be created for v2.0.0");
+    let body = prs[0].body.as_deref().unwrap_or("");
+    assert!(
+        body.contains("Previous: 1.0.0"),
+        "body must show the old version as previous_version; body:\n{body}"
+    );
+}
+
+/// Legacy `{variable}` syntax (without the `$` prefix) in the body template is
+/// expanded for backward compatibility, matching the behaviour of `render_title`.
+#[tokio::test]
+async fn test_body_template_legacy_brace_syntax_is_substituted() {
+    let config = OrchestratorConfig {
+        body_template: "Tag: {version_tag} | Repo: {repository}".to_string(),
+        ..OrchestratorConfig::default()
+    };
+    let github = TestGitHub::new();
+    let orchestrator = ReleaseOrchestrator::new(config, &github);
+
+    orchestrator
+        .orchestrate(
+            "acme",
+            "widget",
+            &ver(3, 0, 0),
+            "- feat: something [ab12cd34ef5678901234abcdef12345678901234]",
+            "main",
+            "sha-legacy-001",
+            "corr-legacy-001",
+        )
+        .await
+        .expect("orchestrate should succeed");
+
+    let prs = github.created_prs().await;
+    let body = prs[0].body.as_deref().unwrap_or("");
+    assert!(
+        body.contains("Tag: v3.0.0"),
+        "legacy {{version_tag}} must be substituted; body:\n{body}"
+    );
+    assert!(
+        body.contains("Repo: acme/widget"),
+        "legacy {{repository}} must be substituted; body:\n{body}"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// render_body sentinel — round-trip tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// `render_body` appends an HTML sentinel comment so the update path can
+/// recover the original `previous_version` without parsing the template output.
+#[tokio::test]
+async fn test_render_body_appends_previous_version_sentinel() {
+    let config = OrchestratorConfig {
+        body_template: "## Release ${version}\n\n${changelog}".to_string(),
+        ..OrchestratorConfig::default()
+    };
+    let github = TestGitHub::new();
+    let orchestrator = ReleaseOrchestrator::new(config, &github);
+
+    orchestrator
+        .orchestrate(
+            "testorg",
+            "testrepo",
+            &ver(2, 0, 0),
+            "- feat: thing [ab12cd34ef5678901234abcdef12345678901234]",
+            "main",
+            "sha-sentinel-001",
+            "corr-sentinel-001",
+        )
+        .await
+        .expect("orchestrate should succeed");
+
+    let prs = github.created_prs().await;
+    let body = prs[0].body.as_deref().unwrap_or("");
+    // The sentinel must be present.
+    assert!(
+        body.contains("<!-- release-regent: previous-version=initial release -->"),
+        "sentinel must be appended on the create path; body:\n{body}"
+    );
+    // The visible template content must still be present.
+    assert!(
+        body.contains("## Release 2.0.0"),
+        "template content missing; body:\n{body}"
+    );
+}
+
+/// `extract_previous_version_sentinel` returns `Some` when the sentinel is present.
+#[test]
+fn test_extract_previous_version_sentinel_returns_value_when_present() {
+    let body = "## Changelog\n\n- fix: thing\n<!-- release-regent: previous-version=1.2.3 -->";
+    assert_eq!(
+        super::extract_previous_version_sentinel(body),
+        Some("1.2.3".to_string())
+    );
+}
+
+/// `extract_previous_version_sentinel` returns `None` when the sentinel is absent.
+#[test]
+fn test_extract_previous_version_sentinel_returns_none_when_absent() {
+    assert_eq!(
+        super::extract_previous_version_sentinel("no sentinel here"),
+        None
+    );
+    assert_eq!(super::extract_previous_version_sentinel(""), None);
+}
+
+/// On the update (equal-version) path, `${previous_version}` in the re-rendered
+/// body must preserve the value from the existing PR body sentinel rather than
+/// resetting to `"initial release"`.
+#[tokio::test]
+async fn test_update_release_pr_preserves_previous_version_from_sentinel() {
+    // The existing PR was created via a rename v1.0.0 → v2.0.0, so its body
+    // contains the sentinel with "1.0.0".
+    let existing_body = concat!(
+        "Previous: 1.0.0\n## Changelog\n\n",
+        "- feat: first [aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1]\n",
+        "<!-- release-regent: previous-version=1.0.0 -->",
+    );
+    let config = OrchestratorConfig {
+        body_template: "Previous: ${previous_version}\n## Changelog\n\n${changelog}".to_string(),
+        ..OrchestratorConfig::default()
+    };
+
+    let existing_pr = make_open_release_pr(20, "release/v2.0.0", Some(existing_body));
+    let github = TestGitHub::new()
+        .with_search_results(vec![existing_pr.clone()])
+        .await
+        .with_pr_by_number(existing_pr)
+        .await;
+
+    let orchestrator = ReleaseOrchestrator::new(config, &github);
+
+    // Incoming version is the same (v2.0.0) → equal-version update path.
+    orchestrator
+        .orchestrate(
+            "testorg",
+            "testrepo",
+            &ver(2, 0, 0),
+            "- feat: second [aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa2]",
+            "main",
+            "sha-pv-update-001",
+            "corr-pv-update-001",
+        )
+        .await
+        .expect("orchestrate should succeed");
+
+    let updates = github.updated_prs().await;
+    assert_eq!(updates.len(), 1);
+    let new_body = updates[0].2.as_deref().unwrap_or("");
+    assert!(
+        new_body.contains("Previous: 1.0.0"),
+        "previous_version must be preserved from sentinel on update path; body:\n{new_body}"
+    );
+    assert!(
+        !new_body.contains("Previous: initial release"),
+        "must not regress to 'initial release' on update path; body:\n{new_body}"
+    );
+}
+
+/// Two successive equal-version updates must not accumulate sentinel lines.
+///
+/// Regression guard for the bug where the sentinel appended by `render_body`
+/// leaks into the extracted changelog section (when `${changelog}` is the last
+/// section), survives `merge_changelog_sections` verbatim, and is then re-passed
+/// as `ctx.changelog` so that each update appends one more sentinel.
+#[tokio::test]
+async fn test_successive_updates_do_not_accumulate_sentinels() {
+    // Build a PR body that already went through one render_body call:
+    // it contains the sentinel once (as produced by the previous update).
+    let sha1 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1";
+    let existing_body = format!(
+        concat!(
+            "## Changelog\n\n",
+            "- feat: first [{sha1}]\n",
+            "<!-- release-regent: previous-version=initial release -->"
+        ),
+        sha1 = sha1
+    );
+
+    let existing_pr = make_open_release_pr(30, "release/v1.0.0", Some(&existing_body));
+    let github = TestGitHub::new()
+        .with_search_results(vec![existing_pr.clone()])
+        .await
+        .with_pr_by_number(existing_pr)
+        .await;
+
+    let sha2 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb2";
+    let orchestrator = ReleaseOrchestrator::new(default_config(), &github);
+
+    // Second update — same version, adds a new commit.
+    orchestrator
+        .orchestrate(
+            "testorg",
+            "testrepo",
+            &ver(1, 0, 0),
+            &format!("- feat: second [{sha2}]"),
+            "main",
+            "sha-accum-001",
+            "corr-accum-001",
+        )
+        .await
+        .expect("orchestrate should succeed");
+
+    let updates = github.updated_prs().await;
+    assert_eq!(updates.len(), 1, "expected exactly one PR update");
+    let new_body = updates[0].2.as_deref().unwrap_or("");
+
+    // The sentinel must appear exactly once.
+    let sentinel = "<!-- release-regent: previous-version=";
+    assert_eq!(
+        new_body.matches(sentinel).count(),
+        1,
+        "sentinel must appear exactly once after two updates; body:\n{new_body}"
+    );
+    // Both changelog entries must be present.
+    assert!(
+        new_body.contains("first"),
+        "first entry must be preserved; body:\n{new_body}"
+    );
+    assert!(
+        new_body.contains("second"),
+        "second entry must be present; body:\n{new_body}"
+    );
 }

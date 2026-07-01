@@ -85,9 +85,23 @@ pub struct OrchestratorConfig {
 
     /// Template for the release PR body.
     ///
-    /// Use `${changelog}` as a placeholder; it is replaced with the formatted
-    /// changelog entries for **this release only**.  Any text before or after the
-    /// placeholder (version badges, footers, etc.) is preserved verbatim.
+    /// Supports the following `${variable}` placeholders (both `${var}` and
+    /// the legacy `{var}` style are accepted for backward compatibility):
+    ///
+    /// | Variable              | Description                                          |
+    /// |-----------------------|------------------------------------------------------|
+    /// | `${changelog}`        | Formatted changelog entries for this release only   |
+    /// | `${version}`          | Semantic version without prefix (e.g. `"1.2.3"`)    |
+    /// | `${version_tag}`      | Version with configured prefix (e.g. `"v1.2.3"`)   |
+    /// | `${date}`             | Current date-time in ISO 8601 format                 |
+    /// | `${commit_count}`     | Approximate number of changelog entries              |
+    /// | `${correlation_id}`   | Unique request identifier for tracing                |
+    /// | `${previous_version}` | Previous release version (or `"initial release"`)   |
+    /// | `${repository}`       | Repository in `"owner/repo"` format                 |
+    /// | `${branch}`           | Target branch name                                   |
+    ///
+    /// Any text before or after the placeholders (version badges, footers, etc.)
+    /// is preserved verbatim.
     ///
     /// Defaults to `"## Changelog\n\n${changelog}"`.
     pub body_template: String,
@@ -165,6 +179,55 @@ pub fn extract_changelog_header(body_template: &str) -> String {
         .find(|l| l.starts_with("## "))
         .unwrap_or("## Changelog")
         .to_string()
+}
+
+/// Extract the `previous_version` value embedded by [`ReleaseOrchestrator::render_body`].
+///
+/// `render_body` appends a hidden HTML comment of the form
+/// `<!-- release-regent: previous-version=VALUE -->` to every rendered PR body.
+/// This function finds that comment and returns `VALUE` so that the update path
+/// can re-render the body with the same `previous_version` it was originally
+/// created with, without resorting to fragile template-output parsing.
+///
+/// Returns `None` when the sentinel is absent (e.g. a body produced by an older
+/// version of release-regent), in which case the caller falls back to
+/// `"initial release"`.
+///
+/// # Examples
+///
+/// ```
+/// use release_regent_core::release_orchestrator::extract_previous_version_sentinel;
+///
+/// let body = "## Changelog\n\n- fix: thing\n<!-- release-regent: previous-version=1.2.3 -->";
+/// assert_eq!(extract_previous_version_sentinel(body), Some("1.2.3".to_string()));
+///
+/// assert_eq!(extract_previous_version_sentinel("no sentinel here"), None);
+/// ```
+pub fn extract_previous_version_sentinel(body: &str) -> Option<String> {
+    const PREFIX: &str = "<!-- release-regent: previous-version=";
+    const SUFFIX: &str = " -->";
+    body.lines()
+        .find_map(|line| {
+            line.strip_prefix(PREFIX)
+                .and_then(|rest| rest.strip_suffix(SUFFIX))
+        })
+        .map(str::to_owned)
+}
+
+/// Remove all `<!-- release-regent: … -->` sentinel lines from a changelog string.
+///
+/// `render_body` appends a sentinel comment to the PR body so that the update
+/// path can round-trip `previous_version`.  When `${changelog}` is the last
+/// section in the body template `extract_changelog_from_body` returns the entire
+/// tail including that sentinel.  Stripping sentinel lines before passing the
+/// merged changelog back into `render_body` prevents sentinels from accumulating
+/// across successive updates.
+fn strip_sentinel_lines(changelog: &str) -> String {
+    changelog
+        .lines()
+        .filter(|l| !l.starts_with("<!-- release-regent:"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 impl Default for OrchestratorConfig {
@@ -247,6 +310,33 @@ pub enum OrchestratorResult {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Internal helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// All context values needed to render a release PR body template.
+///
+/// Keeps [`ReleaseOrchestrator::render_body`] deterministic (the caller supplies
+/// the pre-formatted `date`) and makes it easy to add future variables without
+/// changing every call site individually.
+struct BodyRenderContext<'a> {
+    /// Formatted changelog entries for this release.
+    changelog: &'a str,
+    /// Semantic version being released.
+    version: &'a SemanticVersion,
+    /// Pre-formatted date-time string in ISO 8601 format (e.g. `"2025-07-19T10:30:00Z"`).
+    date: String,
+    /// Unique request identifier propagated from the triggering event.
+    correlation_id: &'a str,
+    /// Version string of the previous release, if known.  Rendered as
+    /// `"initial release"` when `None`.
+    previous_version: Option<String>,
+    /// Repository in `"owner/repo"` format.
+    repository: String,
+    /// Target (base) branch name.
+    branch: &'a str,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // ReleaseOrchestrator
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -321,6 +411,8 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
                         changelog,
                         base_branch,
                         base_sha,
+                        correlation_id,
+                        None,
                     )
                     .await?;
                 Ok(OrchestratorResult::Created { pr, branch_name })
@@ -333,6 +425,13 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
                             pr_number = existing_pr.number,
                             "Existing PR has same version; merging changelogs"
                         );
+                        // Carry forward the previous_version that was embedded
+                        // in the existing body sentinel so re-rendering the
+                        // template does not overwrite it with "initial release".
+                        let previous_version = existing_pr
+                            .body
+                            .as_deref()
+                            .and_then(extract_previous_version_sentinel);
                         let pr = self
                             .update_release_pr(
                                 owner,
@@ -341,6 +440,8 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
                                 version,
                                 changelog,
                                 base_sha,
+                                correlation_id,
+                                previous_version,
                             )
                             .await?;
                         Ok(OrchestratorResult::Updated { pr })
@@ -362,6 +463,8 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
                                 changelog,
                                 base_sha,
                                 base_branch,
+                                correlation_id,
+                                Some(existing_version.to_string()),
                             )
                             .await?;
                         Ok(OrchestratorResult::Renamed { pr })
@@ -428,6 +531,7 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
     /// explicit parent commit.  This guarantees the branch tip **never passes through
     /// a state where it equals `base_sha`**, which would cause GitHub to auto-close
     /// any open release PR (head == base → no diff to merge).
+    #[allow(clippy::too_many_arguments)] // owner/repo/version/changelog/branch/sha/correlation_id/previous_version is the minimal create surface
     async fn create_release_branch_and_pr(
         &self,
         owner: &str,
@@ -436,6 +540,8 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
         changelog: &str,
         base_branch: &str,
         base_sha: &str,
+        correlation_id: &str,
+        previous_version: Option<String>,
     ) -> CoreResult<(PullRequest, String)> {
         let branch_name = self.make_branch_name(version);
 
@@ -466,7 +572,15 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
         };
 
         let title = self.render_title(version);
-        let body = self.render_body(changelog);
+        let body = self.render_body(&BodyRenderContext {
+            changelog,
+            version,
+            date: Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+            correlation_id,
+            previous_version,
+            repository: format!("{owner}/{repo}"),
+            branch: base_branch,
+        });
 
         // Fetch the existing CHANGELOG.md from the base branch so we can
         // prepend the new version section rather than overwriting history.
@@ -560,6 +674,8 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
         version: &SemanticVersion,
         new_changelog: &str,
         base_sha: &str,
+        correlation_id: &str,
+        previous_version: Option<String>,
     ) -> CoreResult<PullRequest> {
         // Always re-fetch to get the latest body (ETag prep).
         let fresh_pr = self
@@ -569,7 +685,20 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
 
         let merged_changelog =
             self.merge_changelog_bodies(fresh_pr.body.as_deref().unwrap_or(""), new_changelog);
-        let new_body = self.render_body(&merged_changelog);
+        // Strip any sentinel lines that leaked into the extracted changelog section
+        // (happens when ${changelog} is the last section in the body template and
+        // extract_changelog_from_body returns the entire tail including the sentinel).
+        // Without this, each successive update would accumulate one more sentinel line.
+        let clean_changelog = strip_sentinel_lines(&merged_changelog);
+        let new_body = self.render_body(&BodyRenderContext {
+            changelog: &clean_changelog,
+            version,
+            date: Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+            correlation_id,
+            previous_version,
+            repository: format!("{owner}/{repo}"),
+            branch: &fresh_pr.base.ref_name.clone(),
+        });
         let new_title = self.render_title(version);
 
         // Only send the title when it has actually changed; avoids a spurious
@@ -678,7 +807,7 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
     /// 2. Create new PR pointing to the new branch.
     /// 3. Close the old PR.
     /// 4. Delete the old branch (non-fatal if it fails — log and continue).
-    #[allow(clippy::too_many_arguments)] // owner/repo/old_pr/version/changelog/sha/branch is the minimal rename surface
+    #[allow(clippy::too_many_arguments)] // owner/repo/old_pr/version/changelog/sha/branch/correlation_id/previous_version is the minimal rename surface
     async fn rename_release_pr(
         &self,
         owner: &str,
@@ -688,10 +817,21 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
         changelog: &str,
         base_sha: &str,
         base_branch: &str,
+        correlation_id: &str,
+        previous_version: Option<String>,
     ) -> CoreResult<PullRequest> {
         // Create new branch + PR for the higher version.
         let (new_pr, new_branch) = self
-            .create_release_branch_and_pr(owner, repo, version, changelog, base_branch, base_sha)
+            .create_release_branch_and_pr(
+                owner,
+                repo,
+                version,
+                changelog,
+                base_branch,
+                base_sha,
+                correlation_id,
+                previous_version,
+            )
             .await?;
 
         // Close the superseded PR.
@@ -1031,6 +1171,54 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
         }
     }
 
+    /// Render the PR body by substituting template variables in the configured
+    /// body template with the current release's values.
+    ///
+    /// All nine variables documented on [`OrchestratorConfig::body_template`] are
+    /// substituted.  Both `${variable}` (canonical) and `{variable}` (legacy)
+    /// syntaxes are accepted for backward compatibility.
+    ///
+    /// A hidden sentinel comment `<!-- release-regent: previous-version=… -->` is
+    /// appended so that the update path can round-trip the value without fragile
+    /// text parsing of the rendered template output.
+    fn render_body(&self, ctx: &BodyRenderContext<'_>) -> String {
+        let version_str = ctx.version.to_string();
+        let version_tag_str = format!("{}{version_str}", self.config.version_prefix);
+        let commit_count = ctx
+            .changelog
+            .lines()
+            .filter(|l| l.trim_start().starts_with("- "))
+            .count()
+            .to_string();
+        let previous_version_str = ctx.previous_version.as_deref().unwrap_or("initial release");
+        let rendered = self
+            .config
+            .body_template
+            // ${variable} style — canonical
+            .replace("${version_tag}", &version_tag_str)
+            .replace("${version}", &version_str)
+            .replace("${date}", &ctx.date)
+            .replace("${commit_count}", &commit_count)
+            .replace("${correlation_id}", ctx.correlation_id)
+            .replace("${previous_version}", previous_version_str)
+            .replace("${repository}", &ctx.repository)
+            .replace("${branch}", ctx.branch)
+            .replace("${changelog}", ctx.changelog)
+            // {variable} style — backward-compatible legacy syntax
+            .replace("{version_tag}", &version_tag_str)
+            .replace("{version}", &version_str)
+            .replace("{date}", &ctx.date)
+            .replace("{commit_count}", &commit_count)
+            .replace("{correlation_id}", ctx.correlation_id)
+            .replace("{previous_version}", previous_version_str)
+            .replace("{repository}", &ctx.repository)
+            .replace("{branch}", ctx.branch)
+            .replace("{changelog}", ctx.changelog);
+        // Append a hidden sentinel so the update path can retrieve the
+        // previous_version value without parsing the rendered template text.
+        format!("{rendered}\n<!-- release-regent: previous-version={previous_version_str} -->")
+    }
+
     /// Render the PR title from the configured template.
     ///
     /// Supports both `${variable}` (config-file style) and `{variable}` (internal style)
@@ -1044,12 +1232,6 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
             .replace("${version}", &version_str)
             .replace("{version_tag}", &version_tag_str)
             .replace("{version}", &version_str)
-    }
-
-    /// Render the PR body by substituting `${changelog}` in the configured
-    /// body template with the current release's changelog entries.
-    fn render_body(&self, changelog: &str) -> String {
-        self.config.body_template.replace("${changelog}", changelog)
     }
 
     /// Extract the changelog section from a PR body.
