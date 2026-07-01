@@ -1235,7 +1235,7 @@ async fn test_body_template_is_used_in_pr_body() {
             "template prefix missing; body:\n{body}"
         );
         assert!(
-            body.ends_with("---\n*auto-generated*"),
+            body.contains("---\n*auto-generated*"),
             "template suffix missing; body:\n{body}"
         );
         // Only current-release entries are present.
@@ -2949,5 +2949,120 @@ async fn test_body_template_legacy_brace_syntax_is_substituted() {
     assert!(
         body.contains("Repo: acme/widget"),
         "legacy {{repository}} must be substituted; body:\n{body}"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// render_body sentinel — round-trip tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// `render_body` appends an HTML sentinel comment so the update path can
+/// recover the original `previous_version` without parsing the template output.
+#[tokio::test]
+async fn test_render_body_appends_previous_version_sentinel() {
+    let config = OrchestratorConfig {
+        body_template: "## Release ${version}\n\n${changelog}".to_string(),
+        ..OrchestratorConfig::default()
+    };
+    let github = TestGitHub::new();
+    let orchestrator = ReleaseOrchestrator::new(config, &github);
+
+    orchestrator
+        .orchestrate(
+            "testorg",
+            "testrepo",
+            &ver(2, 0, 0),
+            "- feat: thing [ab12cd34ef5678901234abcdef12345678901234]",
+            "main",
+            "sha-sentinel-001",
+            "corr-sentinel-001",
+        )
+        .await
+        .expect("orchestrate should succeed");
+
+    let prs = github.created_prs().await;
+    let body = prs[0].body.as_deref().unwrap_or("");
+    // The sentinel must be present.
+    assert!(
+        body.contains("<!-- release-regent: previous-version=initial release -->"),
+        "sentinel must be appended on the create path; body:\n{body}"
+    );
+    // The visible template content must still be present.
+    assert!(
+        body.contains("## Release 2.0.0"),
+        "template content missing; body:\n{body}"
+    );
+}
+
+/// `extract_previous_version_sentinel` returns `Some` when the sentinel is present.
+#[test]
+fn test_extract_previous_version_sentinel_returns_value_when_present() {
+    let body = "## Changelog\n\n- fix: thing\n<!-- release-regent: previous-version=1.2.3 -->";
+    assert_eq!(
+        super::extract_previous_version_sentinel(body),
+        Some("1.2.3".to_string())
+    );
+}
+
+/// `extract_previous_version_sentinel` returns `None` when the sentinel is absent.
+#[test]
+fn test_extract_previous_version_sentinel_returns_none_when_absent() {
+    assert_eq!(
+        super::extract_previous_version_sentinel("no sentinel here"),
+        None
+    );
+    assert_eq!(super::extract_previous_version_sentinel(""), None);
+}
+
+/// On the update (equal-version) path, `${previous_version}` in the re-rendered
+/// body must preserve the value from the existing PR body sentinel rather than
+/// resetting to `"initial release"`.
+#[tokio::test]
+async fn test_update_release_pr_preserves_previous_version_from_sentinel() {
+    // The existing PR was created via a rename v1.0.0 → v2.0.0, so its body
+    // contains the sentinel with "1.0.0".
+    let existing_body = concat!(
+        "Previous: 1.0.0\n## Changelog\n\n",
+        "- feat: first [aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1]\n",
+        "<!-- release-regent: previous-version=1.0.0 -->",
+    );
+    let config = OrchestratorConfig {
+        body_template: "Previous: ${previous_version}\n## Changelog\n\n${changelog}".to_string(),
+        ..OrchestratorConfig::default()
+    };
+
+    let existing_pr = make_open_release_pr(20, "release/v2.0.0", Some(existing_body));
+    let github = TestGitHub::new()
+        .with_search_results(vec![existing_pr.clone()])
+        .await
+        .with_pr_by_number(existing_pr)
+        .await;
+
+    let orchestrator = ReleaseOrchestrator::new(config, &github);
+
+    // Incoming version is the same (v2.0.0) → equal-version update path.
+    orchestrator
+        .orchestrate(
+            "testorg",
+            "testrepo",
+            &ver(2, 0, 0),
+            "- feat: second [aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa2]",
+            "main",
+            "sha-pv-update-001",
+            "corr-pv-update-001",
+        )
+        .await
+        .expect("orchestrate should succeed");
+
+    let updates = github.updated_prs().await;
+    assert_eq!(updates.len(), 1);
+    let new_body = updates[0].2.as_deref().unwrap_or("");
+    assert!(
+        new_body.contains("Previous: 1.0.0"),
+        "previous_version must be preserved from sentinel on update path; body:\n{new_body}"
+    );
+    assert!(
+        !new_body.contains("Previous: initial release"),
+        "must not regress to 'initial release' on update path; body:\n{new_body}"
     );
 }

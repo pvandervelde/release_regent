@@ -181,6 +181,39 @@ pub fn extract_changelog_header(body_template: &str) -> String {
         .to_string()
 }
 
+/// Extract the `previous_version` value embedded by [`ReleaseOrchestrator::render_body`].
+///
+/// `render_body` appends a hidden HTML comment of the form
+/// `<!-- release-regent: previous-version=VALUE -->` to every rendered PR body.
+/// This function finds that comment and returns `VALUE` so that the update path
+/// can re-render the body with the same `previous_version` it was originally
+/// created with, without resorting to fragile template-output parsing.
+///
+/// Returns `None` when the sentinel is absent (e.g. a body produced by an older
+/// version of release-regent), in which case the caller falls back to
+/// `"initial release"`.
+///
+/// # Examples
+///
+/// ```
+/// use release_regent_core::release_orchestrator::extract_previous_version_sentinel;
+///
+/// let body = "## Changelog\n\n- fix: thing\n<!-- release-regent: previous-version=1.2.3 -->";
+/// assert_eq!(extract_previous_version_sentinel(body), Some("1.2.3".to_string()));
+///
+/// assert_eq!(extract_previous_version_sentinel("no sentinel here"), None);
+/// ```
+pub fn extract_previous_version_sentinel(body: &str) -> Option<String> {
+    const PREFIX: &str = "<!-- release-regent: previous-version=";
+    const SUFFIX: &str = " -->";
+    body.lines()
+        .find_map(|line| {
+            line.strip_prefix(PREFIX)
+                .and_then(|rest| rest.strip_suffix(SUFFIX))
+        })
+        .map(str::to_owned)
+}
+
 impl Default for OrchestratorConfig {
     fn default() -> Self {
         let body_template = Self::DEFAULT_BODY_TEMPLATE.to_string();
@@ -376,6 +409,13 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
                             pr_number = existing_pr.number,
                             "Existing PR has same version; merging changelogs"
                         );
+                        // Carry forward the previous_version that was embedded
+                        // in the existing body sentinel so re-rendering the
+                        // template does not overwrite it with "initial release".
+                        let previous_version = existing_pr
+                            .body
+                            .as_deref()
+                            .and_then(extract_previous_version_sentinel);
                         let pr = self
                             .update_release_pr(
                                 owner,
@@ -385,7 +425,7 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
                                 changelog,
                                 base_sha,
                                 correlation_id,
-                                None,
+                                previous_version,
                             )
                             .await?;
                         Ok(OrchestratorResult::Updated { pr })
@@ -1110,10 +1150,16 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
         }
     }
 
-    /// Render the PR title from the configured template.
+    /// Render the PR body by substituting template variables in the configured
+    /// body template with the current release's values.
     ///
-    /// Supports both `${variable}` (config-file style) and `{variable}` (internal style)
-    /// for `version` (e.g. `"0.2.0"`) and `version_tag` (e.g. `"v0.2.0"`).
+    /// All nine variables documented on [`OrchestratorConfig::body_template`] are
+    /// substituted.  Both `${variable}` (canonical) and `{variable}` (legacy)
+    /// syntaxes are accepted for backward compatibility.
+    ///
+    /// A hidden sentinel comment `<!-- release-regent: previous-version=… -->` is
+    /// appended so that the update path can round-trip the value without fragile
+    /// text parsing of the rendered template output.
     fn render_body(&self, ctx: &BodyRenderContext<'_>) -> String {
         let version_str = ctx.version.to_string();
         let version_tag_str = format!("{}{version_str}", self.config.version_prefix);
@@ -1124,7 +1170,8 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
             .count()
             .to_string();
         let previous_version_str = ctx.previous_version.as_deref().unwrap_or("initial release");
-        self.config
+        let rendered = self
+            .config
             .body_template
             // ${variable} style — canonical
             .replace("${version_tag}", &version_tag_str)
@@ -1145,9 +1192,16 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
             .replace("{previous_version}", previous_version_str)
             .replace("{repository}", &ctx.repository)
             .replace("{branch}", ctx.branch)
-            .replace("{changelog}", ctx.changelog)
+            .replace("{changelog}", ctx.changelog);
+        // Append a hidden sentinel so the update path can retrieve the
+        // previous_version value without parsing the rendered template text.
+        format!("{rendered}\n<!-- release-regent: previous-version={previous_version_str} -->")
     }
 
+    /// Render the PR title from the configured template.
+    ///
+    /// Supports both `${variable}` (config-file style) and `{variable}` (internal style)
+    /// for `version` (e.g. `"0.2.0"`) and `version_tag` (e.g. `"v0.2.0"`).
     fn render_title(&self, version: &SemanticVersion) -> String {
         let version_str = version.to_string();
         let version_tag_str = format!("{}{version_str}", self.config.version_prefix);
@@ -1158,8 +1212,6 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
             .replace("{version_tag}", &version_tag_str)
             .replace("{version}", &version_str)
     }
-
-    /// Render the PR title from the configured template.
 
     /// Extract the changelog section from a PR body.
     ///
