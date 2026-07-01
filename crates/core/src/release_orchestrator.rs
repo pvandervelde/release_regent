@@ -214,6 +214,22 @@ pub fn extract_previous_version_sentinel(body: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// Remove all `<!-- release-regent: … -->` sentinel lines from a changelog string.
+///
+/// `render_body` appends a sentinel comment to the PR body so that the update
+/// path can round-trip `previous_version`.  When `${changelog}` is the last
+/// section in the body template `extract_changelog_from_body` returns the entire
+/// tail including that sentinel.  Stripping sentinel lines before passing the
+/// merged changelog back into `render_body` prevents sentinels from accumulating
+/// across successive updates.
+fn strip_sentinel_lines(changelog: &str) -> String {
+    changelog
+        .lines()
+        .filter(|l| !l.starts_with("<!-- release-regent:"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 impl Default for OrchestratorConfig {
     fn default() -> Self {
         let body_template = Self::DEFAULT_BODY_TEMPLATE.to_string();
@@ -669,8 +685,13 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
 
         let merged_changelog =
             self.merge_changelog_bodies(fresh_pr.body.as_deref().unwrap_or(""), new_changelog);
+        // Strip any sentinel lines that leaked into the extracted changelog section
+        // (happens when ${changelog} is the last section in the body template and
+        // extract_changelog_from_body returns the entire tail including the sentinel).
+        // Without this, each successive update would accumulate one more sentinel line.
+        let clean_changelog = strip_sentinel_lines(&merged_changelog);
         let new_body = self.render_body(&BodyRenderContext {
-            changelog: &merged_changelog,
+            changelog: &clean_changelog,
             version,
             date: Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
             correlation_id,

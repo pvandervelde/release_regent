@@ -3066,3 +3066,69 @@ async fn test_update_release_pr_preserves_previous_version_from_sentinel() {
         "must not regress to 'initial release' on update path; body:\n{new_body}"
     );
 }
+
+/// Two successive equal-version updates must not accumulate sentinel lines.
+///
+/// Regression guard for the bug where the sentinel appended by `render_body`
+/// leaks into the extracted changelog section (when `${changelog}` is the last
+/// section), survives `merge_changelog_sections` verbatim, and is then re-passed
+/// as `ctx.changelog` so that each update appends one more sentinel.
+#[tokio::test]
+async fn test_successive_updates_do_not_accumulate_sentinels() {
+    // Build a PR body that already went through one render_body call:
+    // it contains the sentinel once (as produced by the previous update).
+    let sha1 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1";
+    let existing_body = format!(
+        concat!(
+            "## Changelog\n\n",
+            "- feat: first [{sha1}]\n",
+            "<!-- release-regent: previous-version=initial release -->"
+        ),
+        sha1 = sha1
+    );
+
+    let existing_pr = make_open_release_pr(30, "release/v1.0.0", Some(&existing_body));
+    let github = TestGitHub::new()
+        .with_search_results(vec![existing_pr.clone()])
+        .await
+        .with_pr_by_number(existing_pr)
+        .await;
+
+    let sha2 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb2";
+    let orchestrator = ReleaseOrchestrator::new(default_config(), &github);
+
+    // Second update — same version, adds a new commit.
+    orchestrator
+        .orchestrate(
+            "testorg",
+            "testrepo",
+            &ver(1, 0, 0),
+            &format!("- feat: second [{sha2}]"),
+            "main",
+            "sha-accum-001",
+            "corr-accum-001",
+        )
+        .await
+        .expect("orchestrate should succeed");
+
+    let updates = github.updated_prs().await;
+    assert_eq!(updates.len(), 1, "expected exactly one PR update");
+    let new_body = updates[0].2.as_deref().unwrap_or("");
+
+    // The sentinel must appear exactly once.
+    let sentinel = "<!-- release-regent: previous-version=";
+    assert_eq!(
+        new_body.matches(sentinel).count(),
+        1,
+        "sentinel must appear exactly once after two updates; body:\n{new_body}"
+    );
+    // Both changelog entries must be present.
+    assert!(
+        new_body.contains("first"),
+        "first entry must be preserved; body:\n{new_body}"
+    );
+    assert!(
+        new_body.contains("second"),
+        "second entry must be present; body:\n{new_body}"
+    );
+}
