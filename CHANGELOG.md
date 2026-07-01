@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.6.0] - 2026-07-01
+
+### Features
+
+- **core**: expand render_body to all nine spec template variables [751a87e5216de1f867bb8c65d0c059940cf1f07c]
+
+
+### Bug Fixes
+
+- **core**: preserve previous_version on the equal-version update path [8a03b1432b65106b6a27606c47ece8b7760222e2]
+- **core**: strip sentinel lines from merged changelog before re-rendering [d88a0ed1027803d31c621425fe8fbb09ce87c1b2]
+- **release-pr**: expand all template variables in PR body [7a09f92a8b97f8fc5d7248d737c55342a7642351]
+- **release-pr**: expand all template variables in PR body (#203) [84c070aa8279567a459eeb411789fabdec1b6aa4]
+
+
+### Chores
+
+- Address PR comments [ef46e930bebe187c16d27b67825acb96a8461a31]
+- Changing the VSCode window title to include the repository name [c0968dec5cf81c0523d83ed357e9ee223618addb]
+- Changing the VSCode window title to include the repository name (#204) [1b056efedef323bdbbaf03955d900c0578ebdbdc]
+
 ## [0.5.0] - 2026-06-28
 
 ### Features
@@ -117,3 +138,4 @@
 - Update dependencies [521f7c2ea7d3a7ea6e7c0f5b6c0a525779469b58]
 - Update renovate to only update once a week [5d028e78b8730bbd7f93ebc80a06528d1188cf61]
 - Update renovate to only update once a week (#177) [e5b04072194a70a67b0110d2f3caae87e06a070a]
+
