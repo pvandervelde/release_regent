@@ -16,6 +16,8 @@
 - Queue events for sequential processing
 - Support correlation ID tracking across the entire workflow
 - Handle webhook delivery retries from GitHub
+- Restrict processing to an operator-configured repository allow-list; see
+  [FR-9](#fr-9-repository-scoping-for-large-organizations) for the full requirement
 
 **Acceptance Criteria**:
 
@@ -248,6 +250,61 @@ repositories in an organisation.
 
 **Priority**: High
 **Status**: 🚧 In Progress (see [ADR-007](../../adr/ADR-007-enterprise-config-hierarchy.md))
+
+### FR-9: Repository Scoping for Large Organizations
+
+**Requirement**: The system must allow operators to restrict processing to a subset of
+repositories independent of GitHub App installation scope, so that organisations forced
+to install the App on all repositories (due to GitHub UI/API limitations on
+per-repository installation selection) can still limit automation to an explicit subset.
+
+**Details**:
+
+- Repository allow-list supports case-insensitive glob-wildcard patterns matched
+  against the full `owner/repo` string.
+- Configurable via the `ALLOWED_REPOS` environment variable (comma-separated patterns)
+  and/or the `allowed_repositories` top-level bootstrap key in
+  `CONFIG_DIR/release-regent.toml`. If both are set, `ALLOWED_REPOS` takes precedence.
+- A parallel repository **exclude-list** supports the same case-insensitive
+  glob-wildcard pattern syntax, configurable via the `EXCLUDED_REPOS` environment
+  variable and/or the `excluded_repositories` top-level bootstrap key, with the same
+  env-var-wins precedence rule. The exclude-list lets an operator carve out exceptions
+  from a broad allow-list glob (e.g. allow `myorg/*` but exclude
+  `myorg/legacy-secrets`).
+- An event is processed only if it matches the allow-list **and** does not match the
+  exclude-list: `is_allowed = matches_any(allowed_repositories) &&
+  !matches_any(excluded_repositories)`. A match on the exclude-list unconditionally
+  overrides any match on the allow-list — there is no "most specific pattern wins"
+  logic.
+- Both settings are server bootstrap settings evaluated before any configuration level
+  is loaded and before any GitHub API call is made for an event; neither is part of
+  the five-level `ReleaseRegentConfig` merge hierarchy described in FR-6/FR-8.
+- Applied in the webhook handler immediately after signature validation, before event
+  conversion and before the event enters the processing pipeline.
+- Omitting the allow-list setting defaults to acting on all repositories (backward
+  compatible with pre-existing single-repo/small-org behaviour). An explicit empty
+  allow-list denies all events (an operational kill switch).
+- Omitting the exclude-list setting, or setting it to an explicit empty list, means
+  **no exclusions** — this is not a special case; unlike the allow-list, an empty
+  exclude-list is not a kill switch, it is simply the "nothing excluded" default.
+
+**Acceptance Criteria**:
+
+- Malformed glob patterns in either the allow-list or the exclude-list fail server
+  startup with an error identifying the offending pattern.
+- Events for non-matching or excluded repositories are dropped after signature
+  validation with a `warn!` log identifying the repository and event ID; no
+  configuration loading, version calculation, or GitHub API write operation occurs.
+- Matching is case-insensitive for both lists (pattern and `owner/repo` are both
+  lowercased before compilation/matching).
+- The HTTP response returned to GitHub is unaffected by the allow-list/exclude-list
+  outcome (fire-and-forget: the response reflects only signature validation, per the
+  current implementation).
+
+**Priority**: High
+**Status**: 🚧 In Progress — exact-match and literal `"*"` already implemented;
+wildcard glob patterns, the exclude-list, and file-based configuration are pending
+(see [BA-66–BA-75](../testing/behavioral-assertions.md#repository-allow-list-assertions))
 
 ## Data Processing Requirements
 

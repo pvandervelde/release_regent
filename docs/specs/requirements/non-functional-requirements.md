@@ -121,6 +121,11 @@
 - Batch GitHub API operations where possible
 - Implement smart rate limit management
 - Use conditional requests to minimize API usage
+- Short-circuit repository allow-list and exclude-list filtering before any GitHub API
+  call, so installations with many repositories the App is not meant to manage do not
+  consume GitHub API rate-limit budget or processing time for out-of-scope
+  repositories (see
+  [FR-9](functional-requirements.md#fr-9-repository-scoping-for-large-organizations))
 
 ### S-2: Event Volume
 
@@ -178,6 +183,11 @@
 - `contents:write` - For creating tags and branches
 - `pull_requests:write` - For creating and updating PRs
 - `metadata:read` - For repository information
+- Note: the repository allow-list and exclude-list (see
+  [FR-9](functional-requirements.md#fr-9-repository-scoping-for-large-organizations))
+  are processing-scope filters, not a permissions boundary — they do not change what
+  the installation token is authorized to do; they only control which events this
+  server acts on
 
 ### SEC-2: Data Protection
 
