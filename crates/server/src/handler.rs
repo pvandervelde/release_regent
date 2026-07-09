@@ -10,12 +10,43 @@
 //! - [`convert_envelope`] — converts an SDK [`EventEnvelope`] into a domain
 //!   [`ProcessingEvent`].
 //! - [`ReleaseRegentWebhookHandler`] — implements the SDK's [`WebhookHandler`]
-//!   trait; performs allow-list filtering and forwards events on an `mpsc` channel.
+//!   trait; performs allow-list/exclude-list filtering and forwards events on an
+//!   `mpsc` channel.
 //! - [`WebhookEventSource`] — implements the core [`EventSource`] trait by reading
 //!   from the same `mpsc` channel; consumed by `run_event_loop` (task 4.0).
 //! - [`create_webhook_components`] — convenience factory that creates a matched
 //!   handler/source pair sharing a channel.
+//! - [`compile_repo_patterns`] — compiles raw allow-list/exclude-list pattern
+//!   strings (from env vars or `release-regent.toml`) into [`glob::Pattern`]
+//!   values at server startup.
 //!
+//! # Repository scoping (allow-list / exclude-list) — design notes
+//!
+//! **Canonical location.** `compile_repo_patterns` lives in this module (not a
+//! separate `repo_scope` module) and is reachable as `handler::compile_repo_patterns`.
+//! It is the single place raw pattern strings become [`glob::Pattern`]s.
+//!
+//! **Case-insensitivity.** Both the configured patterns and the incoming
+//! `owner/repo` are lowercased before matching (BA-70, BA-73). Lowercasing the
+//! *pattern* happens once, in `compile_repo_patterns`, at startup. Lowercasing
+//! the *subject* happens on every call, in [`ReleaseRegentWebhookHandler::is_allowed`].
+//!
+//! **Exclude overrides allow, unconditionally.** There is no "most specific
+//! wins" logic (BA-72): `is_allowed` is `matches_any(allowed) && !matches_any(excluded)`.
+//!
+//! **Logging.** The single `warn!` drop point in `handle_event` now also fires
+//! for exclude-list matches (previously it only covered allow-list misses). The
+//! message text is left as `"Repository not in allow-list; dropping event"` for
+//! both cases — deliberately not distinguishing allow-miss from exclude-hit in
+//! the message text, since the operator action in both cases is identical
+//! ("check the repository scoping configuration"). The log now also carries the
+//! `event_id` field (previously only `repository`), per BA-67's requirement that
+//! the dropped-event warning identify the event, not just the repository.
+//!
+//! **Empty-list semantics are asymmetric by design:**
+//! - Empty `allowed_patterns` → deny-all kill switch (BA-69), matching the
+//!   pre-existing `Vec<String>`-based behaviour.
+//! - Empty `excluded_patterns` → exclude nothing (BA-74) — NOT a kill switch.
 //! # Architecture
 //!
 //! ```text
@@ -325,7 +356,8 @@ pub fn convert_envelope(
 /// dropping an event here does not cause a GitHub delivery error.
 pub struct ReleaseRegentWebhookHandler {
     tx: mpsc::Sender<ProcessingEvent>,
-    allowed_repos: Vec<String>,
+    allowed_patterns: Vec<glob::Pattern>,
+    excluded_patterns: Vec<glob::Pattern>,
     release_branch_prefix: String,
     version_prefix: String,
 }
@@ -336,39 +368,52 @@ impl ReleaseRegentWebhookHandler {
     /// # Parameters
     ///
     /// - `tx` — Sender side of the processing channel.
-    /// - `allowed_repos` — Repository allow-list.
-    ///   - Empty `Vec` → deny all repositories.
-    ///   - `vec!["*"]` → allow all repositories.
-    ///   - Otherwise → exact `"owner/repo"` match.
+    /// - `allowed_patterns` — Pre-compiled repository allow-list glob patterns,
+    ///   matched (case-insensitively) against `"owner/repo"`.
+    ///   - Empty `Vec` → deny all repositories (kill switch, BA-69).
+    ///   - `[Pattern::new("*")]` → allow all repositories (BA-68 default).
+    /// - `excluded_patterns` — Pre-compiled repository exclude-list glob patterns.
+    ///   A match here overrides an allow-list match unconditionally (BA-72).
+    ///   - Empty `Vec` → exclude nothing (BA-74; NOT a kill switch, unlike the
+    ///     allow-list's empty-list semantics).
     /// - `release_branch_prefix` — The configured release branch prefix (e.g. `"release"`);
     ///   forwarded to [`classify_event`] during envelope conversion.
     /// - `version_prefix` — The configured version prefix (e.g. `"v"` or `""`);
     ///   forwarded to [`classify_event`] during envelope conversion.
     pub fn new(
         tx: mpsc::Sender<ProcessingEvent>,
-        allowed_repos: Vec<String>,
+        allowed_patterns: Vec<glob::Pattern>,
+        excluded_patterns: Vec<glob::Pattern>,
         release_branch_prefix: String,
         version_prefix: String,
     ) -> Self {
         Self {
             tx,
-            allowed_repos,
+            allowed_patterns,
+            excluded_patterns,
             release_branch_prefix,
             version_prefix,
         }
     }
 
-    /// Return `true` if `full_name` matches the allow-list policy.
+    /// Return `true` if `full_name` matches the allow-list policy and does not
+    /// match the exclude-list policy.
     ///
-    /// See [`new`](Self::new) for documentation on the allow-list semantics.
+    /// `is_allowed(full_name) = matches_any(allowed_patterns, lower(full_name))
+    /// && !matches_any(excluded_patterns, lower(full_name))`.
+    ///
+    /// See [`new`](Self::new) for documentation on empty-list semantics.
+    ///
+    /// # Implementation status
+    ///
+    /// Stubbed for the RED phase of TDD — always panics. The Coder phase
+    /// replaces this body with the real matching logic described above.
     pub fn is_allowed(&self, full_name: &str) -> bool {
-        if self.allowed_repos.is_empty() {
-            return false;
-        }
-        if self.allowed_repos.iter().any(|r| r == "*") {
-            return true;
-        }
-        self.allowed_repos.iter().any(|r| r == full_name)
+        // TODO(Coder): implement per the doc comment above. Stubbed to make the
+        // RED-phase test suite fail for the right reason (unimplemented, not a
+        // silently-wrong hardcoded value).
+        let _ = full_name;
+        todo!("BA-66..BA-74: repository allow-list/exclude-list glob matching")
     }
 }
 
@@ -383,6 +428,7 @@ impl WebhookHandler for ReleaseRegentWebhookHandler {
         if !self.is_allowed(full_name) {
             warn!(
                 repository = %full_name,
+                event_id = %envelope.event_id,
                 "Repository not in allow-list; dropping event"
             );
             return Ok(());
@@ -496,23 +542,73 @@ impl EventSource for WebhookEventSource {
 ///
 /// # Parameters
 ///
-/// - `allowed_repos` — Repository allow-list; see [`ReleaseRegentWebhookHandler::new`].
+/// - `allowed_patterns` — Pre-compiled repository allow-list; see
+///   [`ReleaseRegentWebhookHandler::new`].
+/// - `excluded_patterns` — Pre-compiled repository exclude-list; see
+///   [`ReleaseRegentWebhookHandler::new`].
 /// - `channel_capacity` — Bounded channel depth.
 /// - `release_branch_prefix` — The configured release branch prefix (e.g. `"release"`);
 ///   forwarded to [`classify_event`] to distinguish release PRs from regular PRs.
 /// - `version_prefix` — The configured version prefix (e.g. `"v"` or `""`);
 ///   forwarded to [`classify_event`] to form the full branch head prefix.
 pub fn create_webhook_components(
-    allowed_repos: Vec<String>,
+    allowed_patterns: Vec<glob::Pattern>,
+    excluded_patterns: Vec<glob::Pattern>,
     channel_capacity: usize,
     release_branch_prefix: String,
     version_prefix: String,
 ) -> (ReleaseRegentWebhookHandler, WebhookEventSource) {
     let (tx, rx) = mpsc::channel(channel_capacity);
     (
-        ReleaseRegentWebhookHandler::new(tx, allowed_repos, release_branch_prefix, version_prefix),
+        ReleaseRegentWebhookHandler::new(
+            tx,
+            allowed_patterns,
+            excluded_patterns,
+            release_branch_prefix,
+            version_prefix,
+        ),
         WebhookEventSource::new(rx),
     )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// compile_repo_patterns
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Compile raw pattern strings into lowercase-normalized [`glob::Pattern`] values.
+///
+/// Matching is case-insensitive: each raw pattern is lowercased before
+/// compilation, and callers must lowercase the subject string before calling
+/// [`glob::Pattern::matches`] (see [`ReleaseRegentWebhookHandler::is_allowed`],
+/// which does this for the `owner/repo` subject on every call).
+///
+/// # Parameters
+///
+/// - `list_name` — Identifies which configuration list `raw` came from (e.g.
+///   `"allowed_repos"` or `"excluded_repos"`). Echoed into the returned error
+///   so operators can tell which environment variable / config key to fix
+///   (BA-71, BA-75).
+/// - `raw` — Raw, pre-lowercasing pattern strings, e.g. from `ALLOWED_REPOS` or
+///   the `allowed_repositories` TOML key.
+///
+/// # Errors
+///
+/// Returns [`Error::InvalidRepoPattern`] identifying `list_name` and the
+/// specific offending pattern string on the first invalid glob pattern
+/// encountered. A malformed pattern is never silently treated as a
+/// non-matching literal string (BA-71).
+///
+/// # Implementation status
+///
+/// Stubbed for the RED phase of TDD — always panics. The Coder phase replaces
+/// this body with the real compile-and-lowercase loop described above.
+#[allow(clippy::result_large_err)]
+pub fn compile_repo_patterns(list_name: &str, raw: &[String]) -> Result<Vec<glob::Pattern>, Error> {
+    // TODO(Coder): implement per the doc comment above. Stubbed to make the
+    // RED-phase test suite fail for the right reason (unimplemented, not a
+    // silently-wrong hardcoded value).
+    let _ = (list_name, raw);
+    todo!("BA-70..BA-75: compile + lowercase-normalize repo glob patterns")
 }
 
 #[cfg(test)]

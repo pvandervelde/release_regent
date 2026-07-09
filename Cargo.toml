@@ -83,6 +83,7 @@ regex = "1.12"
 rand = "0.10"
 http = "1"
 bytes = "1.11"
+glob = "0.3"
 
 # Version calculation
 git-conventional = "1.0"

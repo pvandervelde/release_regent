@@ -11,8 +11,9 @@
 //! | `GITHUB_WEBHOOK_SECRET`  | HMAC-SHA256 secret shared with GitHub (**required**) | —                  |
 //! | `GITHUB_APP_ID`          | Numeric GitHub App ID (**required**)                 | —                  |
 //! | `GITHUB_PRIVATE_KEY`     | PEM-encoded GitHub App private key (**required**)    | —                  |
-//! | `CONFIG_DIR`             | Directory to search for `.release-regent.toml`       | current directory  |
-//! | `ALLOWED_REPOS`          | Comma-separated `owner/repo` values, or `*`          | `*`                |
+//! | `CONFIG_DIR`             | Directory to search for `release-regent.toml`        | current directory  |
+//! | `ALLOWED_REPOS`          | Comma-separated allow-list glob patterns, or `*`. Falls back to the `allowed_repositories` array key in `{CONFIG_DIR}/release-regent.toml` when absent. | `*` |
+//! | `EXCLUDED_REPOS`         | Comma-separated exclude-list glob patterns. Falls back to the `excluded_repositories` array key in `{CONFIG_DIR}/release-regent.toml` when absent. | *(none)* |
 //! | `EVENT_CHANNEL_CAPACITY` | Bounded channel depth for in-flight events           | `1024`             |
 //! | `PORT`                   | TCP port the server listens on                       | `8080`             |
 //! | `RELEASE_BRANCH_PREFIX`  | Release branch prefix for webhook routing            | `"release"`        |
@@ -119,6 +120,58 @@ fn read_github_credentials_from_env() -> Result<(u64, String), errors::Error> {
         .map_err(|e| errors::Error::environment("GITHUB_PRIVATE_KEY", e.to_string()))?;
 
     Ok((app_id, private_key))
+}
+
+/// Parse a comma-separated env-var-style list into trimmed, non-empty entries.
+///
+/// Matches the pre-existing `ALLOWED_REPOS` parsing behaviour: entries are
+/// split on `,`, each is `str::trim`-med, and empty entries are filtered out.
+fn parse_comma_separated(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .collect()
+}
+
+/// Resolve the raw repository allow-list / exclude-list pattern strings,
+/// **before** glob compilation via [`handler::compile_repo_patterns`].
+///
+/// # Precedence (per list, independently)
+///
+/// 1. The `ALLOWED_REPOS` / `EXCLUDED_REPOS` environment variable, if present
+///    in the environment at all (even if its value is an empty string —
+///    presence, not content, decides precedence). Parsed with
+///    [`parse_comma_separated`].
+/// 2. Otherwise, the `allowed_repositories` / `excluded_repositories` TOML
+///    array-of-strings key at the root of `{config_dir}/release-regent.toml`.
+///    The file may also contain unrelated sections (`[core]`, `[versioning]`,
+///    etc. — the app-level [`release_regent_config_provider`] hierarchy); their
+///    presence must not cause an error, and neither must a missing file or a
+///    missing key within an existing file.
+/// 3. Otherwise (env absent AND file/key absent): allow defaults to
+///    `vec!["*".to_string()]` (BA-68); exclude defaults to `vec![]` (BA-74).
+///
+/// A `release-regent.toml` file that fails to parse as valid TOML at all
+/// (independent of these two keys) is treated the same as "file absent" —
+/// this function never returns a `Result`; malformed-glob-pattern detection is
+/// [`handler::compile_repo_patterns`]'s responsibility, not this function's.
+///
+/// # Returns
+///
+/// `(raw_allowed, raw_excluded)` — unvalidated, pre-lowercasing pattern
+/// strings ready to be passed to [`handler::compile_repo_patterns`].
+///
+/// # Implementation status
+///
+/// Stubbed for the RED phase of TDD — always panics. The Coder phase replaces
+/// this body with the real precedence-resolution logic described above.
+fn resolve_repo_scope(config_dir: &std::path::Path) -> (Vec<String>, Vec<String>) {
+    // TODO(Coder): implement per the doc comment above. Stubbed to make the
+    // RED-phase test suite fail for the right reason (unimplemented, not a
+    // silently-wrong hardcoded value).
+    let _ = config_dir;
+    todo!("BA-68, BA-69, BA-74: ALLOWED_REPOS/EXCLUDED_REPOS env + release-regent.toml precedence")
 }
 
 /// Construct the production [`ServerProcessor`] from environment variables.
@@ -299,17 +352,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let processor = Arc::new(build_server_processor(github_secret.clone()).await?);
     info!("Production processor constructed successfully");
 
-    // Allowed repositories: comma-separated "owner/repo" values, or "*" for all.
-    let allowed_repos: Vec<String> = std::env::var("ALLOWED_REPOS").map_or_else(
-        |_| vec!["*".to_string()],
-        |s| {
-            s.split(',')
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(String::from)
-                .collect()
-        },
-    );
+    // Repository allow-list / exclude-list: glob patterns resolved from
+    // ALLOWED_REPOS/EXCLUDED_REPOS env vars, falling back to
+    // allowed_repositories/excluded_repositories in release-regent.toml.
+    // This mirrors the CONFIG_DIR resolution in `build_server_processor`
+    // (env var, else current working directory).
+    let repo_scope_config_dir = match std::env::var("CONFIG_DIR") {
+        Ok(dir) => std::path::PathBuf::from(dir),
+        Err(_) => std::env::current_dir().map_err(|e| {
+            errors::Error::internal(format!("Failed to determine working directory: {e}"))
+        })?,
+    };
+    let (raw_allowed_repos, raw_excluded_repos) = resolve_repo_scope(&repo_scope_config_dir);
+    let allowed_patterns = handler::compile_repo_patterns("allowed_repos", &raw_allowed_repos)?;
+    let excluded_patterns = handler::compile_repo_patterns("excluded_repos", &raw_excluded_repos)?;
 
     // Bounded channel capacity for in-flight events.
     let channel_capacity: usize = match std::env::var("EVENT_CHANNEL_CAPACITY") {
@@ -387,7 +443,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let version_prefix =
         std::env::var("VERSION_PREFIX").unwrap_or_else(|_| default_orch.version_prefix);
     let (webhook_event_handler, event_source) = handler::create_webhook_components(
-        allowed_repos,
+        allowed_patterns,
+        excluded_patterns,
         channel_capacity,
         release_branch_prefix,
         version_prefix,

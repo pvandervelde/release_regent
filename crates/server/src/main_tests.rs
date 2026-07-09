@@ -1,5 +1,6 @@
 use super::*;
 use std::sync::{LazyLock, Mutex};
+use tempfile::TempDir;
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Test-env serialization lock
@@ -22,6 +23,14 @@ static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(Mutex::default);
 fn clear_github_app_env_vars() {
     std::env::remove_var("GITHUB_APP_ID");
     std::env::remove_var("GITHUB_PRIVATE_KEY");
+}
+
+/// Clears the repository allow-list/exclude-list environment variables.
+///
+/// Must only be called while holding [`ENV_LOCK`].
+fn clear_repo_scope_env_vars() {
+    std::env::remove_var("ALLOWED_REPOS");
+    std::env::remove_var("EXCLUDED_REPOS");
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -190,4 +199,302 @@ async fn test_build_server_processor_with_invalid_pem_returns_github_error() {
         Err(other) => panic!("Expected Core(GitHub) error variant for invalid PEM, got: {other:?}"),
         Ok(_) => panic!("Expected Err but got Ok"),
     }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// parse_comma_separated
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_parse_comma_separated_trims_whitespace_and_filters_empty_entries() {
+    let result = parse_comma_separated(" myorg/a , , myorg/b ");
+    assert_eq!(result, vec!["myorg/a".to_string(), "myorg/b".to_string()]);
+}
+
+#[test]
+fn test_parse_comma_separated_empty_string_returns_empty_vec() {
+    let result = parse_comma_separated("");
+    assert!(result.is_empty());
+}
+
+#[test]
+fn test_parse_comma_separated_single_entry_returns_single_element_vec() {
+    let result = parse_comma_separated("*");
+    assert_eq!(result, vec!["*".to_string()]);
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// resolve_repo_scope — precedence and default semantics (BA-68, BA-69, BA-74)
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_resolve_repo_scope_no_env_no_file_defaults_allow_wildcard_and_exclude_empty() {
+    // BA-68: an unset allow-list config must act on every repository —
+    // equivalent to `["*"]`. BA-74: an unset exclude-list must exclude nothing.
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    clear_repo_scope_env_vars();
+    let temp_dir = TempDir::new().expect("must create temp dir");
+
+    let (allowed, excluded) = resolve_repo_scope(temp_dir.path());
+
+    assert_eq!(allowed, vec!["*".to_string()]);
+    assert!(excluded.is_empty());
+}
+
+#[test]
+fn test_resolve_repo_scope_missing_config_directory_defaults_allow_wildcard() {
+    // The config directory itself need not exist — this must not error/panic,
+    // and must fall back to the same defaults as a directory with no config file.
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    clear_repo_scope_env_vars();
+    let nonexistent = std::path::PathBuf::from("this-directory-does-not-exist-rr-test");
+
+    let (allowed, excluded) = resolve_repo_scope(&nonexistent);
+
+    assert_eq!(allowed, vec!["*".to_string()]);
+    assert!(excluded.is_empty());
+}
+
+#[test]
+fn test_resolve_repo_scope_env_allowed_repos_present_used_verbatim() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    clear_repo_scope_env_vars();
+    std::env::set_var("ALLOWED_REPOS", "myorg/a,myorg/b");
+    let temp_dir = TempDir::new().expect("must create temp dir");
+
+    let (allowed, _excluded) = resolve_repo_scope(temp_dir.path());
+
+    std::env::remove_var("ALLOWED_REPOS");
+
+    assert_eq!(allowed, vec!["myorg/a".to_string(), "myorg/b".to_string()]);
+}
+
+#[test]
+fn test_resolve_repo_scope_env_allowed_repos_explicit_empty_string_returns_empty_vec() {
+    // BA-69: an explicitly empty allow-list must deny every repository. This
+    // test locks in that `ALLOWED_REPOS=""` (explicitly configured, present in
+    // the environment) resolves to an empty Vec — DIFFERENT from the "unset"
+    // case, which defaults to `["*"]`.
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    clear_repo_scope_env_vars();
+    std::env::set_var("ALLOWED_REPOS", "");
+    let temp_dir = TempDir::new().expect("must create temp dir");
+
+    let (allowed, _excluded) = resolve_repo_scope(temp_dir.path());
+
+    std::env::remove_var("ALLOWED_REPOS");
+
+    assert!(
+        allowed.is_empty(),
+        "explicit empty ALLOWED_REPOS must resolve to an empty Vec, not the wildcard default"
+    );
+}
+
+#[test]
+fn test_resolve_repo_scope_env_excluded_repos_present_used_verbatim() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    clear_repo_scope_env_vars();
+    std::env::set_var("EXCLUDED_REPOS", "myorg/legacy-secrets");
+    let temp_dir = TempDir::new().expect("must create temp dir");
+
+    let (_allowed, excluded) = resolve_repo_scope(temp_dir.path());
+
+    std::env::remove_var("EXCLUDED_REPOS");
+
+    assert_eq!(excluded, vec!["myorg/legacy-secrets".to_string()]);
+}
+
+#[test]
+fn test_resolve_repo_scope_env_var_trims_whitespace_and_filters_empty_entries() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    clear_repo_scope_env_vars();
+    std::env::set_var("ALLOWED_REPOS", " myorg/a , , myorg/b ");
+    let temp_dir = TempDir::new().expect("must create temp dir");
+
+    let (allowed, _excluded) = resolve_repo_scope(temp_dir.path());
+
+    std::env::remove_var("ALLOWED_REPOS");
+
+    assert_eq!(allowed, vec!["myorg/a".to_string(), "myorg/b".to_string()]);
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// resolve_repo_scope — release-regent.toml fallback
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Write a `release-regent.toml` fixture into `dir` with a plain top-level
+/// `allowed_repositories`/`excluded_repositories` array (must appear BEFORE any
+/// `[section]` header to remain part of the TOML root table rather than being
+/// absorbed into that section).
+fn write_repo_scope_toml(dir: &std::path::Path, contents: &str) {
+    std::fs::write(dir.join("release-regent.toml"), contents).expect("must write fixture file");
+}
+
+#[test]
+fn test_resolve_repo_scope_env_absent_falls_back_to_toml_allowed_repositories() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    clear_repo_scope_env_vars();
+    let temp_dir = TempDir::new().expect("must create temp dir");
+    write_repo_scope_toml(
+        temp_dir.path(),
+        r#"
+allowed_repositories = ["myorg/*"]
+
+[core]
+version_prefix = "v"
+"#,
+    );
+
+    let (allowed, _excluded) = resolve_repo_scope(temp_dir.path());
+
+    assert_eq!(allowed, vec!["myorg/*".to_string()]);
+}
+
+#[test]
+fn test_resolve_repo_scope_env_absent_falls_back_to_toml_excluded_repositories() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    clear_repo_scope_env_vars();
+    let temp_dir = TempDir::new().expect("must create temp dir");
+    write_repo_scope_toml(
+        temp_dir.path(),
+        r#"
+allowed_repositories = ["myorg/*"]
+excluded_repositories = ["myorg/legacy-secrets"]
+"#,
+    );
+
+    let (_allowed, excluded) = resolve_repo_scope(temp_dir.path());
+
+    assert_eq!(excluded, vec!["myorg/legacy-secrets".to_string()]);
+}
+
+#[test]
+fn test_resolve_repo_scope_env_present_takes_precedence_over_toml_file() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    clear_repo_scope_env_vars();
+    std::env::set_var("ALLOWED_REPOS", "fromenv/*");
+    let temp_dir = TempDir::new().expect("must create temp dir");
+    write_repo_scope_toml(temp_dir.path(), r#"allowed_repositories = ["fromfile/*"]"#);
+
+    let (allowed, _excluded) = resolve_repo_scope(temp_dir.path());
+
+    std::env::remove_var("ALLOWED_REPOS");
+
+    assert_eq!(
+        allowed,
+        vec!["fromenv/*".to_string()],
+        "ALLOWED_REPOS env var must take precedence over release-regent.toml"
+    );
+}
+
+#[test]
+fn test_resolve_repo_scope_toml_file_present_but_missing_allowed_key_defaults_to_wildcard() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    clear_repo_scope_env_vars();
+    let temp_dir = TempDir::new().expect("must create temp dir");
+    write_repo_scope_toml(
+        temp_dir.path(),
+        r#"
+[core]
+version_prefix = "v"
+"#,
+    );
+
+    let (allowed, excluded) = resolve_repo_scope(temp_dir.path());
+
+    assert_eq!(
+        allowed,
+        vec!["*".to_string()],
+        "missing allowed_repositories key must default to wildcard, not error"
+    );
+    assert!(excluded.is_empty());
+}
+
+#[test]
+fn test_resolve_repo_scope_toml_file_with_unrelated_sections_does_not_error() {
+    // The file may also contain the unrelated ReleaseRegentConfig sections
+    // ([core], [versioning], ...). Their presence must not cause an error.
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    clear_repo_scope_env_vars();
+    let temp_dir = TempDir::new().expect("must create temp dir");
+    write_repo_scope_toml(
+        temp_dir.path(),
+        r#"
+allowed_repositories = ["myorg/*"]
+excluded_repositories = ["myorg/legacy-secrets"]
+
+[core]
+version_prefix = "v"
+
+[core.branches]
+main = "main"
+
+[versioning]
+strategy = "conventional"
+allow_override = true
+"#,
+    );
+
+    let (allowed, excluded) = resolve_repo_scope(temp_dir.path());
+
+    assert_eq!(allowed, vec!["myorg/*".to_string()]);
+    assert_eq!(excluded, vec!["myorg/legacy-secrets".to_string()]);
+}
+
+#[test]
+fn test_resolve_repo_scope_toml_excluded_repositories_explicit_empty_array_returns_empty_vec() {
+    // BA-74: an explicitly empty exclude-list (`[]`) must still resolve to an
+    // empty Vec (same observable result as "absent" at this layer — the
+    // semantic distinction from BA-69 is enforced downstream, at
+    // `ReleaseRegentWebhookHandler::is_allowed`, not by this function).
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    clear_repo_scope_env_vars();
+    let temp_dir = TempDir::new().expect("must create temp dir");
+    write_repo_scope_toml(
+        temp_dir.path(),
+        r#"
+allowed_repositories = ["myorg/*"]
+excluded_repositories = []
+"#,
+    );
+
+    let (_allowed, excluded) = resolve_repo_scope(temp_dir.path());
+
+    assert!(excluded.is_empty());
+}
+
+#[test]
+fn test_resolve_repo_scope_missing_toml_file_defaults_allow_wildcard() {
+    // No release-regent.toml at all in an otherwise-existing directory.
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    clear_repo_scope_env_vars();
+    let temp_dir = TempDir::new().expect("must create temp dir");
+    // Deliberately do not write any file into temp_dir.
+
+    let (allowed, excluded) = resolve_repo_scope(temp_dir.path());
+
+    assert_eq!(allowed, vec!["*".to_string()]);
+    assert!(excluded.is_empty());
+}
+
+/// Assumption (documented gap — see Tester report): the target contract gives
+/// `resolve_repo_scope` a `(Vec<String>, Vec<String>)` return type, not a
+/// `Result`, so a `release-regent.toml` that exists but fails to parse as
+/// valid TOML syntax at all cannot be surfaced as an error from this function.
+/// This test locks in the interpretation that such a file is treated the same
+/// as "file absent" (defaults apply) rather than causing a panic. If the
+/// Coder/architect prefers a different behavior (e.g. logging a warning and
+/// still defaulting, vs. changing the signature to return a `Result`), this
+/// test should be the first one updated.
+#[test]
+fn test_resolve_repo_scope_malformed_toml_syntax_falls_back_to_defaults() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    clear_repo_scope_env_vars();
+    let temp_dir = TempDir::new().expect("must create temp dir");
+    write_repo_scope_toml(temp_dir.path(), "this is not valid TOML syntax [[[");
+
+    let (allowed, excluded) = resolve_repo_scope(temp_dir.path());
+
+    assert_eq!(allowed, vec!["*".to_string()]);
+    assert!(excluded.is_empty());
 }
