@@ -134,6 +134,23 @@ fn parse_comma_separated(raw: &str) -> Vec<String> {
         .collect()
 }
 
+/// Local, partial view of `release-regent.toml`'s root table used solely to
+/// resolve the repository allow-list / exclude-list fallback.
+///
+/// Deliberately does **not** model the full `ReleaseRegentConfig` schema (the
+/// `[core]`/`[versioning]`/etc. sections belong to
+/// [`release_regent_config_provider`]'s hierarchy). `#[serde(default)]` on
+/// each field means unrecognized keys/sections elsewhere in the file are
+/// silently ignored by `toml`'s deserializer, and a file that omits both keys
+/// entirely still parses successfully (both fields become `None`).
+#[derive(serde::Deserialize, Default)]
+struct RepoScopeToml {
+    #[serde(default)]
+    allowed_repositories: Option<Vec<String>>,
+    #[serde(default)]
+    excluded_repositories: Option<Vec<String>>,
+}
+
 /// Resolve the raw repository allow-list / exclude-list pattern strings,
 /// **before** glob compilation via [`handler::compile_repo_patterns`].
 ///
@@ -152,26 +169,73 @@ fn parse_comma_separated(raw: &str) -> Vec<String> {
 /// 3. Otherwise (env absent AND file/key absent): allow defaults to
 ///    `vec!["*".to_string()]` (BA-68); exclude defaults to `vec![]` (BA-74).
 ///
-/// A `release-regent.toml` file that fails to parse as valid TOML at all
-/// (independent of these two keys) is treated the same as "file absent" —
-/// this function never returns a `Result`; malformed-glob-pattern detection is
-/// [`handler::compile_repo_patterns`]'s responsibility, not this function's.
+/// # Errors
+///
+/// Returns `Err` when `{config_dir}/release-regent.toml` **exists** but fails
+/// to parse as valid TOML syntax at all. This is deliberately fail-fast,
+/// consistent with a malformed glob pattern (BA-71/BA-75) also being a fatal
+/// startup error: an operator typo in a config file must never be silently
+/// treated the same as "no config file present". A genuinely *missing* file,
+/// or a present-but-parseable file that simply omits the
+/// `allowed_repositories`/`excluded_repositories` keys, is **not** an error
+/// and falls back to the defaults described above.
 ///
 /// # Returns
 ///
 /// `(raw_allowed, raw_excluded)` — unvalidated, pre-lowercasing pattern
 /// strings ready to be passed to [`handler::compile_repo_patterns`].
+fn resolve_repo_scope(
+    config_dir: &std::path::Path,
+) -> Result<(Vec<String>, Vec<String>), crate::errors::Error> {
+    let toml_config = load_repo_scope_toml(config_dir)?;
+
+    let allowed = match std::env::var("ALLOWED_REPOS") {
+        Ok(raw) => parse_comma_separated(&raw),
+        Err(_) => toml_config
+            .as_ref()
+            .and_then(|c| c.allowed_repositories.clone())
+            .unwrap_or_else(|| vec!["*".to_string()]),
+    };
+
+    let excluded = match std::env::var("EXCLUDED_REPOS") {
+        Ok(raw) => parse_comma_separated(&raw),
+        Err(_) => toml_config
+            .and_then(|c| c.excluded_repositories)
+            .unwrap_or_default(),
+    };
+
+    Ok((allowed, excluded))
+}
+
+/// Load and parse `{config_dir}/release-regent.toml`'s repo-scope keys.
 ///
-/// # Implementation status
-///
-/// Stubbed for the RED phase of TDD — always panics. The Coder phase replaces
-/// this body with the real precedence-resolution logic described above.
-fn resolve_repo_scope(config_dir: &std::path::Path) -> (Vec<String>, Vec<String>) {
-    // TODO(Coder): implement per the doc comment above. Stubbed to make the
-    // RED-phase test suite fail for the right reason (unimplemented, not a
-    // silently-wrong hardcoded value).
-    let _ = config_dir;
-    todo!("BA-68, BA-69, BA-74: ALLOWED_REPOS/EXCLUDED_REPOS env + release-regent.toml precedence")
+/// Returns `Ok(None)` when the file does not exist. Returns `Err` when the
+/// file exists but is not readable or fails to parse as valid TOML syntax
+/// (see [`resolve_repo_scope`]'s error documentation).
+fn load_repo_scope_toml(
+    config_dir: &std::path::Path,
+) -> Result<Option<RepoScopeToml>, crate::errors::Error> {
+    let path = config_dir.join("release-regent.toml");
+
+    let contents = match std::fs::read_to_string(&path) {
+        Ok(contents) => contents,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => {
+            return Err(crate::errors::Error::internal(format!(
+                "Failed to read {}: {e}",
+                path.display()
+            )))
+        }
+    };
+
+    toml::from_str::<RepoScopeToml>(&contents)
+        .map(Some)
+        .map_err(|e| {
+            crate::errors::Error::internal(format!(
+                "Failed to parse {} as TOML: {e}",
+                path.display()
+            ))
+        })
 }
 
 /// Construct the production [`ServerProcessor`] from environment variables.
@@ -363,7 +427,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             errors::Error::internal(format!("Failed to determine working directory: {e}"))
         })?,
     };
-    let (raw_allowed_repos, raw_excluded_repos) = resolve_repo_scope(&repo_scope_config_dir);
+    let (raw_allowed_repos, raw_excluded_repos) = resolve_repo_scope(&repo_scope_config_dir)?;
     let allowed_patterns = handler::compile_repo_patterns("allowed_repos", &raw_allowed_repos)?;
     let excluded_patterns = handler::compile_repo_patterns("excluded_repos", &raw_excluded_repos)?;
 

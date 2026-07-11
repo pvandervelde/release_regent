@@ -404,16 +404,30 @@ impl ReleaseRegentWebhookHandler {
     ///
     /// See [`new`](Self::new) for documentation on empty-list semantics.
     ///
-    /// # Implementation status
+    /// # Implementation note
     ///
-    /// Stubbed for the RED phase of TDD — always panics. The Coder phase
-    /// replaces this body with the real matching logic described above.
+    /// `full_name` is lowercased before matching (mirroring the lowercasing
+    /// [`compile_repo_patterns`] applies to each configured pattern at
+    /// startup), and matching itself additionally uses
+    /// [`glob::MatchOptions::case_sensitive`] `= false` as a defense-in-depth
+    /// belt-and-braces measure: production patterns are always pre-lowercased
+    /// by `compile_repo_patterns`, so case-insensitive matching is a no-op for
+    /// them, but this guards against any pattern that reaches this method
+    /// without having gone through that normalization step.
     pub fn is_allowed(&self, full_name: &str) -> bool {
-        // TODO(Coder): implement per the doc comment above. Stubbed to make the
-        // RED-phase test suite fail for the right reason (unimplemented, not a
-        // silently-wrong hardcoded value).
-        let _ = full_name;
-        todo!("BA-66..BA-74: repository allow-list/exclude-list glob matching")
+        let lowered = full_name.to_lowercase();
+        let options = glob::MatchOptions {
+            case_sensitive: false,
+            require_literal_separator: false,
+            require_literal_leading_dot: false,
+        };
+        self.allowed_patterns
+            .iter()
+            .any(|p| p.matches_with(&lowered, options))
+            && !self
+                .excluded_patterns
+                .iter()
+                .any(|p| p.matches_with(&lowered, options))
     }
 }
 
@@ -597,18 +611,14 @@ pub fn create_webhook_components(
 /// specific offending pattern string on the first invalid glob pattern
 /// encountered. A malformed pattern is never silently treated as a
 /// non-matching literal string (BA-71).
-///
-/// # Implementation status
-///
-/// Stubbed for the RED phase of TDD — always panics. The Coder phase replaces
-/// this body with the real compile-and-lowercase loop described above.
 #[allow(clippy::result_large_err)]
 pub fn compile_repo_patterns(list_name: &str, raw: &[String]) -> Result<Vec<glob::Pattern>, Error> {
-    // TODO(Coder): implement per the doc comment above. Stubbed to make the
-    // RED-phase test suite fail for the right reason (unimplemented, not a
-    // silently-wrong hardcoded value).
-    let _ = (list_name, raw);
-    todo!("BA-70..BA-75: compile + lowercase-normalize repo glob patterns")
+    raw.iter()
+        .map(|pattern| {
+            glob::Pattern::new(&pattern.to_lowercase())
+                .map_err(|e| Error::invalid_repo_pattern(list_name, pattern.clone(), e.to_string()))
+        })
+        .collect()
 }
 
 #[cfg(test)]

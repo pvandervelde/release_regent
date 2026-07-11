@@ -235,7 +235,8 @@ fn test_resolve_repo_scope_no_env_no_file_defaults_allow_wildcard_and_exclude_em
     clear_repo_scope_env_vars();
     let temp_dir = TempDir::new().expect("must create temp dir");
 
-    let (allowed, excluded) = resolve_repo_scope(temp_dir.path());
+    let (allowed, excluded) =
+        resolve_repo_scope(temp_dir.path()).expect("resolve_repo_scope must succeed");
 
     assert_eq!(allowed, vec!["*".to_string()]);
     assert!(excluded.is_empty());
@@ -249,7 +250,8 @@ fn test_resolve_repo_scope_missing_config_directory_defaults_allow_wildcard() {
     clear_repo_scope_env_vars();
     let nonexistent = std::path::PathBuf::from("this-directory-does-not-exist-rr-test");
 
-    let (allowed, excluded) = resolve_repo_scope(&nonexistent);
+    let (allowed, excluded) =
+        resolve_repo_scope(&nonexistent).expect("resolve_repo_scope must succeed");
 
     assert_eq!(allowed, vec!["*".to_string()]);
     assert!(excluded.is_empty());
@@ -262,7 +264,8 @@ fn test_resolve_repo_scope_env_allowed_repos_present_used_verbatim() {
     std::env::set_var("ALLOWED_REPOS", "myorg/a,myorg/b");
     let temp_dir = TempDir::new().expect("must create temp dir");
 
-    let (allowed, _excluded) = resolve_repo_scope(temp_dir.path());
+    let (allowed, _excluded) =
+        resolve_repo_scope(temp_dir.path()).expect("resolve_repo_scope must succeed");
 
     std::env::remove_var("ALLOWED_REPOS");
 
@@ -280,7 +283,8 @@ fn test_resolve_repo_scope_env_allowed_repos_explicit_empty_string_returns_empty
     std::env::set_var("ALLOWED_REPOS", "");
     let temp_dir = TempDir::new().expect("must create temp dir");
 
-    let (allowed, _excluded) = resolve_repo_scope(temp_dir.path());
+    let (allowed, _excluded) =
+        resolve_repo_scope(temp_dir.path()).expect("resolve_repo_scope must succeed");
 
     std::env::remove_var("ALLOWED_REPOS");
 
@@ -297,7 +301,8 @@ fn test_resolve_repo_scope_env_excluded_repos_present_used_verbatim() {
     std::env::set_var("EXCLUDED_REPOS", "myorg/legacy-secrets");
     let temp_dir = TempDir::new().expect("must create temp dir");
 
-    let (_allowed, excluded) = resolve_repo_scope(temp_dir.path());
+    let (_allowed, excluded) =
+        resolve_repo_scope(temp_dir.path()).expect("resolve_repo_scope must succeed");
 
     std::env::remove_var("EXCLUDED_REPOS");
 
@@ -311,7 +316,8 @@ fn test_resolve_repo_scope_env_var_trims_whitespace_and_filters_empty_entries() 
     std::env::set_var("ALLOWED_REPOS", " myorg/a , , myorg/b ");
     let temp_dir = TempDir::new().expect("must create temp dir");
 
-    let (allowed, _excluded) = resolve_repo_scope(temp_dir.path());
+    let (allowed, _excluded) =
+        resolve_repo_scope(temp_dir.path()).expect("resolve_repo_scope must succeed");
 
     std::env::remove_var("ALLOWED_REPOS");
 
@@ -345,7 +351,8 @@ version_prefix = "v"
 "#,
     );
 
-    let (allowed, _excluded) = resolve_repo_scope(temp_dir.path());
+    let (allowed, _excluded) =
+        resolve_repo_scope(temp_dir.path()).expect("resolve_repo_scope must succeed");
 
     assert_eq!(allowed, vec!["myorg/*".to_string()]);
 }
@@ -363,7 +370,8 @@ excluded_repositories = ["myorg/legacy-secrets"]
 "#,
     );
 
-    let (_allowed, excluded) = resolve_repo_scope(temp_dir.path());
+    let (_allowed, excluded) =
+        resolve_repo_scope(temp_dir.path()).expect("resolve_repo_scope must succeed");
 
     assert_eq!(excluded, vec!["myorg/legacy-secrets".to_string()]);
 }
@@ -376,7 +384,8 @@ fn test_resolve_repo_scope_env_present_takes_precedence_over_toml_file() {
     let temp_dir = TempDir::new().expect("must create temp dir");
     write_repo_scope_toml(temp_dir.path(), r#"allowed_repositories = ["fromfile/*"]"#);
 
-    let (allowed, _excluded) = resolve_repo_scope(temp_dir.path());
+    let (allowed, _excluded) =
+        resolve_repo_scope(temp_dir.path()).expect("resolve_repo_scope must succeed");
 
     std::env::remove_var("ALLOWED_REPOS");
 
@@ -400,7 +409,8 @@ version_prefix = "v"
 "#,
     );
 
-    let (allowed, excluded) = resolve_repo_scope(temp_dir.path());
+    let (allowed, excluded) =
+        resolve_repo_scope(temp_dir.path()).expect("resolve_repo_scope must succeed");
 
     assert_eq!(
         allowed,
@@ -435,7 +445,8 @@ allow_override = true
 "#,
     );
 
-    let (allowed, excluded) = resolve_repo_scope(temp_dir.path());
+    let (allowed, excluded) =
+        resolve_repo_scope(temp_dir.path()).expect("resolve_repo_scope must succeed");
 
     assert_eq!(allowed, vec!["myorg/*".to_string()]);
     assert_eq!(excluded, vec!["myorg/legacy-secrets".to_string()]);
@@ -458,7 +469,8 @@ excluded_repositories = []
 "#,
     );
 
-    let (_allowed, excluded) = resolve_repo_scope(temp_dir.path());
+    let (_allowed, excluded) =
+        resolve_repo_scope(temp_dir.path()).expect("resolve_repo_scope must succeed");
 
     assert!(excluded.is_empty());
 }
@@ -471,30 +483,33 @@ fn test_resolve_repo_scope_missing_toml_file_defaults_allow_wildcard() {
     let temp_dir = TempDir::new().expect("must create temp dir");
     // Deliberately do not write any file into temp_dir.
 
-    let (allowed, excluded) = resolve_repo_scope(temp_dir.path());
+    let (allowed, excluded) =
+        resolve_repo_scope(temp_dir.path()).expect("resolve_repo_scope must succeed");
 
     assert_eq!(allowed, vec!["*".to_string()]);
     assert!(excluded.is_empty());
 }
 
-/// Assumption (documented gap — see Tester report): the target contract gives
-/// `resolve_repo_scope` a `(Vec<String>, Vec<String>)` return type, not a
-/// `Result`, so a `release-regent.toml` that exists but fails to parse as
-/// valid TOML syntax at all cannot be surfaced as an error from this function.
-/// This test locks in the interpretation that such a file is treated the same
-/// as "file absent" (defaults apply) rather than causing a panic. If the
-/// Coder/architect prefers a different behavior (e.g. logging a warning and
-/// still defaulting, vs. changing the signature to return a `Result`), this
-/// test should be the first one updated.
+/// Tech-lead decision (resolves the RED-phase documented gap): a
+/// `release-regent.toml` that exists but fails to parse as valid TOML syntax
+/// must be a fatal startup error — never silently treated as "file absent,
+/// use defaults". This is consistent with a malformed glob pattern
+/// (BA-71/BA-75) also being a fatal startup error, and with the project's
+/// fail-fast philosophy. Only a genuinely *missing* file, or a
+/// present-but-parseable file that simply omits the
+/// `allowed_repositories`/`excluded_repositories` keys, falls back to
+/// defaults.
 #[test]
-fn test_resolve_repo_scope_malformed_toml_syntax_falls_back_to_defaults() {
+fn test_resolve_repo_scope_malformed_toml_syntax_returns_error() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     clear_repo_scope_env_vars();
     let temp_dir = TempDir::new().expect("must create temp dir");
     write_repo_scope_toml(temp_dir.path(), "this is not valid TOML syntax [[[");
 
-    let (allowed, excluded) = resolve_repo_scope(temp_dir.path());
+    let result = resolve_repo_scope(temp_dir.path());
 
-    assert_eq!(allowed, vec!["*".to_string()]);
-    assert!(excluded.is_empty());
+    assert!(
+        result.is_err(),
+        "malformed TOML syntax must be a fatal error, not a silent fallback to defaults"
+    );
 }
