@@ -406,29 +406,33 @@ impl ReleaseRegentWebhookHandler {
     ///
     /// # Implementation note
     ///
-    /// `full_name` is lowercased before matching (mirroring the lowercasing
+    /// `full_name` is lowercased before matching, mirroring the lowercasing
     /// [`compile_repo_patterns`] applies to each configured pattern at
-    /// startup), and matching itself additionally uses
-    /// [`glob::MatchOptions::case_sensitive`] `= false` as a defense-in-depth
-    /// belt-and-braces measure: production patterns are always pre-lowercased
-    /// by `compile_repo_patterns`, so case-insensitive matching is a no-op for
-    /// them, but this guards against any pattern that reaches this method
-    /// without having gone through that normalization step.
+    /// startup. See [`matches_any`] for the belt-and-braces case-insensitive
+    /// matching this delegates to.
     pub fn is_allowed(&self, full_name: &str) -> bool {
         let lowered = full_name.to_lowercase();
-        let options = glob::MatchOptions {
-            case_sensitive: false,
-            require_literal_separator: false,
-            require_literal_leading_dot: false,
-        };
-        self.allowed_patterns
-            .iter()
-            .any(|p| p.matches_with(&lowered, options))
-            && !self
-                .excluded_patterns
-                .iter()
-                .any(|p| p.matches_with(&lowered, options))
+        matches_any(&self.allowed_patterns, &lowered)
+            && !matches_any(&self.excluded_patterns, &lowered)
     }
+}
+
+/// Return `true` if any pattern in `patterns` matches `subject`.
+///
+/// Matching uses [`glob::MatchOptions::case_sensitive`] `= false` as a
+/// defense-in-depth belt-and-braces measure: production patterns are always
+/// pre-lowercased by [`compile_repo_patterns`], so case-insensitive matching
+/// is a no-op for them, but this guards against any pattern that reaches this
+/// function without having gone through that normalization step. Callers are
+/// still expected to lowercase `subject` themselves (see
+/// [`ReleaseRegentWebhookHandler::is_allowed`]).
+fn matches_any(patterns: &[glob::Pattern], subject: &str) -> bool {
+    let options = glob::MatchOptions {
+        case_sensitive: false,
+        require_literal_separator: false,
+        require_literal_leading_dot: false,
+    };
+    patterns.iter().any(|p| p.matches_with(subject, options))
 }
 
 #[async_trait]

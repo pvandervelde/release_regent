@@ -122,6 +122,27 @@ fn read_github_credentials_from_env() -> Result<(u64, String), errors::Error> {
     Ok((app_id, private_key))
 }
 
+/// Resolve the configuration directory: `CONFIG_DIR` env var if set, else the
+/// current working directory.
+///
+/// Shared by [`build_server_processor`] (configuration provider base
+/// directory) and `main`'s repo-scope resolution — both must agree on which
+/// directory `release-regent.toml` lives in.
+///
+/// # Errors
+///
+/// Returns [`errors::Error::Internal`] if `CONFIG_DIR` is absent and the
+/// current working directory cannot be determined.
+#[allow(clippy::result_large_err)] // errors::Error is intentionally large
+fn resolve_config_dir() -> Result<std::path::PathBuf, errors::Error> {
+    match std::env::var("CONFIG_DIR") {
+        Ok(dir) => Ok(std::path::PathBuf::from(dir)),
+        Err(_) => std::env::current_dir().map_err(|e| {
+            errors::Error::internal(format!("Failed to determine working directory: {e}"))
+        }),
+    }
+}
+
 /// Parse a comma-separated env-var-style list into trimmed, non-empty entries.
 ///
 /// Matches the pre-existing `ALLOWED_REPOS` parsing behaviour: entries are
@@ -266,12 +287,7 @@ async fn build_server_processor(webhook_secret: String) -> Result<ServerProcesso
 
     let github_client = release_regent_github_client::GitHubClient::from_config(auth_config)?;
 
-    let config_dir = match std::env::var("CONFIG_DIR") {
-        Ok(dir) => std::path::PathBuf::from(dir),
-        Err(_) => std::env::current_dir().map_err(|e| {
-            errors::Error::internal(format!("Failed to determine working directory: {e}"))
-        })?,
-    };
+    let config_dir = resolve_config_dir()?;
     info!(config_dir = %config_dir.display(), "Using configuration directory");
 
     let config_provider = release_regent_config_provider::GitHubConfigurationProvider::new(
@@ -419,14 +435,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Repository allow-list / exclude-list: glob patterns resolved from
     // ALLOWED_REPOS/EXCLUDED_REPOS env vars, falling back to
     // allowed_repositories/excluded_repositories in release-regent.toml.
-    // This mirrors the CONFIG_DIR resolution in `build_server_processor`
-    // (env var, else current working directory).
-    let repo_scope_config_dir = match std::env::var("CONFIG_DIR") {
-        Ok(dir) => std::path::PathBuf::from(dir),
-        Err(_) => std::env::current_dir().map_err(|e| {
-            errors::Error::internal(format!("Failed to determine working directory: {e}"))
-        })?,
-    };
+    // Shares CONFIG_DIR resolution with `build_server_processor` via
+    // `resolve_config_dir` (env var, else current working directory).
+    let repo_scope_config_dir = resolve_config_dir()?;
     let (raw_allowed_repos, raw_excluded_repos) = resolve_repo_scope(&repo_scope_config_dir)?;
     let allowed_patterns = handler::compile_repo_patterns("allowed_repos", &raw_allowed_repos)?;
     let excluded_patterns = handler::compile_repo_patterns("excluded_repos", &raw_excluded_repos)?;
