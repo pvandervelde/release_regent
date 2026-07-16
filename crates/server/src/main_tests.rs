@@ -33,6 +33,13 @@ fn clear_repo_scope_env_vars() {
     std::env::remove_var("EXCLUDED_REPOS");
 }
 
+/// Clears the `CONFIG_DIR` environment variable.
+///
+/// Must only be called while holding [`ENV_LOCK`].
+fn clear_config_dir_env_var() {
+    std::env::remove_var("CONFIG_DIR");
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // read_github_credentials_from_env — missing variable paths
 // ──────────────────────────────────────────────────────────────────────────────
@@ -221,6 +228,53 @@ fn test_parse_comma_separated_empty_string_returns_empty_vec() {
 fn test_parse_comma_separated_single_entry_returns_single_element_vec() {
     let result = parse_comma_separated("*");
     assert_eq!(result, vec!["*".to_string()]);
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// resolve_config_dir
+// ──────────────────────────────────────────────────────────────────────────────
+//
+// Mutation-audit gap (QA Engineer, post-implementation): cargo-mutants found
+// that `resolve_config_dir`'s body could be replaced with
+// `Ok(Default::default())` (i.e. always returning an empty `PathBuf`) without
+// any test failing. `resolve_config_dir` is one of the primary functions in
+// scope for the repository allow-list/exclude-list feature (it supplies the
+// directory `resolve_repo_scope`/`load_repo_scope_toml` search for
+// `release-regent.toml`), so an untested "always empty path" regression is a
+// genuine correctness gap, not a cosmetic one: a deployment that sets
+// `CONFIG_DIR` to point at a mounted config volume would silently fall back
+// to reading `release-regent.toml` (or nothing) from the process's current
+// working directory instead.
+
+#[test]
+fn test_resolve_config_dir_env_var_present_returns_that_path() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    clear_config_dir_env_var();
+    std::env::set_var("CONFIG_DIR", "some/configured/directory");
+
+    let result = resolve_config_dir();
+
+    std::env::remove_var("CONFIG_DIR");
+
+    assert_eq!(
+        result.expect("resolve_config_dir must succeed when CONFIG_DIR is set"),
+        std::path::PathBuf::from("some/configured/directory"),
+        "CONFIG_DIR must be used verbatim, not silently discarded"
+    );
+}
+
+#[test]
+fn test_resolve_config_dir_env_var_absent_returns_current_working_directory() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    clear_config_dir_env_var();
+
+    let result = resolve_config_dir();
+
+    assert_eq!(
+        result.expect("resolve_config_dir must succeed when CONFIG_DIR is unset"),
+        std::env::current_dir().expect("test process must have a current directory"),
+        "an unset CONFIG_DIR must fall back to the current working directory, not an empty path"
+    );
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
