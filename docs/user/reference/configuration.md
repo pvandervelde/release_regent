@@ -57,6 +57,9 @@ from GitHub. It is **not** part of the local file discovery list above.
 [versioning]
 # How versions are calculated
 
+[changelog]
+# How changelog entries are generated and formatted
+
 [release_pr]
 # How release PRs are created and what they contain
 
@@ -181,6 +184,140 @@ excluded_pr_authors = ["dependabot[bot]", "renovate[bot]"]
 
 ---
 
+## `changelog` — changelog generation
+
+The `[changelog]` section controls how Release Regent generates the changelog content
+included in release PRs and GitHub releases. When the section is absent, all fields
+default to the built-in template renderer.
+
+### `changelog.strategy`
+
+**Type**: string or object
+**Default**: `"internal"`
+
+Selects the changelog rendering back-end.
+
+| Value | Behaviour |
+| :--- | :--- |
+| `"internal"` | Built-in ordered template renderer, controlled by `section_template` and `commit_template` |
+| `"git_cliff"` | Delegate to [git-cliff-core](https://git-cliff.org/) for advanced Tera-based templating |
+| `external` (object — see below) | Run an external command; commits are passed as `{sha} {message}` lines on stdin, stdout becomes the changelog body |
+
+```toml
+[changelog]
+strategy = "internal"
+```
+
+#### External strategy
+
+```toml
+[changelog.strategy.external]
+command = "git-cliff"
+env_vars = { GIT_CLIFF_CONFIG = "/path/to/cliff.toml" }  # Optional
+timeout_ms = 30000  # Optional: max execution time in milliseconds (default 30 000)
+```
+
+### `changelog.include_authors`
+
+**Type**: boolean
+**Default**: `true`
+
+Whether to include commit authors in the generated changelog. Applies only when
+`strategy = "internal"`.
+
+> **Note**: This field is reserved for future use. It is accepted and stored in configuration
+> but has no runtime effect in the current release — the internal changelog renderer does not
+> yet read it. Author inclusion will be activated in a forthcoming update.
+
+```toml
+[changelog]
+include_authors = true
+```
+
+### `changelog.include_shas`
+
+**Type**: boolean
+**Default**: `true`
+
+Whether to include abbreviated commit SHAs in the generated changelog. Applies only when
+`strategy = "internal"`.
+
+```toml
+[changelog]
+include_shas = true
+```
+
+### `changelog.include_links`
+
+**Type**: boolean
+**Default**: `true`
+
+Whether to include hyperlinks to commits or PRs in the generated changelog. Requires
+`remote_url` to be set or auto-detectable from the git remote. Applies only when
+`strategy = "internal"`.
+
+```toml
+[changelog]
+include_links = true
+```
+
+### `changelog.section_template`
+
+**Type**: string
+**Default**: `"### {title}\n\n{entries}\n"`
+
+Template for changelog section headings. Use `{title}` for the section name (e.g. `"Features"`)
+and `{entries}` for the block of rendered commit lines. Applies only when `strategy = "internal"`.
+
+```toml
+[changelog]
+section_template = "### {title}\n\n{entries}\n"
+# section_template = "## {title}\n\n{entries}\n"
+```
+
+### `changelog.commit_template`
+
+**Type**: string
+**Default**: `"- {description} [{sha}]"`
+
+Template for individual commit entries. Use `{description}` for the commit subject and
+`{sha}` for the abbreviated commit SHA. Applies only when `strategy = "internal"`.
+
+```toml
+[changelog]
+commit_template = "- {description} [{sha}]"
+# commit_template = "* {description}"
+```
+
+### `changelog.repository_path`
+
+**Type**: string (optional)
+**Default**: *(absent)*
+
+Path to the local git repository. Used by the `"git_cliff"` strategy to locate git
+history. When absent, git-cliff-core uses the current working directory.
+
+```toml
+[changelog]
+repository_path = "/path/to/repo"
+```
+
+### `changelog.remote_url`
+
+**Type**: string (optional)
+**Default**: *(absent — auto-detected from the `origin` remote)*
+
+Remote repository URL used for generating commit and PR hyperlinks when
+`include_links = true`. When absent, Release Regent attempts to detect it from
+the repository's `origin` remote. Typically the GitHub `https://` URL.
+
+```toml
+[changelog]
+remote_url = "https://github.com/myorg/myrepo"
+```
+
+---
+
 ## `release_pr` — release pull requests
 
 ### `release_pr.title_template`
@@ -188,14 +325,20 @@ excluded_pr_authors = ["dependabot[bot]", "renovate[bot]"]
 **Type**: string
 **Default**: `"chore(release): ${version}"`
 
-Template for the release PR title. Use `${version}` as the placeholder — both `${variable}`
-and `{variable}` syntax are accepted.
+Template for the release PR title. Both `${variable}` and `{variable}` syntax are accepted.
+
+**Available placeholders**:
+
+| Placeholder | Description | Example |
+| :--- | :--- | :--- |
+| `${version}` | Semantic version without prefix | `1.2.3` |
+| `${version_tag}` | Version with the configured prefix | `v1.2.3` |
 
 ```toml
 [release_pr]
 title_template = "chore(release): ${version}"
 # title_template = "Release ${version}"
-# title_template = "Prepare release ${version}"
+# title_template = "Prepare release ${version_tag}"
 ```
 
 ### `release_pr.body_template`
@@ -203,7 +346,21 @@ title_template = "chore(release): ${version}"
 **Type**: string
 **Default**: `"## Changelog\n\n${changelog}"`
 
-Template for the release PR body. Use `${changelog}` to insert the generated changelog.
+Template for the release PR body. Both `${variable}` and `{variable}` syntax are accepted.
+
+**Available placeholders**:
+
+| Placeholder | Description |
+| :--- | :--- |
+| `${changelog}` | Formatted changelog entries for this release |
+| `${version}` | Semantic version without prefix (e.g. `"1.2.3"`) |
+| `${version_tag}` | Version with the configured prefix (e.g. `"v1.2.3"`) |
+| `${date}` | Current date-time in ISO 8601 format (e.g. `"2025-07-19T10:30:00Z"`) |
+| `${commit_count}` | Approximate number of changelog entries (commit lines) |
+| `${correlation_id}` | Unique request identifier for tracing |
+| `${previous_version}` | Previous release version, or `"initial release"` when none exists |
+| `${repository}` | Repository in `"owner/repo"` format |
+| `${branch}` | Target branch name |
 
 ```toml
 [release_pr]
@@ -211,6 +368,25 @@ body_template = """
 ## Changelog
 
 ${changelog}
+"""
+```
+
+A more detailed example using several placeholders:
+
+```toml
+[release_pr]
+body_template = """
+## Release ${version_tag}
+
+### Changes
+
+${changelog}
+
+### Release information
+
+- **Version**: ${version}
+- **Commits**: ${commit_count} commits since last release
+- **Date**: ${date}
 """
 ```
 
@@ -320,14 +496,15 @@ prerelease = false
 ### `releases.generate_notes`
 
 **Type**: boolean
-**Default**: `true`
+**Default**: `false`
 
 When `true`, GitHub auto-generates release notes from merged PRs in addition to the changelog
 body. These notes appear in the GitHub release alongside the release PR body content.
 
 ```toml
 [releases]
-generate_notes = true
+generate_notes = false
+# generate_notes = true  # Also include GitHub's auto-generated notes
 ```
 
 ---
@@ -521,7 +698,7 @@ The following fields may be locked:
 | `error_handling.backoff_multiplier` | Exponential backoff multiplier |
 | `error_handling.initial_delay_ms` | Initial retry delay |
 
-All `release_pr.*` and `notifications.*` fields are never lockable.
+All `changelog.*`, `release_pr.*`, and `notifications.*` fields are never lockable.
 
 For the full rules on lock accumulation and conflict handling, see
 [Configuration hierarchy — per-field locks](../explanation/configuration-hierarchy.md#per-field-locks).
@@ -559,6 +736,14 @@ strategy = "conventional"
 allow_override = true
 excluded_pr_authors = ["dependabot[bot]", "renovate[bot]"]
 
+[changelog]
+strategy = "internal"
+include_authors = true
+include_shas = true
+include_links = true
+section_template = "### {title}\n\n{entries}\n"
+commit_template = "- {description} [{sha}]"
+
 [release_pr]
 title_template = "chore(release): ${version}"
 body_template = """
@@ -572,7 +757,7 @@ auto_detect_manifests = true
 [releases]
 draft = false
 prerelease = false
-generate_notes = true
+generate_notes = false
 
 [error_handling]
 max_retries = 5

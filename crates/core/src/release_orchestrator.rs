@@ -79,8 +79,9 @@ pub struct OrchestratorConfig {
 
     /// Template for the release PR title.
     ///
-    /// Supports `{version}` (e.g. `"1.2.3"`) and `{version_tag}` (e.g. `"v1.2.3"`).
-    /// Defaults to `"chore(release): {version_tag}"`.
+    /// Supports `${version}` (e.g. `"1.2.3"`) and `${version_tag}` (e.g. `"v1.2.3"`).
+    /// Both `${variable}` (canonical) and `{variable}` (legacy) syntaxes are accepted.
+    /// Defaults to `"chore(release): ${version}"`.
     pub title_template: String,
 
     /// Template for the release PR body.
@@ -237,7 +238,7 @@ impl Default for OrchestratorConfig {
         Self {
             branch_prefix: Self::DEFAULT_BRANCH_PREFIX.to_string(),
             version_prefix: Self::DEFAULT_VERSION_PREFIX.to_string(),
-            title_template: "chore(release): {version_tag}".to_string(),
+            title_template: "chore(release): ${version}".to_string(),
             changelog_header,
             body_template,
             manifest_files: Vec::new(),
