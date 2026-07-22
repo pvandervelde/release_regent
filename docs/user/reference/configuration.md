@@ -225,6 +225,10 @@ timeout_ms = 30000  # Optional: max execution time in milliseconds (default 30 0
 Whether to include commit authors in the generated changelog. Applies only when
 `strategy = "internal"`.
 
+> **Note**: This field is reserved for future use. It is accepted and stored in configuration
+> but has no runtime effect in the current release — the internal changelog renderer does not
+> yet read it. Author inclusion will be activated in a forthcoming update.
+
 ```toml
 [changelog]
 include_authors = true
@@ -693,12 +697,8 @@ The following fields may be locked:
 | `error_handling.max_retries` | Maximum retry count |
 | `error_handling.backoff_multiplier` | Exponential backoff multiplier |
 | `error_handling.initial_delay_ms` | Initial retry delay |
-| `changelog.strategy` | Changelog rendering back-end |
-| `changelog.include_authors` | Whether commit authors appear in changelogs |
-| `changelog.include_shas` | Whether commit SHAs appear in changelogs |
-| `changelog.include_links` | Whether commit/PR links appear in changelogs |
 
-All `release_pr.*` and `notifications.*` fields are never lockable.
+All `changelog.*`, `release_pr.*`, and `notifications.*` fields are never lockable.
 
 For the full rules on lock accumulation and conflict handling, see
 [Configuration hierarchy — per-field locks](../explanation/configuration-hierarchy.md#per-field-locks).
