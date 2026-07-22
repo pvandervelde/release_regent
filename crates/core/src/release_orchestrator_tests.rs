@@ -668,7 +668,7 @@ async fn test_orchestrate_no_existing_pr_creates_branch_and_pr() {
     assert_eq!(prs.len(), 1);
     assert_eq!(prs[0].base, "main");
     assert_eq!(prs[0].head, "release/v1.2.3");
-    assert!(prs[0].title.contains("v1.2.3"));
+    assert!(prs[0].title.contains("1.2.3"));
     assert!(prs[0]
         .body
         .as_deref()
@@ -1917,12 +1917,15 @@ async fn test_update_release_pr_does_not_patch_title_when_unchanged() {
     let version = ver(1, 0, 0);
     let config = default_config();
 
-    // The default title template is "chore(release): {version_tag}".
-    // For v1.0.0 this produces "chore(release): v1.0.0".
+    // The default title template is "chore(release): ${version}".
+    // For v1.0.0 this produces "chore(release): 1.0.0".
+    // Use the same replacement logic as render_title (both ${var} and {var} style).
     let rendered_title = config
         .title_template
-        .replace("{version}", "1.0.0")
-        .replace("{version_tag}", "v1.0.0");
+        .replace("${version_tag}", "v1.0.0")
+        .replace("${version}", "1.0.0")
+        .replace("{version_tag}", "v1.0.0")
+        .replace("{version}", "1.0.0");
 
     let existing_body = "## Changelog\n\n- fix: old fix [aabbccddeeff00112233445566778899aabbccdd]";
     let mut existing_pr = make_open_release_pr(42, "release/v1.0.0", Some(existing_body));
