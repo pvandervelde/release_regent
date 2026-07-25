@@ -567,3 +567,33 @@ fn test_resolve_repo_scope_malformed_toml_syntax_returns_error() {
         "malformed TOML syntax must be a fatal error, not a silent fallback to defaults"
     );
 }
+
+/// Regression test for a security finding: `release-regent.toml` is the same
+/// file used for the broader app configuration hierarchy (not exclusive to
+/// the allow/exclude-list keys). If a TOML syntax error occurs on a line
+/// containing a secret-looking value, the parse-error message returned by
+/// [`load_repo_scope_toml`] must not embed the raw source line (which the
+/// `toml` crate's `Display` impl otherwise includes verbatim), because this
+/// error propagates via `?` out of `main()` and is printed to stderr/container
+/// logs on startup failure.
+#[test]
+fn test_resolve_repo_scope_malformed_toml_error_does_not_leak_secret_value() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    clear_repo_scope_env_vars();
+    let temp_dir = TempDir::new().expect("must create temp dir");
+    let secret = "ghp_SuperSecretToken1234567890ABCDEF";
+    write_repo_scope_toml(
+        temp_dir.path(),
+        &format!("github_webhook_secret = {secret}"),
+    );
+
+    let result = resolve_repo_scope(temp_dir.path());
+
+    let err = result.expect_err("malformed TOML syntax must be a fatal error");
+    let rendered = format!("{err}");
+    assert!(
+        !rendered.contains(secret),
+        "error message must not leak the raw source line containing a secret-looking \
+         value, got: {rendered}"
+    );
+}

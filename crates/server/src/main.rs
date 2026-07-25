@@ -252,11 +252,58 @@ fn load_repo_scope_toml(
     toml::from_str::<RepoScopeToml>(&contents)
         .map(Some)
         .map_err(|e| {
+            // Deliberately avoid `{e}`/`e.to_string()` here: `toml::de::Error`'s
+            // `Display` impl embeds the offending source line verbatim (e.g. a
+            // secret value from `github_webhook_secret`), and this error
+            // propagates via `?` out of `main()` to be printed on stderr /
+            // captured by container logs on startup failure.
+            //
+            // Instead, use only structural error info: `.message()` (the parser's
+            // "what went wrong" description, without any source excerpt) and
+            // `.span()` (a byte-offset range we translate into a 1-based
+            // line/column ourselves) to report a precise-but-redacted location.
+            let location = e
+                .span()
+                .map(|span| {
+                    let (line, column) = line_col_at(&contents, span.start);
+                    format!(" at line {line}, column {column}")
+                })
+                .unwrap_or_default();
             crate::errors::Error::internal(format!(
-                "Failed to parse {} as TOML: {e}",
-                path.display()
+                "Failed to parse {} as TOML: {}{location}",
+                path.display(),
+                e.message()
             ))
         })
+}
+
+/// Translate a byte offset into `text` into a 1-based `(line, column)` pair.
+///
+/// Both line and column are counted the same way `toml::de::Error`'s own
+/// `Display` implementation counts them (1-based, column measured in
+/// characters from the start of the line), so callers can build a redacted
+/// "at line L, column C" message that matches what an operator would see if
+/// the source excerpt were not being intentionally withheld.
+///
+/// `byte_offset` is clamped to `text.len()` so an out-of-range offset (which
+/// should not occur in practice) cannot panic on a slice boundary.
+fn line_col_at(text: &str, byte_offset: usize) -> (usize, usize) {
+    let byte_offset = byte_offset.min(text.len());
+    let mut line = 1usize;
+    let mut line_start = 0usize;
+
+    for (idx, ch) in text.char_indices() {
+        if idx >= byte_offset {
+            break;
+        }
+        if ch == '\n' {
+            line += 1;
+            line_start = idx + ch.len_utf8();
+        }
+    }
+
+    let column = text[line_start..byte_offset].chars().count() + 1;
+    (line, column)
 }
 
 /// Construct the production [`ServerProcessor`] from environment variables.
