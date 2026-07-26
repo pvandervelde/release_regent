@@ -302,8 +302,8 @@ per-repository installation selection) can still limit automation to an explicit
   current implementation).
 
 **Priority**: High
-**Status**: 🚧 In Progress — exact-match and literal `"*"` already implemented;
-wildcard glob patterns, the exclude-list, and file-based configuration are pending
+**Status**: ✅ Implemented — glob-pattern matching, the exclude-list, and file-based
+configuration are all implemented and tested
 (see [BA-66–BA-75](../testing/behavioral-assertions.md#repository-allow-list-assertions))
 
 ## Data Processing Requirements

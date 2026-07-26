@@ -286,8 +286,8 @@ automation to the repositories that have opted in.
   runtime.
 
 **Priority**: High
-**Status**: Partially implemented — exact-match and `"*"` exist today; wildcard glob
-patterns, the exclude-list, and file-based configuration are proposed (see
+**Status**: ✅ Implemented — wildcard glob patterns, the exclude-list, and file-based
+configuration are all implemented and tested (see
 [FR-9](functional-requirements.md#fr-9-repository-scoping-for-large-organizations))
 
 ## User Journey Maps

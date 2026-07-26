@@ -143,8 +143,8 @@ repository and event ID.
 ### Validation
 
 Each allow-list and exclude-list pattern is compiled at startup; a malformed pattern
-in either list is a fatal startup error identifying the offending entry (by value,
-list, and index).
+in either list is a fatal startup error identifying the offending entry (by value and
+list).
 
 See [FR-9](../requirements/functional-requirements.md#fr-9-repository-scoping-for-large-organizations)
 and [BA-66–BA-75](../testing/behavioral-assertions.md#repository-allow-list-assertions)
