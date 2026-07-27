@@ -1,6 +1,7 @@
 use super::*;
 use std::sync::{LazyLock, Mutex};
 use tempfile::TempDir;
+use tracing_test::traced_test;
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Test-env serialization lock
@@ -595,5 +596,306 @@ fn test_resolve_repo_scope_malformed_toml_error_does_not_leak_secret_value() {
         !rendered.contains(secret),
         "error message must not leak the raw source line containing a secret-looking \
          value, got: {rendered}"
+    );
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// line_col_at — multi-byte UTF-8 char-boundary panic (code-review finding 1
+// on PR #216)
+// ──────────────────────────────────────────────────────────────────────────────
+//
+// `line_col_at` is called from `load_repo_scope_toml`'s TOML-parse-error path
+// with a byte offset derived from `toml::de::Error::span().start`. Its body
+// slices `text[line_start..byte_offset]` directly. `line_start` is always a
+// valid char boundary (it is only ever `0`, or `idx + ch.len_utf8()` taken
+// from a `char_indices()` iteration), but `byte_offset` is an arbitrary
+// `usize` accepted at the function's signature and is only clamped to
+// `text.len()` — never snapped to the nearest char boundary. Any
+// `byte_offset` that lands strictly inside a multi-byte UTF-8 sequence causes
+// `str` slicing to panic with "byte index N is not a char boundary".
+
+#[test]
+fn test_line_col_at_byte_offset_mid_multibyte_char_does_not_panic() {
+    // "café = 1": bytes are c=0 a=1 f=2 é=3..5 (2-byte UTF-8) ' '=5 '='=6
+    // ' '=7 1=8. Char boundaries: {0,1,2,3,5,6,7,8,9}. byte_offset=4 sits
+    // strictly inside the 2-byte é sequence and is well below text.len()
+    // (9), so it is not affected by the `.min(text.len())` clamp.
+    let text = "café = 1";
+    assert_eq!(
+        text.len(),
+        9,
+        "fixture assumption: é must encode as 2 UTF-8 bytes"
+    );
+    assert!(
+        !text.is_char_boundary(4),
+        "fixture assumption: byte offset 4 must fall inside a multi-byte character"
+    );
+
+    let (line, column) = line_col_at(text, 4);
+
+    assert_eq!(line, 1, "single-line text: line must remain 1");
+    assert!(
+        (1..=text.chars().count() + 1).contains(&column),
+        "column must be a plausible 1-based column within the line, got {column}"
+    );
+}
+
+#[test]
+fn test_line_col_at_byte_offset_mid_multibyte_char_after_newline_does_not_panic() {
+    // A first line establishes a real line increment (exercising the
+    // `ch == '\n'` branch), then the offending offset lands inside the
+    // 4-byte 🎉 emoji on the second line.
+    //
+    // Byte layout of "café = 1\nemoji = 🎉x":
+    //   c=0 a=1 f=2 é=3..5 ' '=5 '='=6 ' '=7 1=8 '\n'=9
+    //   e=10 m=11 o=12 j=13 i=14 ' '=15 '='=16 ' '=17 🎉=18..22 x=22
+    // (length 23). Char boundaries near the emoji: {18, 22}. byte_offset=20
+    // sits strictly inside the 4-byte 🎉 sequence.
+    let text = "café = 1\nemoji = \u{1F389}x";
+    let newline_idx = text.find('\n').expect("fixture must contain a newline");
+    assert!(
+        newline_idx < 20,
+        "fixture assumption: byte offset 20 must be after the newline"
+    );
+    assert!(
+        !text.is_char_boundary(20),
+        "fixture assumption: byte offset 20 must fall inside the multi-byte emoji"
+    );
+    assert!(
+        20 < text.len(),
+        "fixture assumption: offset must be below text.len(), not clamped away"
+    );
+
+    let (line, column) = line_col_at(text, 20);
+
+    assert_eq!(
+        line, 2,
+        "byte offset 20 lies on the second (post-newline) line"
+    );
+    assert!(
+        column >= 1,
+        "column must be a valid 1-based column, got {column}"
+    );
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// line_col_at — property tests (Tier 3): never panics on arbitrary input
+// ──────────────────────────────────────────────────────────────────────────────
+
+mod line_col_at_property_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// General form of the multi-byte-boundary bug reproduced above:
+        /// `line_col_at` must never panic for ANY `(text, byte_offset)`
+        /// pair, including byte offsets that were never produced by
+        /// iterating `text.char_indices()` (e.g. offsets landing
+        /// mid-character).
+        ///
+        /// `byte_offset` is deliberately generated relative to `text.len()`
+        /// (`0..=text.len() + 4`) rather than over the full `usize` range: a
+        /// uniformly-random `usize` almost always lands far past
+        /// `text.len()` and gets clamped straight to a valid end-of-string
+        /// boundary by `.min(text.len())`, which would make this property
+        /// pass against the buggy implementation almost every run and defeat
+        /// the point of an adversarial test. Restricting the range to just
+        /// past `text.len()` keeps a realistic proportion of generated cases
+        /// landing inside multi-byte characters whenever `text` contains
+        /// any, which is exactly the scenario that panics today.
+        #[test]
+        fn prop_line_col_at_never_panics_on_arbitrary_input(
+            (text, byte_offset) in proptest::arbitrary::any::<String>().prop_flat_map(|text| {
+                let max_offset = text.len().saturating_add(4);
+                (Just(text), 0..=max_offset)
+            })
+        ) {
+            let (line, column) = line_col_at(&text, byte_offset);
+            prop_assert!(line >= 1, "line must be 1-based, got {line}");
+            prop_assert!(column >= 1, "column must be 1-based, got {column}");
+        }
+
+        /// Complementary invariant covering the full documented signature
+        /// (`byte_offset: usize` — including offsets far beyond
+        /// `text.len()`, exercising the `.min(text.len())` clamp path
+        /// itself never panics for arbitrary huge offsets).
+        #[test]
+        fn prop_line_col_at_never_panics_for_offsets_across_full_usize_range(
+            text in proptest::arbitrary::any::<String>(),
+            byte_offset in proptest::arbitrary::any::<usize>(),
+        ) {
+            let (line, column) = line_col_at(&text, byte_offset);
+            prop_assert!(line >= 1, "line must be 1-based, got {line}");
+            prop_assert!(column >= 1, "column must be 1-based, got {column}");
+        }
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// detect_misplaced_repo_scope_keys — misplaced repo-scope key footgun
+// (code-review finding 2 on PR #216)
+// ──────────────────────────────────────────────────────────────────────────────
+//
+// TOML grammar means a bare `key = value` line written AFTER a `[section]`
+// header belongs to that section, not the root table. `RepoScopeToml` only
+// ever looks at the root table (via `toml::from_str::<RepoScopeToml>`), so a
+// misplaced `allowed_repositories`/`excluded_repositories` key silently
+// deserializes to `None` and `resolve_repo_scope` falls back to the
+// wildcard-allow default with zero signal to the operator. These tests cover
+// `detect_misplaced_repo_scope_keys`, the function responsible for spotting
+// this footgun so the caller can emit a `tracing::warn!`.
+
+#[test]
+fn test_detect_misplaced_repo_scope_keys_nested_in_section_is_reported() {
+    let contents = r#"
+[core]
+release_branch_prefix = "release"
+
+allowed_repositories = ["myorg/*"]
+"#;
+
+    let found = detect_misplaced_repo_scope_keys(contents);
+
+    assert_eq!(
+        found,
+        vec![("allowed_repositories".to_string(), "core".to_string())],
+        "a key written after a [section] header must be reported as nested in that section"
+    );
+}
+
+#[test]
+fn test_detect_misplaced_repo_scope_keys_correct_root_placement_reports_nothing() {
+    let contents = r#"
+allowed_repositories = ["myorg/*"]
+
+[core]
+release_branch_prefix = "release"
+"#;
+
+    let found = detect_misplaced_repo_scope_keys(contents);
+
+    assert!(
+        found.is_empty(),
+        "a key correctly placed at the root table (before any [section] header) \
+         must never be reported as misplaced, got: {found:?}"
+    );
+}
+
+#[test]
+fn test_detect_misplaced_repo_scope_keys_neither_key_present_reports_nothing() {
+    let contents = r#"
+[core]
+release_branch_prefix = "release"
+
+[versioning]
+strategy = "conventional"
+"#;
+
+    let found = detect_misplaced_repo_scope_keys(contents);
+
+    assert!(
+        found.is_empty(),
+        "a file containing neither repo-scope key anywhere must report nothing, got: {found:?}"
+    );
+}
+
+#[test]
+fn test_detect_misplaced_repo_scope_keys_only_reports_the_misplaced_one_of_two() {
+    let contents = r#"
+allowed_repositories = ["myorg/*"]
+
+[core]
+release_branch_prefix = "release"
+excluded_repositories = ["myorg/legacy-secrets"]
+"#;
+
+    let found = detect_misplaced_repo_scope_keys(contents);
+
+    assert_eq!(
+        found,
+        vec![("excluded_repositories".to_string(), "core".to_string())],
+        "only the misplaced key must be reported; the correctly root-placed \
+         allowed_repositories must not appear, got: {found:?}"
+    );
+}
+
+#[test]
+fn test_detect_misplaced_repo_scope_keys_nested_two_levels_deep_reports_dotted_section() {
+    let contents = r#"
+[core]
+release_branch_prefix = "release"
+
+[core.branches]
+main = "main"
+excluded_repositories = ["myorg/legacy-secrets"]
+"#;
+
+    let found = detect_misplaced_repo_scope_keys(contents);
+
+    assert_eq!(
+        found,
+        vec![(
+            "excluded_repositories".to_string(),
+            "core.branches".to_string()
+        )],
+        "a key nested two sections deep must report the full dotted section path, got: {found:?}"
+    );
+}
+
+#[test]
+fn test_detect_misplaced_repo_scope_keys_malformed_toml_returns_empty_not_panic() {
+    // Best-effort diagnostic: a genuine TOML syntax error is already handled
+    // as a fatal error by `load_repo_scope_toml`'s existing parse-error path
+    // (see `test_resolve_repo_scope_malformed_toml_syntax_returns_error`).
+    // This function must not duplicate that failure mode by panicking.
+    let found = detect_misplaced_repo_scope_keys("this is not valid TOML syntax [[[");
+
+    assert!(
+        found.is_empty(),
+        "malformed TOML input must resolve to an empty Vec, not panic or error, got: {found:?}"
+    );
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// resolve_repo_scope — misplaced repo-scope key footgun is logged
+// (end-to-end wiring for code-review finding 2)
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[test]
+#[traced_test]
+fn test_resolve_repo_scope_misplaced_allowed_repositories_logs_warning() {
+    // This is a detection-and-warn fix, NOT a behavior change: the fallback
+    // to the wildcard-allow default must remain unchanged (deliberately NOT
+    // asserted as an `Err` here), but the operator must receive a loud
+    // signal that their `allowed_repositories` key was silently ignored.
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    clear_repo_scope_env_vars();
+    let temp_dir = TempDir::new().expect("must create temp dir");
+    write_repo_scope_toml(
+        temp_dir.path(),
+        r#"
+[core]
+release_branch_prefix = "release"
+
+allowed_repositories = ["myorg/*"]
+"#,
+    );
+
+    let (allowed, _excluded) =
+        resolve_repo_scope(temp_dir.path()).expect("resolve_repo_scope must still succeed");
+
+    assert_eq!(
+        allowed,
+        vec!["*".to_string()],
+        "behavior must be unchanged: the misplaced key still silently falls back \
+         to the wildcard default"
+    );
+    assert!(
+        logs_contain("allowed_repositories"),
+        "a warning identifying the misplaced key name must be logged"
+    );
+    assert!(
+        logs_contain("release-regent.toml"),
+        "a warning identifying the offending config file path must be logged"
     );
 }

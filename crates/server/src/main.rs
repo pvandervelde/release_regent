@@ -277,6 +277,68 @@ fn load_repo_scope_toml(
         })
 }
 
+/// Detect `allowed_repositories` / `excluded_repositories` keys that appear
+/// anywhere in a TOML document but are NOT part of the root table — i.e. keys
+/// silently absorbed into a `[section]` (or `[[array-of-tables]]`) because
+/// they were written after that section's header, rather than before any
+/// section header as TOML's root-table grammar requires.
+///
+/// This exists to catch a "silent footgun": an operator writes
+///
+/// ```toml
+/// [core]
+/// release_branch_prefix = "release"
+///
+/// allowed_repositories = ["myorg/*"]
+/// ```
+///
+/// and believes `allowed_repositories` restricts the allow-list, when in
+/// fact TOML parses it as `core.allowed_repositories` — a key
+/// [`RepoScopeToml`] never looks at (it only deserializes the root table) —
+/// so [`resolve_repo_scope`] silently falls back to the wildcard-allow
+/// default while the operator believes the allow-list is active.
+///
+/// # Contract
+///
+/// - Parses `contents` as a generic [`toml::Value`], independently of, and in
+///   addition to, the strongly-typed [`RepoScopeToml`] root-level
+///   deserialization performed by [`load_repo_scope_toml`].
+/// - Recursively walks every table in the document. Whenever a key literally
+///   named `"allowed_repositories"` or `"excluded_repositories"` is found
+///   inside a table that is **not** the document's root table, the returned
+///   `Vec` gains one `(key_name, containing_section)` entry, where
+///   `containing_section` is the dotted path of the enclosing table exactly
+///   as it appears in the source (e.g. `"core"`, `"core.branches"`).
+/// - A key of either name present at the root table (i.e. written before any
+///   `[section]` header — the correct/intended location) is **never**
+///   reported, even if a differently-scoped key of the same name also
+///   happens to appear nested elsewhere in the same document.
+/// - If a key appears nested inside more than one section, every occurrence
+///   is reported (one entry per occurrence).
+/// - If `contents` fails to parse as TOML at all, returns an empty `Vec`.
+///   This function is a best-effort diagnostic aid invoked only as an
+///   *additional* check; a genuine TOML syntax error is already a fatal
+///   error handled by [`load_repo_scope_toml`]'s existing parse-error path,
+///   and must not be duplicated or overridden here.
+/// - Pure function: does not read environment variables, does not touch
+///   disk, and does not log — callers turn a non-empty result into a
+///   `tracing::warn!` identifying the file path and the misplaced key(s).
+///
+/// # Implementation status
+///
+/// Stubbed for the RED phase of TDD — always panics via `todo!()`. The Coder
+/// phase replaces this body with the recursive `toml::Value::Table` walk
+/// described above, and wires a non-empty result into a `tracing::warn!` at
+/// the call site in [`load_repo_scope_toml`].
+#[allow(dead_code)] // wired into `load_repo_scope_toml` during the GREEN phase
+fn detect_misplaced_repo_scope_keys(contents: &str) -> Vec<(String, String)> {
+    let _ = contents;
+    todo!(
+        "Detect allowed_repositories/excluded_repositories keys nested inside a [section] \
+         (reviewer finding 2 on PR #216); see doc comment for the exact contract."
+    )
+}
+
 /// Translate a byte offset into `text` into a 1-based `(line, column)` pair.
 ///
 /// Both line and column are counted the same way `toml::de::Error`'s own
