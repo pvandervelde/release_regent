@@ -161,6 +161,7 @@ PORT=9090
 | `GITHUB_PRIVATE_KEY` | ✅ | — | PEM-encoded GitHub App private key |
 | `GITHUB_WEBHOOK_SECRET` | ✅ | — | HMAC-SHA256 webhook secret |
 | `CONFIG_DIR` | | `.` | Directory containing `.release-regent.toml` files |
-| `ALLOWED_REPOS` | | `*` | Comma-separated `owner/repo` allowlist |
+| `ALLOWED_REPOS` | | `*` | Comma-separated `owner/repo` glob-pattern allowlist |
+| `EXCLUDED_REPOS` | | (empty) | Comma-separated `owner/repo` glob-pattern denylist; always overrides `ALLOWED_REPOS` |
 | `EVENT_CHANNEL_CAPACITY` | | `1024` | In-memory event buffer depth |
 | `PORT` | | `8080` | TCP listen port |
