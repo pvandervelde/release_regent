@@ -70,18 +70,56 @@ CONFIG_DIR=/etc/release-regent/configs
 
 ### `ALLOWED_REPOS`
 
-**Type**: comma-separated list of `owner/repo` values, or `*`
-**Default**: `*` (accept events from any installed repository)
+**Type**: comma-separated list of glob patterns matched against `owner/repo` (case-insensitive), or `*`
+**Default**: `*` (act on events from any installed repository)
 
-Restricts which repositories the server processes events from. Events from repositories not in
-this list are rejected with `403 Forbidden`.
+Restricts which repositories the server acts on, independent of which repositories the GitHub
+App is *installed on* — see [Repository Allow-List vs. Installation
+Scope](../../specs/architecture/overview.md#repository-allow-list-vs-installation-scope) for why
+this matters in large organizations. Also configurable as `allowed_repositories` in
+`release-regent.toml` (`ALLOWED_REPOS` wins if both are set); see [Configuration: Repository
+Allow-List and
+Exclude-List](../../specs/operations/configuration.md#repository-allow-list-and-exclude-list-bootstrap-level-outside-the-merge-hierarchy)
+for the full precedence and matching rules.
+
+Events for repositories that don't match are dropped **after** signature validation, logged, and
+never reach configuration loading or any GitHub API call. This is fire-and-forget: the HTTP
+response returned to GitHub reflects only signature validation and is **not** changed by the
+allow-list/exclude-list outcome — GitHub always sees `200 OK` for a validly-signed request,
+regardless of whether the repository was ultimately processed.
+
+An explicit empty list (`ALLOWED_REPOS=`) denies every repository — an operational kill switch,
+distinct from leaving the variable unset.
 
 ```bash
 # Allow two specific repositories
 ALLOWED_REPOS=myorg/backend,myorg/frontend
 
+# Allow every repository in an org via a glob pattern
+ALLOWED_REPOS=myorg/*
+
 # Allow all repositories (default)
 ALLOWED_REPOS=*
+```
+
+### `EXCLUDED_REPOS`
+
+**Type**: comma-separated list of glob patterns matched against `owner/repo` (case-insensitive)
+**Default**: empty (excludes nothing)
+
+Carves out exceptions from a broader `ALLOWED_REPOS` pattern — a repository matching
+`EXCLUDED_REPOS` is never processed even if it also matches `ALLOWED_REPOS`. A match on this list
+always overrides a match on the allow-list, regardless of how specific either pattern is. Also
+configurable as `excluded_repositories` in `release-regent.toml` (`EXCLUDED_REPOS` wins if both
+are set).
+
+Unlike `ALLOWED_REPOS`, an empty or unset `EXCLUDED_REPOS` simply means "nothing is excluded" —
+it is **not** a kill switch.
+
+```bash
+# Allow everything in the org except one repository
+ALLOWED_REPOS=myorg/*
+EXCLUDED_REPOS=myorg/legacy-secrets
 ```
 
 ### `EVENT_CHANNEL_CAPACITY`

@@ -133,13 +133,6 @@ change based on the allow-list/exclude-list decision (i.e., GitHub does not rece
 distinct status code for "repository filtered out"). A `warn!` log records the
 repository and event ID.
 
-> **TODO — documentation reconciliation needed**: `docs/user/reference/environment-variables.md`
-> currently states that non-matching repositories are "rejected with `403 Forbidden`."
-> This spec treats the fire-and-forget behavior above (no HTTP status change) as
-> authoritative, based on the current implementation. The two documents currently
-> disagree and should be reconciled in a follow-up; this note intentionally does not
-> resolve which one is correct.
-
 ### Validation
 
 Each allow-list and exclude-list pattern is compiled at startup; a malformed pattern
