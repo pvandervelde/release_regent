@@ -125,9 +125,10 @@ fn read_github_credentials_from_env() -> Result<(u64, String), errors::Error> {
 /// Resolve the configuration directory: `CONFIG_DIR` env var if set, else the
 /// current working directory.
 ///
-/// Shared by [`build_server_processor`] (configuration provider base
-/// directory) and `main`'s repo-scope resolution — both must agree on which
-/// directory `release-regent.toml` lives in.
+/// Called once in `main`, which then passes the resolved [`std::path::PathBuf`]
+/// into both [`build_server_processor`] (configuration provider base
+/// directory) and the repo-scope resolution path, so both consumers operate
+/// on the exact same directory rather than re-resolving it independently.
 ///
 /// # Errors
 ///
@@ -249,7 +250,7 @@ fn load_repo_scope_toml(
         }
     };
 
-    toml::from_str::<RepoScopeToml>(&contents)
+    let parsed = toml::from_str::<RepoScopeToml>(&contents)
         .map(Some)
         .map_err(|e| {
             // Deliberately avoid `{e}`/`e.to_string()` here: `toml::de::Error`'s
@@ -274,7 +275,19 @@ fn load_repo_scope_toml(
                 path.display(),
                 e.message()
             ))
-        })
+        })?;
+
+    for (key, section) in detect_misplaced_repo_scope_keys(&contents) {
+        tracing::warn!(
+            key = %key,
+            section = %section,
+            path = %path.display(),
+            "Repository scope key found outside the TOML root table; it will be ignored — \
+             allowed_repositories/excluded_repositories must appear before any [section] header"
+        );
+    }
+
+    Ok(parsed)
 }
 
 /// Detect `allowed_repositories` / `excluded_repositories` keys that appear
@@ -323,20 +336,54 @@ fn load_repo_scope_toml(
 /// - Pure function: does not read environment variables, does not touch
 ///   disk, and does not log — callers turn a non-empty result into a
 ///   `tracing::warn!` identifying the file path and the misplaced key(s).
-///
-/// # Implementation status
-///
-/// Stubbed for the RED phase of TDD — always panics via `todo!()`. The Coder
-/// phase replaces this body with the recursive `toml::Value::Table` walk
-/// described above, and wires a non-empty result into a `tracing::warn!` at
-/// the call site in [`load_repo_scope_toml`].
-#[allow(dead_code)] // wired into `load_repo_scope_toml` during the GREEN phase
 fn detect_misplaced_repo_scope_keys(contents: &str) -> Vec<(String, String)> {
-    let _ = contents;
-    todo!(
-        "Detect allowed_repositories/excluded_repositories keys nested inside a [section] \
-         (reviewer finding 2 on PR #216); see doc comment for the exact contract."
-    )
+    let mut found = Vec::new();
+
+    let Ok(table) = contents.parse::<toml::value::Table>() else {
+        return found;
+    };
+
+    walk_repo_scope_table(&table, "", true, &mut found);
+    found
+}
+
+/// Recursive helper for [`detect_misplaced_repo_scope_keys`].
+///
+/// Walks `table`, reporting any `allowed_repositories`/`excluded_repositories`
+/// key found while `is_root` is `false`, and recurses into nested tables
+/// (including tables found inside arrays, i.e. `[[array-of-tables]]` entries)
+/// with `path` extended by the nested key's name.
+fn walk_repo_scope_table(
+    table: &toml::value::Table,
+    path: &str,
+    is_root: bool,
+    found: &mut Vec<(String, String)>,
+) {
+    for (key, value) in table {
+        if !is_root && (key == "allowed_repositories" || key == "excluded_repositories") {
+            found.push((key.clone(), path.to_string()));
+        }
+
+        let nested_path = if path.is_empty() {
+            key.clone()
+        } else {
+            format!("{path}.{key}")
+        };
+
+        match value {
+            toml::Value::Table(nested) => {
+                walk_repo_scope_table(nested, &nested_path, false, found);
+            }
+            toml::Value::Array(items) => {
+                for item in items {
+                    if let toml::Value::Table(nested) = item {
+                        walk_repo_scope_table(nested, &nested_path, false, found);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Translate a byte offset into `text` into a 1-based `(line, column)` pair.
@@ -364,7 +411,11 @@ fn line_col_at(text: &str, byte_offset: usize) -> (usize, usize) {
         }
     }
 
-    let column = text[line_start..byte_offset].chars().count() + 1;
+    let column = text[line_start..]
+        .char_indices()
+        .take_while(|(i, _)| line_start + i < byte_offset)
+        .count()
+        + 1;
     (line, column)
 }
 
@@ -373,9 +424,12 @@ fn line_col_at(text: &str, byte_offset: usize) -> (usize, usize) {
 /// Reads `GITHUB_APP_ID` and `GITHUB_PRIVATE_KEY` from the environment, builds
 /// a [`release_regent_github_client::GitHubClient`] without a bound installation
 /// ID, initialises a [`release_regent_config_provider::FileConfigurationProvider`]
-/// from the directory specified by `CONFIG_DIR` (falling back to the current
-/// working directory when `CONFIG_DIR` is absent), and wires them together with
-/// [`GitHubVersionCalculator`] into a [`ServerProcessor`].
+/// from `config_dir`, and wires them together with [`GitHubVersionCalculator`]
+/// into a [`ServerProcessor`].
+///
+/// `config_dir` is resolved once by the caller (via [`resolve_config_dir`])
+/// and passed in here so that this function and `main`'s repo-scope
+/// resolution path operate on the exact same directory.
 ///
 /// The installation ID is intentionally omitted here.  It is extracted from each
 /// webhook payload at event-processing time so that one server instance can handle
@@ -385,7 +439,10 @@ fn line_col_at(text: &str, byte_offset: usize) -> (usize, usize) {
 ///
 /// Returns an error if any required variable is absent, if the GitHub App
 /// private key is malformed, or if the configuration directory is inaccessible.
-async fn build_server_processor(webhook_secret: String) -> Result<ServerProcessor, errors::Error> {
+async fn build_server_processor(
+    webhook_secret: String,
+    config_dir: std::path::PathBuf,
+) -> Result<ServerProcessor, errors::Error> {
     let (app_id, private_key) = read_github_credentials_from_env()?;
 
     let auth_config = release_regent_github_client::AuthConfig {
@@ -396,7 +453,6 @@ async fn build_server_processor(webhook_secret: String) -> Result<ServerProcesso
 
     let github_client = release_regent_github_client::GitHubClient::from_config(auth_config)?;
 
-    let config_dir = resolve_config_dir()?;
     info!(config_dir = %config_dir.display(), "Using configuration directory");
 
     let config_provider = release_regent_config_provider::GitHubConfigurationProvider::new(
@@ -533,21 +589,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let github_secret = std::env::var("GITHUB_WEBHOOK_SECRET")
         .map_err(|e| errors::Error::environment("GITHUB_WEBHOOK_SECRET", e.to_string()))?;
 
+    // ── Configuration directory ─────────────────────────────────────────────
+
+    // Resolved once (CONFIG_DIR env var, else current working directory) and
+    // shared by both the production processor's configuration provider and
+    // the repo-scope resolution path below, so both consumers agree on
+    // exactly the same directory.
+    let config_dir = resolve_config_dir()?;
+
     // ── Build production processor ─────────────────────────────────────────
 
     // Construct the real ReleaseRegentProcessor from GitHub App credentials.
     // Fails fast with a clear error message when any required variable is absent.
     info!("Building production processor from environment credentials");
-    let processor = Arc::new(build_server_processor(github_secret.clone()).await?);
+    let processor =
+        Arc::new(build_server_processor(github_secret.clone(), config_dir.clone()).await?);
     info!("Production processor constructed successfully");
 
     // Repository allow-list / exclude-list: glob patterns resolved from
     // ALLOWED_REPOS/EXCLUDED_REPOS env vars, falling back to
     // allowed_repositories/excluded_repositories in release-regent.toml.
-    // Shares CONFIG_DIR resolution with `build_server_processor` via
-    // `resolve_config_dir` (env var, else current working directory).
-    let repo_scope_config_dir = resolve_config_dir()?;
-    let (raw_allowed_repos, raw_excluded_repos) = resolve_repo_scope(&repo_scope_config_dir)?;
+    let (raw_allowed_repos, raw_excluded_repos) = resolve_repo_scope(&config_dir)?;
     let allowed_patterns = handler::compile_repo_patterns("allowed_repos", &raw_allowed_repos)?;
     let excluded_patterns = handler::compile_repo_patterns("excluded_repos", &raw_excluded_repos)?;
 

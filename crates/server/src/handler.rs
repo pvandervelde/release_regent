@@ -37,11 +37,13 @@
 //! **Logging.** The single `warn!` drop point in `handle_event` now also fires
 //! for exclude-list matches (previously it only covered allow-list misses). The
 //! message text is left as `"Repository not in allow-list; dropping event"` for
-//! both cases — deliberately not distinguishing allow-miss from exclude-hit in
-//! the message text, since the operator action in both cases is identical
-//! ("check the repository scoping configuration"). The log now also carries the
-//! `event_id` field (previously only `repository`), per BA-67's requirement that
-//! the dropped-event warning identify the event, not just the repository.
+//! both cases, since the operator action in both cases is identical ("check
+//! the repository scoping configuration"); a structured `reason` field
+//! (`"not_in_allow_list"` vs `"in_exclude_list"`) distinguishes the two cases
+//! for anyone querying logs, without changing the human-readable message. The
+//! log now also carries the `event_id` field (previously only `repository`),
+//! per BA-67's requirement that the dropped-event warning identify the event,
+//! not just the repository.
 //!
 //! **Empty-list semantics are asymmetric by design:**
 //! - Empty `allowed_patterns` → deny-all kill switch (BA-69), matching the
@@ -444,9 +446,16 @@ impl WebhookHandler for ReleaseRegentWebhookHandler {
         let full_name = &envelope.repository.full_name;
 
         if !self.is_allowed(full_name) {
+            let lowered = full_name.to_lowercase();
+            let reason = if matches_any(&self.allowed_patterns, &lowered) {
+                "in_exclude_list"
+            } else {
+                "not_in_allow_list"
+            };
             warn!(
                 repository = %full_name,
                 event_id = %envelope.event_id,
+                reason = %reason,
                 "Repository not in allow-list; dropping event"
             );
             return Ok(());

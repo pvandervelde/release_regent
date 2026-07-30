@@ -164,7 +164,11 @@ async fn test_build_server_processor_with_valid_credentials_succeeds() {
     std::env::set_var("GITHUB_APP_ID", "99999");
     std::env::set_var("GITHUB_PRIVATE_KEY", TEST_RSA_PRIVATE_KEY);
 
-    let result = build_server_processor("test-webhook-secret".to_string()).await;
+    let result = build_server_processor(
+        "test-webhook-secret".to_string(),
+        std::env::current_dir().expect("test process must have a current directory"),
+    )
+    .await;
 
     std::env::remove_var("GITHUB_APP_ID");
     std::env::remove_var("GITHUB_PRIVATE_KEY");
@@ -186,7 +190,11 @@ async fn test_build_server_processor_with_invalid_pem_returns_github_error() {
     std::env::set_var("GITHUB_APP_ID", "99999");
     std::env::set_var("GITHUB_PRIVATE_KEY", "not-a-pem-key");
 
-    let result = build_server_processor("test-webhook-secret".to_string()).await;
+    let result = build_server_processor(
+        "test-webhook-secret".to_string(),
+        std::env::current_dir().expect("test process must have a current directory"),
+    )
+    .await;
 
     std::env::remove_var("GITHUB_APP_ID");
     std::env::remove_var("GITHUB_PRIVATE_KEY");
