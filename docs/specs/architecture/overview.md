@@ -110,7 +110,10 @@ flowchart TD
 **Responsibilities**:
 
 - Receive and signature-validate incoming webhooks (via `github-bot-sdk`)
-- Route validated events into the core processing pipeline
+- Filter events by repository allow-list and exclude-list before routing to the core
+  pipeline (see
+  [Repository Allow-List vs. Installation Scope](#repository-allow-list-vs-installation-scope))
+- Route validated, allowed, non-excluded events into the core processing pipeline
 - Handle environment configuration and startup
 - Expose health check endpoint for container orchestration probes
 
@@ -256,6 +259,36 @@ Both implementations satisfy the `VersionCalculator` trait
 (`crates/core/src/traits/version_calculator.rs`) so domain code is agnostic
 to the underlying strategy.
 
+### Repository Allow-List vs. Installation Scope
+
+Two distinct concepts govern which repositories Release Regent processes:
+
+- **Installation scope** ("installed on"): the set of repositories for which GitHub
+  delivers webhook events to this App installation. Configured entirely on GitHub's
+  side. In large organizations, admins are frequently forced to select "all
+  repositories" due to practical limits on selecting individual repositories one at a
+  time.
+- **Allow-list and exclude-list** ("should act on"): a pair of local,
+  operator-controlled filters (glob patterns over `owner/repo`, matched
+  case-insensitively) applied in `ReleaseRegentWebhookHandler` immediately after
+  signature validation and before any further processing or GitHub API call. An event
+  is processed only if it matches the allow-list **and** does not match the
+  exclude-list — a match on the exclude-list unconditionally overrides any match on
+  the allow-list, regardless of pattern specificity (`is_allowed =
+  matches_any(allowed) && !matches_any(excluded)`). The exclude-list lets an operator
+  carve out exceptions from a broad allow-list glob (e.g. allow `myorg/*` but exclude
+  `myorg/legacy-secrets`). See
+  [Configuration: Repository Allow-List and Exclude-List](../operations/configuration.md#repository-allow-list-and-exclude-list-bootstrap-level-outside-the-merge-hierarchy)
+  and [FR-9](../requirements/functional-requirements.md#fr-9-repository-scoping-for-large-organizations).
+
+A repository can be installed-on-but-not-acted-on (event silently dropped after
+logging, whether due to a non-matching allow-list or a matching exclude-list); it can
+never be acted-on-but-not-installed-on (no event would arrive at all). Both lists are
+bootstrap-level settings, evaluated before any `ReleaseRegentConfig` level is loaded —
+they are deliberately **not** part of the five-level configuration hierarchy above,
+since the decision of whether to process a repository at all must be made before any
+per-repository configuration is fetched.
+
 ## Data Flow Architecture
 
 ### Webhook Processing Pipeline
@@ -272,6 +305,7 @@ sequenceDiagram
 
     G->>F: POST /webhook (PR merged)
     F->>F: Validate signature & parse payload
+    F->>F: Check repository allow-list and exclude-list (drop if no match / excluded)
     F->>ES: Send event (mpsc channel)
     F-->>G: HTTP 200 OK
     Note over ES,EL: Asynchronous processing
@@ -303,6 +337,7 @@ sequenceDiagram
 
     G->>F: POST /webhook (Release PR merged)
     F->>F: Validate signature & parse payload
+    F->>F: Check repository allow-list and exclude-list (drop if no match / excluded)
     F->>ES: Send event (mpsc channel)
     F-->>G: HTTP 200 OK
     Note over ES,EL: Asynchronous processing

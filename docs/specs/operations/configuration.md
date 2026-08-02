@@ -30,6 +30,119 @@ Release Regent uses a hierarchical configuration system that merges settings fro
 - GitHub: Configuration stored in `.github/release-regent.toml`
 - Fallback: No repository config means use application defaults
 
+## Repository Allow-List and Exclude-List (Bootstrap-Level, Outside the Merge Hierarchy)
+
+Unlike the five-level `ReleaseRegentConfig` hierarchy described below, the repository
+allow-list and exclude-list are **server bootstrap settings** evaluated before any
+configuration level is resolved and before any GitHub API call is made for a given
+event. Together they restrict which repositories the server acts on, independent of
+which repositories the GitHub App is *installed on* — see
+[System Architecture: Repository Allow-List vs. Installation Scope](../architecture/overview.md#repository-allow-list-vs-installation-scope).
+
+### Allow-List
+
+**Sources** (evaluated in this precedence order):
+
+1. `ALLOWED_REPOS` environment variable — comma-separated glob patterns. Takes
+   precedence over the file-based option below if both are set.
+2. `allowed_repositories` — a **top-level array key** in the app-level bootstrap file
+   (`CONFIG_DIR/release-regent.toml`). This key sits **outside** the
+   `ReleaseRegentConfig` schema documented below: it is not nested under `[core]`,
+   `[versioning]`, or any other section, and it is never merged with global, group, or
+   repository policy. It is read once, directly, at server startup — exactly like
+   `CONFIG_DIR` itself.
+
+```toml
+# CONFIG_DIR/release-regent.toml — bootstrap-only keys, read once at startup.
+# NOT part of the ReleaseRegentConfig merge hierarchy below.
+allowed_repositories = ["myorg/service-*", "myorg/lib-a", "otherorg/*"]
+excluded_repositories = ["myorg/legacy-secrets"]
+
+# The rest of this file may still contain the normal ReleaseRegentConfig
+# app-level sections ([core], [release_pr], etc.) — allowed_repositories and
+# excluded_repositories are simply additional top-level keys alongside them.
+```
+
+**Pattern syntax**: glob-style; `*` matches any sequence of characters. Patterns are
+matched against the full `"owner/repo"` string.
+
+**Default when omitted**: `["*"]` — act on every repository the App receives events
+for. Preserves pre-existing behavior for single-repo/small-org installations.
+
+**Explicit empty list**: `[]` denies every event — an operational kill switch,
+distinct from leaving the setting unset. (This "empty means deny-all" semantic is
+specific to the allow-list — see the Exclude-List section below, where empty/omitted
+means the opposite: no exclusions.)
+
+### Exclude-List
+
+**Sources** (same precedence rule as the allow-list):
+
+1. `EXCLUDED_REPOS` environment variable — comma-separated glob patterns. Takes
+   precedence over the file-based option below if both are set.
+2. `excluded_repositories` — a **top-level array key** in the app-level bootstrap file
+   (`CONFIG_DIR/release-regent.toml`), sitting **outside** the `ReleaseRegentConfig`
+   schema in exactly the same way as `allowed_repositories`: not nested under any
+   section, never merged across configuration levels, read once at server startup.
+
+The exclude-list exists because a broad allow-list glob (e.g. `myorg/*`) cannot by
+itself express "except this one repository." A pattern in the exclude-list removes a
+repository from processing even if it also matches an allow-list pattern.
+
+**Pattern syntax**: identical to the allow-list — glob-style, matched against the
+full `"owner/repo"` string.
+
+**Default when omitted or explicitly empty**: **no exclusions** — behavior identical
+to today (before this setting existed). Unlike the allow-list, an empty exclude-list
+is *not* a special kill-switch case; omitted and explicit `[]` mean exactly the same
+thing for the exclude-list.
+
+### Evaluation Order — Exclude Always Wins
+
+An event is processed if and only if it matches the allow-list **and** does not match
+the exclude-list:
+
+```text
+is_allowed = matches_any(allowed_repositories) && !matches_any(excluded_repositories)
+```
+
+There is no "most specific pattern wins" logic. A match on the exclude-list
+unconditionally overrides any match on the allow-list, regardless of how specific or
+broad either pattern is (e.g. an exact-name entry in `excluded_repositories` always
+wins over a broader glob in `allowed_repositories`, and vice versa — specificity is
+irrelevant; only exclude-list membership matters).
+
+### Behavior Change / Migration Note
+
+> Matching for both the allow-list and the exclude-list is **case-insensitive** —
+> configured patterns and the incoming `owner/repo` are lowercased before matching.
+> Prior to this change, `ALLOWED_REPOS` entries were matched with exact, case-sensitive
+> string comparison (with the single literal token `"*"` special-cased to mean "match
+> everything"), and no exclude-list existed at all. Operators with existing
+> `ALLOWED_REPOS` values that rely on exact case matching are unaffected in practice
+> (GitHub enforces case-insensitive uniqueness of `owner/repo`), but should be aware
+> the comparison itself has changed.
+
+### Non-Matching / Excluded Repositories
+
+**Non-matching or excluded repositories**: the event is dropped immediately after
+signature validation — before configuration loading, version calculation, or any
+GitHub API write operation. This is fire-and-forget: the HTTP response already
+returned to GitHub reflects only the outcome of signature validation and does **not**
+change based on the allow-list/exclude-list decision (i.e., GitHub does not receive a
+distinct status code for "repository filtered out"). A `warn!` log records the
+repository and event ID.
+
+### Validation
+
+Each allow-list and exclude-list pattern is compiled at startup; a malformed pattern
+in either list is a fatal startup error identifying the offending entry (by value and
+list).
+
+See [FR-9](../requirements/functional-requirements.md#fr-9-repository-scoping-for-large-organizations)
+and [BA-66–BA-75](../testing/behavioral-assertions.md#repository-allow-list-assertions)
+for the full functional and behavioral contract.
+
 ## Configuration Schema
 
 ### Schema Versioning and Migration

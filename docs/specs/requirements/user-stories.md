@@ -43,6 +43,9 @@
 - Inconsistent release processes create compliance risks
 - Need detailed audit trails for regulatory requirements
 - Difficult to troubleshoot release failures across teams
+- GitHub's per-repository App installation UI does not scale past a modest number of
+  repositories, forcing "all repositories" installation even when only a subset
+  should be automated
 
 **Goals**:
 
@@ -252,6 +255,40 @@ consistency requirements are met across a large repository estate.
 
 **Priority**: High
 **Status**: 🚧 In Progress (see [ADR-007](../../adr/ADR-007-enterprise-config-hierarchy.md))
+
+### US-10: Repository Scoping in Large Organizations
+
+**As** the DevOps team, **I want** to specify which repositories Release Regent should
+actually act on (separate from GitHub App installation scope) **so that** I can install
+the App organization-wide (a GitHub UI/API necessity at our scale) while limiting
+automation to the repositories that have opted in.
+
+**Acceptance Criteria**:
+
+- I can specify a list of `owner/repo` glob patterns (e.g. `myorg/service-*`), matched
+  case-insensitively.
+- Patterns can be set via the `ALLOWED_REPOS` environment variable or the
+  `allowed_repositories` key in the bootstrap configuration file; the environment
+  variable wins if both are set.
+- I can also specify an exclude-list (`EXCLUDED_REPOS` environment variable or
+  `excluded_repositories` bootstrap key, same precedence rule) so that I can
+  explicitly exclude specific repositories even when a broader allow-list pattern
+  would otherwise match them (e.g. allow `myorg/*` but exclude
+  `myorg/legacy-secrets`). A match on the exclude-list always wins over a match on
+  the allow-list, regardless of how specific either pattern is.
+- Repositories not matching the allow-list, or matching the exclude-list, produce no
+  visible side effects (no PRs, no releases) even though the App receives their
+  webhook events.
+- Omitting the allow-list setting preserves today's "act on everything" behavior.
+  Omitting the exclude-list setting (or leaving it explicitly empty) means no
+  repositories are excluded — this is the ordinary default, not a special case.
+- A malformed pattern in either list is caught at startup, not silently ignored at
+  runtime.
+
+**Priority**: High
+**Status**: ✅ Implemented — wildcard glob patterns, the exclude-list, and file-based
+configuration are all implemented and tested (see
+[FR-9](functional-requirements.md#fr-9-repository-scoping-for-large-organizations))
 
 ## User Journey Maps
 

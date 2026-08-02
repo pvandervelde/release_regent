@@ -902,3 +902,122 @@ global did not lock; the combined lock set applies for the repo dotfile step.
 - `versioning.strategy` is locked to global's value.
 - `releases.draft` is locked to group's value (`true`).
 - Both override attempts in the repo dotfile are silently discarded with `warn!`.
+
+## Repository Allow-List Assertions
+
+These assertions define behavior for the repository allow-list and exclude-list
+filters applied in `ReleaseRegentWebhookHandler` (server crate). See
+[FR-9](../requirements/functional-requirements.md#fr-9-repository-scoping-for-large-organizations)
+and
+[operations/configuration.md](../operations/configuration.md#repository-allow-list-and-exclude-list-bootstrap-level-outside-the-merge-hierarchy).
+
+### Allow-List Assertions
+
+**BA-66**: An event for a repository whose `owner/repo` matches a configured
+allow-list glob pattern must be forwarded for processing.
+
+*Preconditions*: `allowed_repos = ["myorg/service-*"]`. Webhook arrives for
+`myorg/service-api`.
+
+*Expected*: The event is converted and sent to the processing channel; no `warn!`
+about the allow-list is logged.
+
+**BA-67**: An event for a repository whose `owner/repo` does not match any
+configured pattern must be dropped before configuration loading or any GitHub API
+call, without changing the HTTP response returned to GitHub.
+
+*Preconditions*: `allowed_repos = ["myorg/service-*"]`. Webhook arrives for
+`myorg/unrelated-repo`.
+
+*Expected*:
+
+- A `warn!` is logged identifying the repository and event ID.
+- The event is never sent to the processing channel.
+- `handle_event` returns `Ok(())`.
+- The HTTP status returned to GitHub is unaffected by the allow-list outcome — it
+  reflects only the result of signature validation (fire-and-forget: the response is
+  already sent before the allow-list check runs).
+
+**BA-68**: An unset/omitted allow-list configuration must act on every repository
+(backward-compatible default).
+
+*Preconditions*: Neither `ALLOWED_REPOS` nor `allowed_repositories` is configured.
+
+*Expected*: Every repository for which the App delivers an event is processed as if
+`allowed_repos = ["*"]` were configured.
+
+**BA-69**: An explicitly empty allow-list (`[]`) must deny every repository.
+
+*Preconditions*: `allowed_repos = []` (explicitly configured, not merely omitted).
+
+*Expected*: Every incoming event is dropped; no repository is processed.
+
+**BA-70**: Allow-list matching must be case-insensitive: both the configured pattern
+and the incoming `owner/repo` are lowercased before matching.
+
+*Preconditions*: `allowed_repos = ["MyOrg/*"]`. Webhook arrives for `myorg/repo-a`.
+
+*Expected*: The event is forwarded — the casing difference between the configured
+pattern and the incoming repository name does not prevent the match.
+
+**BA-71**: A malformed glob pattern in the allow-list must fail server startup with
+an error identifying the offending pattern.
+
+*Preconditions*: `allowed_repos` (or `allowed_repositories`) contains a pattern that
+fails to compile as a glob.
+
+*Expected*: The server does not start. The startup error names the specific pattern
+that failed to compile. The pattern is not silently treated as a non-matching literal
+string.
+
+### Exclude-List Assertions
+
+**BA-72**: A repository matching a configured exclude-list pattern must be dropped
+even though it also matches an allow-list pattern. The exclude-list unconditionally
+overrides the allow-list, with no "most specific pattern wins" logic.
+
+*Preconditions*: `allowed_repos = ["myorg/*"]`, `excluded_repos =
+["myorg/legacy-secrets"]`. Webhook arrives for `myorg/legacy-secrets`.
+
+*Expected*:
+
+- The event matches the allow-list pattern `myorg/*`.
+- The event also matches the exclude-list pattern `myorg/legacy-secrets`.
+- The exclude-list match wins: the event is dropped before configuration loading or
+  any GitHub API call, with the same `warn!` logging and fire-and-forget HTTP
+  behavior as a non-matching allow-list repository (see BA-67).
+- This holds regardless of pattern specificity — an exact-name entry in the
+  exclude-list overrides a broad allow-list glob, and a broad exclude-list glob would
+  equally override an exact-name allow-list entry.
+
+**BA-73**: Exclude-list matching must be case-insensitive: both the configured
+pattern and the incoming `owner/repo` are lowercased before matching.
+
+*Preconditions*: `allowed_repos = ["myorg/*"]`, `excluded_repos =
+["MyOrg/Legacy-Secrets"]`. Webhook arrives for `myorg/legacy-secrets`.
+
+*Expected*: The event is dropped — the casing difference between the configured
+exclude pattern and the incoming repository name does not prevent the exclude match.
+
+**BA-74**: An unset or explicitly empty exclude-list must exclude nothing. Unlike the
+allow-list (where an explicit empty list is a deny-all kill switch, see BA-69), an
+empty or omitted exclude-list is simply the "no exclusions" default — this is not a
+special case and must not be confused with BA-69's allow-list semantics.
+
+*Preconditions*: `allowed_repos = ["myorg/*"]`. Neither `EXCLUDED_REPOS` nor
+`excluded_repositories` is configured (or `excluded_repos = []` is set explicitly —
+both cases behave identically).
+
+*Expected*: Every repository matching the allow-list is processed; no repository is
+excluded solely because the exclude-list is unset or empty.
+
+**BA-75**: A malformed glob pattern in the exclude-list must fail server startup with
+an error identifying the offending pattern, in the same way as a malformed
+allow-list pattern (see BA-71).
+
+*Preconditions*: `excluded_repos` (or `excluded_repositories`) contains a pattern
+that fails to compile as a glob.
+
+*Expected*: The server does not start. The startup error names the specific pattern
+that failed to compile and identifies which list (exclude vs. allow) it came from.
+The pattern is not silently treated as a non-matching literal string.

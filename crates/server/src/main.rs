@@ -11,8 +11,9 @@
 //! | `GITHUB_WEBHOOK_SECRET`  | HMAC-SHA256 secret shared with GitHub (**required**) | —                  |
 //! | `GITHUB_APP_ID`          | Numeric GitHub App ID (**required**)                 | —                  |
 //! | `GITHUB_PRIVATE_KEY`     | PEM-encoded GitHub App private key (**required**)    | —                  |
-//! | `CONFIG_DIR`             | Directory to search for `.release-regent.toml`       | current directory  |
-//! | `ALLOWED_REPOS`          | Comma-separated `owner/repo` values, or `*`          | `*`                |
+//! | `CONFIG_DIR`             | Directory to search for `release-regent.toml`        | current directory  |
+//! | `ALLOWED_REPOS`          | Comma-separated allow-list glob patterns, or `*`. Falls back to the `allowed_repositories` array key in `{CONFIG_DIR}/release-regent.toml` when absent. | `*` |
+//! | `EXCLUDED_REPOS`         | Comma-separated exclude-list glob patterns. Falls back to the `excluded_repositories` array key in `{CONFIG_DIR}/release-regent.toml` when absent. | *(none)* |
 //! | `EVENT_CHANNEL_CAPACITY` | Bounded channel depth for in-flight events           | `1024`             |
 //! | `PORT`                   | TCP port the server listens on                       | `8080`             |
 //! | `RELEASE_BRANCH_PREFIX`  | Release branch prefix for webhook routing            | `"release"`        |
@@ -121,14 +122,314 @@ fn read_github_credentials_from_env() -> Result<(u64, String), errors::Error> {
     Ok((app_id, private_key))
 }
 
+/// Resolve the configuration directory: `CONFIG_DIR` env var if set, else the
+/// current working directory.
+///
+/// Called once in `main`, which then passes the resolved [`std::path::PathBuf`]
+/// into both [`build_server_processor`] (configuration provider base
+/// directory) and the repo-scope resolution path, so both consumers operate
+/// on the exact same directory rather than re-resolving it independently.
+///
+/// # Errors
+///
+/// Returns [`errors::Error::Internal`] if `CONFIG_DIR` is absent and the
+/// current working directory cannot be determined.
+#[allow(clippy::result_large_err)] // errors::Error is intentionally large
+fn resolve_config_dir() -> Result<std::path::PathBuf, errors::Error> {
+    match std::env::var("CONFIG_DIR") {
+        Ok(dir) => Ok(std::path::PathBuf::from(dir)),
+        Err(_) => std::env::current_dir().map_err(|e| {
+            errors::Error::internal(format!("Failed to determine working directory: {e}"))
+        }),
+    }
+}
+
+/// Parse a comma-separated env-var-style list into trimmed, non-empty entries.
+///
+/// Matches the pre-existing `ALLOWED_REPOS` parsing behaviour: entries are
+/// split on `,`, each is `str::trim`-med, and empty entries are filtered out.
+fn parse_comma_separated(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .collect()
+}
+
+/// Local, partial view of `release-regent.toml`'s root table used solely to
+/// resolve the repository allow-list / exclude-list fallback.
+///
+/// Deliberately does **not** model the full `ReleaseRegentConfig` schema (the
+/// `[core]`/`[versioning]`/etc. sections belong to
+/// [`release_regent_config_provider`]'s hierarchy). `#[serde(default)]` on
+/// each field means unrecognized keys/sections elsewhere in the file are
+/// silently ignored by `toml`'s deserializer, and a file that omits both keys
+/// entirely still parses successfully (both fields become `None`).
+#[derive(serde::Deserialize, Default)]
+struct RepoScopeToml {
+    #[serde(default)]
+    allowed_repositories: Option<Vec<String>>,
+    #[serde(default)]
+    excluded_repositories: Option<Vec<String>>,
+}
+
+/// Resolve the raw repository allow-list / exclude-list pattern strings,
+/// **before** glob compilation via [`handler::compile_repo_patterns`].
+///
+/// # Precedence (per list, independently)
+///
+/// 1. The `ALLOWED_REPOS` / `EXCLUDED_REPOS` environment variable, if present
+///    in the environment at all (even if its value is an empty string —
+///    presence, not content, decides precedence). Parsed with
+///    [`parse_comma_separated`].
+/// 2. Otherwise, the `allowed_repositories` / `excluded_repositories` TOML
+///    array-of-strings key at the root of `{config_dir}/release-regent.toml`.
+///    The file may also contain unrelated sections (`[core]`, `[versioning]`,
+///    etc. — the app-level [`release_regent_config_provider`] hierarchy); their
+///    presence must not cause an error, and neither must a missing file or a
+///    missing key within an existing file.
+/// 3. Otherwise (env absent AND file/key absent): allow defaults to
+///    `vec!["*".to_string()]` (BA-68); exclude defaults to `vec![]` (BA-74).
+///
+/// # Errors
+///
+/// Returns `Err` when `{config_dir}/release-regent.toml` **exists** but fails
+/// to parse as valid TOML syntax at all. This is deliberately fail-fast,
+/// consistent with a malformed glob pattern (BA-71/BA-75) also being a fatal
+/// startup error: an operator typo in a config file must never be silently
+/// treated the same as "no config file present". A genuinely *missing* file,
+/// or a present-but-parseable file that simply omits the
+/// `allowed_repositories`/`excluded_repositories` keys, is **not** an error
+/// and falls back to the defaults described above.
+///
+/// # Returns
+///
+/// `(raw_allowed, raw_excluded)` — unvalidated, pre-lowercasing pattern
+/// strings ready to be passed to [`handler::compile_repo_patterns`].
+fn resolve_repo_scope(
+    config_dir: &std::path::Path,
+) -> Result<(Vec<String>, Vec<String>), crate::errors::Error> {
+    let toml_config = load_repo_scope_toml(config_dir)?;
+
+    let allowed = match std::env::var("ALLOWED_REPOS") {
+        Ok(raw) => parse_comma_separated(&raw),
+        Err(_) => toml_config
+            .as_ref()
+            .and_then(|c| c.allowed_repositories.clone())
+            .unwrap_or_else(|| vec!["*".to_string()]),
+    };
+
+    let excluded = match std::env::var("EXCLUDED_REPOS") {
+        Ok(raw) => parse_comma_separated(&raw),
+        Err(_) => toml_config
+            .and_then(|c| c.excluded_repositories)
+            .unwrap_or_default(),
+    };
+
+    Ok((allowed, excluded))
+}
+
+/// Load and parse `{config_dir}/release-regent.toml`'s repo-scope keys.
+///
+/// Returns `Ok(None)` when the file does not exist. Returns `Err` when the
+/// file exists but is not readable or fails to parse as valid TOML syntax
+/// (see [`resolve_repo_scope`]'s error documentation).
+fn load_repo_scope_toml(
+    config_dir: &std::path::Path,
+) -> Result<Option<RepoScopeToml>, crate::errors::Error> {
+    let path = config_dir.join("release-regent.toml");
+
+    let contents = match std::fs::read_to_string(&path) {
+        Ok(contents) => contents,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => {
+            return Err(crate::errors::Error::internal(format!(
+                "Failed to read {}: {e}",
+                path.display()
+            )))
+        }
+    };
+
+    let parsed = toml::from_str::<RepoScopeToml>(&contents)
+        .map(Some)
+        .map_err(|e| {
+            // Deliberately avoid `{e}`/`e.to_string()` here: `toml::de::Error`'s
+            // `Display` impl embeds the offending source line verbatim (e.g. a
+            // secret value from `github_webhook_secret`), and this error
+            // propagates via `?` out of `main()` to be printed on stderr /
+            // captured by container logs on startup failure.
+            //
+            // Instead, use only structural error info: `.message()` (the parser's
+            // "what went wrong" description, without any source excerpt) and
+            // `.span()` (a byte-offset range we translate into a 1-based
+            // line/column ourselves) to report a precise-but-redacted location.
+            let location = e
+                .span()
+                .map(|span| {
+                    let (line, column) = line_col_at(&contents, span.start);
+                    format!(" at line {line}, column {column}")
+                })
+                .unwrap_or_default();
+            crate::errors::Error::internal(format!(
+                "Failed to parse {} as TOML: {}{location}",
+                path.display(),
+                e.message()
+            ))
+        })?;
+
+    for (key, section) in detect_misplaced_repo_scope_keys(&contents) {
+        tracing::warn!(
+            key = %key,
+            section = %section,
+            path = %path.display(),
+            "Repository scope key found outside the TOML root table; it will be ignored — \
+             allowed_repositories/excluded_repositories must appear before any [section] header"
+        );
+    }
+
+    Ok(parsed)
+}
+
+/// Detect `allowed_repositories` / `excluded_repositories` keys that appear
+/// anywhere in a TOML document but are NOT part of the root table — i.e. keys
+/// silently absorbed into a `[section]` (or `[[array-of-tables]]`) because
+/// they were written after that section's header, rather than before any
+/// section header as TOML's root-table grammar requires.
+///
+/// This exists to catch a "silent footgun": an operator writes
+///
+/// ```toml
+/// [core]
+/// release_branch_prefix = "release"
+///
+/// allowed_repositories = ["myorg/*"]
+/// ```
+///
+/// and believes `allowed_repositories` restricts the allow-list, when in
+/// fact TOML parses it as `core.allowed_repositories` — a key
+/// [`RepoScopeToml`] never looks at (it only deserializes the root table) —
+/// so [`resolve_repo_scope`] silently falls back to the wildcard-allow
+/// default while the operator believes the allow-list is active.
+///
+/// # Contract
+///
+/// - Parses `contents` as a generic [`toml::Value`], independently of, and in
+///   addition to, the strongly-typed [`RepoScopeToml`] root-level
+///   deserialization performed by [`load_repo_scope_toml`].
+/// - Recursively walks every table in the document. Whenever a key literally
+///   named `"allowed_repositories"` or `"excluded_repositories"` is found
+///   inside a table that is **not** the document's root table, the returned
+///   `Vec` gains one `(key_name, containing_section)` entry, where
+///   `containing_section` is the dotted path of the enclosing table exactly
+///   as it appears in the source (e.g. `"core"`, `"core.branches"`).
+/// - A key of either name present at the root table (i.e. written before any
+///   `[section]` header — the correct/intended location) is **never**
+///   reported, even if a differently-scoped key of the same name also
+///   happens to appear nested elsewhere in the same document.
+/// - If a key appears nested inside more than one section, every occurrence
+///   is reported (one entry per occurrence).
+/// - If `contents` fails to parse as TOML at all, returns an empty `Vec`.
+///   This function is a best-effort diagnostic aid invoked only as an
+///   *additional* check; a genuine TOML syntax error is already a fatal
+///   error handled by [`load_repo_scope_toml`]'s existing parse-error path,
+///   and must not be duplicated or overridden here.
+/// - Pure function: does not read environment variables, does not touch
+///   disk, and does not log — callers turn a non-empty result into a
+///   `tracing::warn!` identifying the file path and the misplaced key(s).
+fn detect_misplaced_repo_scope_keys(contents: &str) -> Vec<(String, String)> {
+    let mut found = Vec::new();
+
+    let Ok(table) = contents.parse::<toml::value::Table>() else {
+        return found;
+    };
+
+    walk_repo_scope_table(&table, "", true, &mut found);
+    found
+}
+
+/// Recursive helper for [`detect_misplaced_repo_scope_keys`].
+///
+/// Walks `table`, reporting any `allowed_repositories`/`excluded_repositories`
+/// key found while `is_root` is `false`, and recurses into nested tables
+/// (including tables found inside arrays, i.e. `[[array-of-tables]]` entries)
+/// with `path` extended by the nested key's name.
+fn walk_repo_scope_table(
+    table: &toml::value::Table,
+    path: &str,
+    is_root: bool,
+    found: &mut Vec<(String, String)>,
+) {
+    for (key, value) in table {
+        if !is_root && (key == "allowed_repositories" || key == "excluded_repositories") {
+            found.push((key.clone(), path.to_string()));
+        }
+
+        let nested_path = if path.is_empty() {
+            key.clone()
+        } else {
+            format!("{path}.{key}")
+        };
+
+        match value {
+            toml::Value::Table(nested) => {
+                walk_repo_scope_table(nested, &nested_path, false, found);
+            }
+            toml::Value::Array(items) => {
+                for item in items {
+                    if let toml::Value::Table(nested) = item {
+                        walk_repo_scope_table(nested, &nested_path, false, found);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Translate a byte offset into `text` into a 1-based `(line, column)` pair.
+///
+/// Both line and column are counted the same way `toml::de::Error`'s own
+/// `Display` implementation counts them (1-based, column measured in
+/// characters from the start of the line), so callers can build a redacted
+/// "at line L, column C" message that matches what an operator would see if
+/// the source excerpt were not being intentionally withheld.
+///
+/// `byte_offset` is clamped to `text.len()` so an out-of-range offset (which
+/// should not occur in practice) cannot panic on a slice boundary.
+fn line_col_at(text: &str, byte_offset: usize) -> (usize, usize) {
+    let byte_offset = byte_offset.min(text.len());
+    let mut line = 1usize;
+    let mut line_start = 0usize;
+
+    for (idx, ch) in text.char_indices() {
+        if idx >= byte_offset {
+            break;
+        }
+        if ch == '\n' {
+            line += 1;
+            line_start = idx + ch.len_utf8();
+        }
+    }
+
+    let column = text[line_start..]
+        .char_indices()
+        .take_while(|(i, _)| line_start + i < byte_offset)
+        .count()
+        + 1;
+    (line, column)
+}
+
 /// Construct the production [`ServerProcessor`] from environment variables.
 ///
 /// Reads `GITHUB_APP_ID` and `GITHUB_PRIVATE_KEY` from the environment, builds
 /// a [`release_regent_github_client::GitHubClient`] without a bound installation
 /// ID, initialises a [`release_regent_config_provider::FileConfigurationProvider`]
-/// from the directory specified by `CONFIG_DIR` (falling back to the current
-/// working directory when `CONFIG_DIR` is absent), and wires them together with
-/// [`GitHubVersionCalculator`] into a [`ServerProcessor`].
+/// from `config_dir`, and wires them together with [`GitHubVersionCalculator`]
+/// into a [`ServerProcessor`].
+///
+/// `config_dir` is resolved once by the caller (via [`resolve_config_dir`])
+/// and passed in here so that this function and `main`'s repo-scope
+/// resolution path operate on the exact same directory.
 ///
 /// The installation ID is intentionally omitted here.  It is extracted from each
 /// webhook payload at event-processing time so that one server instance can handle
@@ -138,7 +439,10 @@ fn read_github_credentials_from_env() -> Result<(u64, String), errors::Error> {
 ///
 /// Returns an error if any required variable is absent, if the GitHub App
 /// private key is malformed, or if the configuration directory is inaccessible.
-async fn build_server_processor(webhook_secret: String) -> Result<ServerProcessor, errors::Error> {
+async fn build_server_processor(
+    webhook_secret: String,
+    config_dir: std::path::PathBuf,
+) -> Result<ServerProcessor, errors::Error> {
     let (app_id, private_key) = read_github_credentials_from_env()?;
 
     let auth_config = release_regent_github_client::AuthConfig {
@@ -149,12 +453,6 @@ async fn build_server_processor(webhook_secret: String) -> Result<ServerProcesso
 
     let github_client = release_regent_github_client::GitHubClient::from_config(auth_config)?;
 
-    let config_dir = match std::env::var("CONFIG_DIR") {
-        Ok(dir) => std::path::PathBuf::from(dir),
-        Err(_) => std::env::current_dir().map_err(|e| {
-            errors::Error::internal(format!("Failed to determine working directory: {e}"))
-        })?,
-    };
     info!(config_dir = %config_dir.display(), "Using configuration directory");
 
     let config_provider = release_regent_config_provider::GitHubConfigurationProvider::new(
@@ -291,25 +589,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let github_secret = std::env::var("GITHUB_WEBHOOK_SECRET")
         .map_err(|e| errors::Error::environment("GITHUB_WEBHOOK_SECRET", e.to_string()))?;
 
+    // ── Configuration directory ─────────────────────────────────────────────
+
+    // Resolved once (CONFIG_DIR env var, else current working directory) and
+    // shared by both the production processor's configuration provider and
+    // the repo-scope resolution path below, so both consumers agree on
+    // exactly the same directory.
+    let config_dir = resolve_config_dir()?;
+
     // ── Build production processor ─────────────────────────────────────────
 
     // Construct the real ReleaseRegentProcessor from GitHub App credentials.
     // Fails fast with a clear error message when any required variable is absent.
     info!("Building production processor from environment credentials");
-    let processor = Arc::new(build_server_processor(github_secret.clone()).await?);
+    let processor =
+        Arc::new(build_server_processor(github_secret.clone(), config_dir.clone()).await?);
     info!("Production processor constructed successfully");
 
-    // Allowed repositories: comma-separated "owner/repo" values, or "*" for all.
-    let allowed_repos: Vec<String> = std::env::var("ALLOWED_REPOS").map_or_else(
-        |_| vec!["*".to_string()],
-        |s| {
-            s.split(',')
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(String::from)
-                .collect()
-        },
-    );
+    // Repository allow-list / exclude-list: glob patterns resolved from
+    // ALLOWED_REPOS/EXCLUDED_REPOS env vars, falling back to
+    // allowed_repositories/excluded_repositories in release-regent.toml.
+    let (raw_allowed_repos, raw_excluded_repos) = resolve_repo_scope(&config_dir)?;
+    let allowed_patterns = handler::compile_repo_patterns("allowed_repos", &raw_allowed_repos)?;
+    let excluded_patterns = handler::compile_repo_patterns("excluded_repos", &raw_excluded_repos)?;
 
     // Bounded channel capacity for in-flight events.
     let channel_capacity: usize = match std::env::var("EVENT_CHANNEL_CAPACITY") {
@@ -387,7 +689,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let version_prefix =
         std::env::var("VERSION_PREFIX").unwrap_or_else(|_| default_orch.version_prefix);
     let (webhook_event_handler, event_source) = handler::create_webhook_components(
-        allowed_repos,
+        allowed_patterns,
+        excluded_patterns,
         channel_capacity,
         release_branch_prefix,
         version_prefix,

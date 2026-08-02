@@ -62,6 +62,20 @@ pub enum Error {
     #[error("Internal processing error: {message}")]
     Internal { message: String },
 
+    /// A repository allow-list or exclude-list entry failed to compile as a glob pattern.
+    ///
+    /// `list_name` identifies which configuration list the offending pattern came
+    /// from (e.g. `"allowed_repos"` or `"excluded_repos"`), so operators can tell
+    /// at a glance which environment variable / config key to fix. Produced by
+    /// [`crate::handler::compile_repo_patterns`] and propagated out of `main` to
+    /// abort server startup (BA-71, BA-75).
+    #[error("Invalid glob pattern in {list_name}: '{pattern}' - {message}")]
+    InvalidRepoPattern {
+        list_name: String,
+        pattern: String,
+        message: String,
+    },
+
     /// JSON processing errors
     #[error("JSON processing failed: {source}")]
     Json {
@@ -119,6 +133,24 @@ impl Error {
     /// Create a new internal error
     pub fn internal(message: impl Into<String>) -> Self {
         Self::Internal {
+            message: message.into(),
+        }
+    }
+
+    /// Create a new invalid-repo-pattern error.
+    ///
+    /// - `list_name` — which configuration list the pattern came from (e.g.
+    ///   `"allowed_repos"` or `"excluded_repos"`).
+    /// - `pattern` — the raw (pre-lowercasing) pattern string that failed to compile.
+    /// - `message` — the underlying `glob::PatternError` description.
+    pub fn invalid_repo_pattern(
+        list_name: impl Into<String>,
+        pattern: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self::InvalidRepoPattern {
+            list_name: list_name.into(),
+            pattern: pattern.into(),
             message: message.into(),
         }
     }

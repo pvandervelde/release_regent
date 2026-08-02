@@ -9,6 +9,7 @@ use github_bot_sdk::{
 use serde_json::json;
 use std::collections::HashMap;
 use tokio::sync::mpsc;
+use tracing_test::traced_test;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Test helpers
@@ -143,6 +144,48 @@ fn merged_release_pr_payload() -> serde_json::Value {
             "updated_at": "2024-01-01T00:00:00Z"
         }
     })
+}
+
+/// Build an [`EventEnvelope`] for a specific repository `full_name` (no HTTP
+/// round-trip). Unlike [`make_envelope`] (which hardcodes `"owner/test-repo"`),
+/// this lets allow-list/exclude-list tests control the repository under test.
+fn make_envelope_for_repo(
+    event_type: &str,
+    full_name: &str,
+    payload: serde_json::Value,
+) -> EventEnvelope {
+    EventEnvelope::new(
+        event_type.to_string(),
+        make_sdk_repository(full_name),
+        EventPayload::new(payload),
+    )
+}
+
+/// Compile glob pattern strings directly via `glob::Pattern::new`, bypassing
+/// `compile_repo_patterns` (which is stubbed with `todo!()` during the RED
+/// phase of TDD). Used by tests that exercise `is_allowed` / `handle_event`
+/// filtering logic in isolation from pattern *compilation* concerns, so that
+/// an `is_allowed`-focused test fails for the `is_allowed` stub reason, not
+/// because `compile_repo_patterns` is also unimplemented.
+///
+/// Patterns are used as-is (NOT lowercased) — use [`lower_pats`] when a test
+/// needs to simulate what `compile_repo_patterns` does at startup.
+fn pats(strs: &[&str]) -> Vec<glob::Pattern> {
+    strs.iter()
+        .map(|s| glob::Pattern::new(s).expect("test pattern must be valid glob syntax"))
+        .collect()
+}
+
+/// Same as [`pats`], but lowercases each pattern first — simulating the
+/// lowercase-normalization `compile_repo_patterns` is expected to perform at
+/// startup (BA-70, BA-73). Use this whenever a test asserts case-insensitive
+/// matching behavior of `is_allowed`.
+fn lower_pats(strs: &[&str]) -> Vec<glob::Pattern> {
+    strs.iter()
+        .map(|s| {
+            glob::Pattern::new(&s.to_lowercase()).expect("test pattern must be valid glob syntax")
+        })
+        .collect()
 }
 
 /// A minimal full webhook JSON payload suitable for `receive_webhook` integration tests.
@@ -452,52 +495,294 @@ fn test_convert_envelope_payload_is_preserved() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ReleaseRegentWebhookHandler::is_allowed tests
+// compile_repo_patterns tests
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[test]
-fn test_is_allowed_empty_list_denies_all() {
+fn test_compile_repo_patterns_valid_globs_returns_compiled_patterns() {
+    let raw = vec!["myorg/service-*".to_string(), "otherorg/*".to_string()];
+    let result = compile_repo_patterns("allowed_repos", &raw);
+
+    let compiled = result.expect("valid glob patterns must compile");
+    assert_eq!(compiled.len(), 2);
+    assert!(compiled[0].matches("myorg/service-api"));
+    assert!(compiled[1].matches("otherorg/anything"));
+}
+
+#[test]
+fn test_compile_repo_patterns_empty_input_returns_empty_vec() {
+    let result = compile_repo_patterns("allowed_repos", &[]);
+    let compiled = result.expect("empty input must compile to an empty (not erroring) Vec");
+    assert!(
+        compiled.is_empty(),
+        "expected an empty Vec of patterns, got: {compiled:?}"
+    );
+}
+
+#[test]
+fn test_compile_repo_patterns_lowercases_pattern_before_compiling() {
+    // BA-70/BA-73 support: compile_repo_patterns must lowercase each raw
+    // pattern before compiling it, so that later matching against a
+    // lowercased subject is case-insensitive.
+    let raw = vec!["MyOrg/Service-*".to_string()];
+    let compiled =
+        compile_repo_patterns("allowed_repos", &raw).expect("valid pattern must compile");
+
+    assert_eq!(compiled.len(), 1);
+    assert_eq!(
+        compiled[0].as_str(),
+        "myorg/service-*",
+        "pattern must be lowercased before compilation"
+    );
+}
+
+#[test]
+fn test_compile_repo_patterns_malformed_pattern_returns_invalid_repo_pattern_error() {
+    // BA-71: a malformed glob pattern must fail, not be silently treated as a
+    // non-matching literal string.
+    let raw = vec!["myorg/[unterminated".to_string()];
+    let result = compile_repo_patterns("allowed_repos", &raw);
+
+    assert!(
+        result.is_err(),
+        "malformed glob pattern must return an error"
+    );
+    assert!(
+        matches!(result.unwrap_err(), Error::InvalidRepoPattern { .. }),
+        "error must be the InvalidRepoPattern variant"
+    );
+}
+
+#[test]
+fn test_compile_repo_patterns_malformed_pattern_error_identifies_offending_pattern() {
+    let raw = vec!["myorg/service-*".to_string(), "myorg/[bad".to_string()];
+    let result = compile_repo_patterns("allowed_repos", &raw);
+
+    match result {
+        Err(Error::InvalidRepoPattern { pattern, .. }) => {
+            assert_eq!(
+                pattern, "myorg/[bad",
+                "error must identify the specific offending pattern, not the whole list"
+            );
+        }
+        other => panic!("expected InvalidRepoPattern error, got: {other:?}"),
+    }
+}
+
+#[test]
+fn test_compile_repo_patterns_malformed_pattern_error_identifies_excluded_list_name() {
+    // BA-75: same as BA-71, but the error must identify which list ("excluded_repos")
+    // the offending pattern came from — distinct from the "allowed_repos" case above.
+    let raw = vec!["myorg/[bad".to_string()];
+    let result = compile_repo_patterns("excluded_repos", &raw);
+
+    match result {
+        Err(Error::InvalidRepoPattern { list_name, .. }) => {
+            assert_eq!(list_name, "excluded_repos");
+        }
+        other => panic!("expected InvalidRepoPattern error, got: {other:?}"),
+    }
+}
+
+#[test]
+fn test_compile_repo_patterns_wildcard_matches_any_repo() {
+    let raw = vec!["*".to_string()];
+    let compiled = compile_repo_patterns("allowed_repos", &raw).expect("'*' must compile");
+    assert!(compiled[0].matches("any/repo"));
+    assert!(compiled[0].matches("another/project"));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// create_webhook_components tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_create_webhook_components_allowed_repo_event_reaches_source() {
+    let (handler, source) = create_webhook_components(
+        pats(&["myorg/*"]),
+        vec![],
+        4,
+        "release".to_string(),
+        "v".to_string(),
+    );
+
+    let envelope = make_envelope_for_repo("pull_request", "myorg/service-a", merged_pr_payload());
+    handler
+        .handle_event(&envelope)
+        .await
+        .expect("handle_event must succeed");
+
+    let event = source
+        .next_event()
+        .await
+        .expect("next_event must not error")
+        .expect("expected an event forwarded through the shared channel");
+    assert_eq!(event.repository.owner, "myorg");
+}
+
+#[tokio::test]
+async fn test_create_webhook_components_excluded_repo_event_never_reaches_source() {
+    let (handler, source) = create_webhook_components(
+        pats(&["myorg/*"]),
+        pats(&["myorg/legacy-secrets"]),
+        4,
+        "release".to_string(),
+        "v".to_string(),
+    );
+
+    let envelope =
+        make_envelope_for_repo("pull_request", "myorg/legacy-secrets", merged_pr_payload());
+    handler
+        .handle_event(&envelope)
+        .await
+        .expect("handle_event must succeed even when dropping");
+
+    let event = source
+        .next_event()
+        .await
+        .expect("next_event must not error");
+    assert!(
+        event.is_none(),
+        "excluded repository's event must never reach the shared channel"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ReleaseRegentWebhookHandler::is_allowed tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Convenience constructor for a handler used only in `is_allowed` unit tests
+/// (the `tx`/channel side is irrelevant to these tests).
+fn handler_with_scope(
+    allowed: Vec<glob::Pattern>,
+    excluded: Vec<glob::Pattern>,
+) -> ReleaseRegentWebhookHandler {
     let (tx, _rx) = mpsc::channel(1);
-    let handler =
-        ReleaseRegentWebhookHandler::new(tx, vec![], "release".to_string(), "v".to_string());
+    ReleaseRegentWebhookHandler::new(
+        tx,
+        allowed,
+        excluded,
+        "release".to_string(),
+        "v".to_string(),
+    )
+}
+
+#[test]
+fn test_is_allowed_empty_allowed_list_denies_all() {
+    // BA-69: an explicitly empty allow-list must deny every repository.
+    let handler = handler_with_scope(vec![], vec![]);
     assert!(!handler.is_allowed("owner/repo"));
 }
 
 #[test]
 fn test_is_allowed_wildcard_allows_any_repo() {
-    let (tx, _rx) = mpsc::channel(1);
-    let handler = ReleaseRegentWebhookHandler::new(
-        tx,
-        vec!["*".to_string()],
-        "release".to_string(),
-        "v".to_string(),
-    );
+    // BA-68: the default `["*"]` allow-list must act on every repository.
+    let handler = handler_with_scope(pats(&["*"]), vec![]);
     assert!(handler.is_allowed("any/repo"));
     assert!(handler.is_allowed("another/project"));
 }
 
 #[test]
+fn test_is_allowed_repo_matching_allow_glob_is_forwarded() {
+    // BA-66: `myorg/service-api` matches the `myorg/service-*` allow pattern.
+    let handler = handler_with_scope(pats(&["myorg/service-*"]), vec![]);
+    assert!(handler.is_allowed("myorg/service-api"));
+}
+
+#[test]
+fn test_is_allowed_repo_not_matching_any_allow_glob_is_denied() {
+    // BA-67: `myorg/unrelated-repo` does not match `myorg/service-*`.
+    let handler = handler_with_scope(pats(&["myorg/service-*"]), vec![]);
+    assert!(!handler.is_allowed("myorg/unrelated-repo"));
+}
+
+#[test]
 fn test_is_allowed_explicit_match_allows_listed_repo() {
-    let (tx, _rx) = mpsc::channel(1);
-    let handler = ReleaseRegentWebhookHandler::new(
-        tx,
-        vec!["owner/allowed-repo".to_string()],
-        "release".to_string(),
-        "v".to_string(),
-    );
+    let handler = handler_with_scope(pats(&["owner/allowed-repo"]), vec![]);
     assert!(handler.is_allowed("owner/allowed-repo"));
 }
 
 #[test]
 fn test_is_allowed_explicit_match_denies_unlisted_repo() {
-    let (tx, _rx) = mpsc::channel(1);
-    let handler = ReleaseRegentWebhookHandler::new(
-        tx,
-        vec!["owner/allowed-repo".to_string()],
-        "release".to_string(),
-        "v".to_string(),
-    );
+    let handler = handler_with_scope(pats(&["owner/allowed-repo"]), vec![]);
     assert!(!handler.is_allowed("owner/other-repo"));
+}
+
+#[test]
+fn test_is_allowed_multiple_allow_patterns_any_match_allows() {
+    // Boundary: `is_allowed` uses "any pattern matches", not "first pattern matches".
+    let handler = handler_with_scope(pats(&["teamA/*", "teamB/*"]), vec![]);
+    assert!(handler.is_allowed("teamB/some-service"));
+}
+
+#[test]
+fn test_is_allowed_case_insensitive_pattern_matches_mixed_case_repo() {
+    // BA-70: pattern "MyOrg/*" (lowercased to "myorg/*" by compile_repo_patterns)
+    // must match "myorg/repo-a" when the incoming full_name is lowercased too.
+    let handler = handler_with_scope(lower_pats(&["MyOrg/*"]), vec![]);
+    assert!(handler.is_allowed("myorg/repo-a"));
+}
+
+#[test]
+fn test_is_allowed_case_insensitive_matches_regardless_of_subject_case() {
+    // BA-70: the subject ("owner/repo" from the webhook) must ALSO be lowercased
+    // before matching — a mixed-case incoming repo name must still match a
+    // lowercase-normalized pattern.
+    let handler = handler_with_scope(lower_pats(&["MyOrg/*"]), vec![]);
+    assert!(handler.is_allowed("MyOrg/Repo-A"));
+    assert!(handler.is_allowed("MYORG/REPO-A"));
+}
+
+#[test]
+fn test_is_allowed_exclude_overrides_allow_when_exclude_is_exact_and_allow_is_broad() {
+    // BA-72, direction 1: exact-name exclude overrides a broad allow glob.
+    let handler = handler_with_scope(pats(&["myorg/*"]), pats(&["myorg/legacy-secrets"]));
+    assert!(!handler.is_allowed("myorg/legacy-secrets"));
+    // Sibling repos under the same broad allow glob remain allowed.
+    assert!(handler.is_allowed("myorg/other-repo"));
+}
+
+#[test]
+fn test_is_allowed_exclude_overrides_allow_when_exclude_is_broad_and_allow_is_exact() {
+    // BA-72, direction 2: a broad exclude glob overrides an exact-name allow entry.
+    let handler = handler_with_scope(pats(&["myorg/legacy-secrets"]), pats(&["myorg/*"]));
+    assert!(!handler.is_allowed("myorg/legacy-secrets"));
+}
+
+#[test]
+fn test_is_allowed_exclude_case_insensitive_denies_mixed_case_repo() {
+    // BA-73: exclude-list matching is case-insensitive, same rule as BA-70.
+    let handler = handler_with_scope(pats(&["myorg/*"]), lower_pats(&["MyOrg/Legacy-Secrets"]));
+    assert!(!handler.is_allowed("myorg/legacy-secrets"));
+    assert!(!handler.is_allowed("MyOrg/Legacy-Secrets"));
+}
+
+#[test]
+fn test_is_allowed_empty_exclude_list_excludes_nothing() {
+    // BA-74: an empty exclude-list is NOT a kill switch — every allow-matching
+    // repository remains allowed. This is the asymmetric counterpart to
+    // BA-69 (empty ALLOW list denies everything).
+    let handler = handler_with_scope(pats(&["myorg/*"]), vec![]);
+    assert!(handler.is_allowed("myorg/anything"));
+    assert!(handler.is_allowed("myorg/legacy-secrets"));
+}
+
+#[test]
+fn test_is_allowed_multiple_exclude_patterns_any_match_denies() {
+    let handler = handler_with_scope(
+        pats(&["myorg/*"]),
+        pats(&["other/*", "myorg/legacy-secrets"]),
+    );
+    assert!(!handler.is_allowed("myorg/legacy-secrets"));
+}
+
+#[test]
+fn test_is_allowed_non_matching_allow_stays_denied_even_with_unrelated_broad_exclude() {
+    // Exclude-list must only ever *subtract* from the allow-list, never *add*
+    // to it. A repo that fails the allow check stays denied regardless of
+    // exclude-list contents.
+    let handler = handler_with_scope(pats(&["myorg/*"]), pats(&["otherorg/*"]));
+    assert!(!handler.is_allowed("otherorg/repo"));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -509,7 +794,8 @@ async fn test_handle_event_allowed_repo_sends_processing_event() {
     let (tx, mut rx) = mpsc::channel(4);
     let handler = ReleaseRegentWebhookHandler::new(
         tx,
-        vec!["*".to_string()],
+        pats(&["*"]),
+        vec![],
         "release".to_string(),
         "v".to_string(),
     );
@@ -531,8 +817,14 @@ async fn test_handle_event_allowed_repo_sends_processing_event() {
 #[tokio::test]
 async fn test_handle_event_denied_repo_sends_nothing_to_channel() {
     let (tx, mut rx) = mpsc::channel(4);
-    let handler =
-        ReleaseRegentWebhookHandler::new(tx, vec![], "release".to_string(), "v".to_string()); // deny all
+    // Empty allow-list denies all (BA-69).
+    let handler = ReleaseRegentWebhookHandler::new(
+        tx,
+        vec![],
+        vec![],
+        "release".to_string(),
+        "v".to_string(),
+    );
 
     let envelope = make_envelope("pull_request", merged_pr_payload());
     handler
@@ -551,7 +843,8 @@ async fn test_handle_event_release_pr_sends_release_pr_merged_event() {
     let (tx, mut rx) = mpsc::channel(4);
     let handler = ReleaseRegentWebhookHandler::new(
         tx,
-        vec!["*".to_string()],
+        pats(&["*"]),
+        vec![],
         "release".to_string(),
         "v".to_string(),
     );
@@ -590,7 +883,8 @@ async fn test_handle_event_full_channel_drops_event_without_error() {
 
     let handler = ReleaseRegentWebhookHandler::new(
         tx,
-        vec!["*".to_string()],
+        pats(&["*"]),
+        vec![],
         "release".to_string(),
         "v".to_string(),
     );
@@ -606,6 +900,155 @@ async fn test_handle_event_full_channel_drops_event_without_error() {
     let filler_event = rx.try_recv().expect("filler must still be in channel");
     assert_eq!(filler_event.event_id, "filler");
     assert!(rx.try_recv().is_err(), "no second event should be present");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// handle_event — repository allow-list / exclude-list end-to-end (BA-66, 67, 72, 73)
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+#[traced_test]
+async fn test_handle_event_repo_matching_allow_glob_is_forwarded_without_drop_warning() {
+    // BA-66: an event for a repo matching the allow-list glob must be forwarded,
+    // with no warning logged about the allow-list.
+    let (tx, mut rx) = mpsc::channel(4);
+    let handler = ReleaseRegentWebhookHandler::new(
+        tx,
+        pats(&["myorg/service-*"]),
+        vec![],
+        "release".to_string(),
+        "v".to_string(),
+    );
+
+    let envelope = make_envelope_for_repo("pull_request", "myorg/service-api", merged_pr_payload());
+    handler
+        .handle_event(&envelope)
+        .await
+        .expect("handle_event must succeed");
+
+    let event = rx.try_recv().expect("event must be forwarded to channel");
+    assert_eq!(event.repository.owner, "myorg");
+    assert_eq!(event.repository.name, "service-api");
+    assert!(
+        !logs_contain("dropping event"),
+        "no drop warning should be logged for an allow-matching repository"
+    );
+}
+
+#[tokio::test]
+#[traced_test]
+async fn test_handle_event_repo_not_matching_allow_glob_drops_and_logs_repo_and_event_id() {
+    // BA-67: an event for a repo NOT matching any allow-list pattern must be
+    // dropped (never reaches the channel), handle_event must still return
+    // Ok(()), and the warning log must identify both the repository and the
+    // event id.
+    let (tx, mut rx) = mpsc::channel(4);
+    let handler = ReleaseRegentWebhookHandler::new(
+        tx,
+        pats(&["myorg/service-*"]),
+        vec![],
+        "release".to_string(),
+        "v".to_string(),
+    );
+
+    let envelope =
+        make_envelope_for_repo("pull_request", "myorg/unrelated-repo", merged_pr_payload());
+    let event_id = envelope.event_id.to_string();
+
+    let result = handler.handle_event(&envelope).await;
+
+    assert!(
+        result.is_ok(),
+        "handle_event must return Ok(()) even when dropping a non-allow-listed repo"
+    );
+    assert!(
+        rx.try_recv().is_err(),
+        "event must never be forwarded to the processing channel"
+    );
+    assert!(
+        logs_contain("myorg/unrelated-repo"),
+        "warning log must identify the dropped repository"
+    );
+    assert!(
+        logs_contain(&event_id),
+        "warning log must identify the dropped event's id"
+    );
+}
+
+#[tokio::test]
+async fn test_handle_event_repo_matching_exclude_glob_is_dropped_even_though_allow_matches() {
+    // BA-72: exclude unconditionally overrides allow, even for an exact-name
+    // exclude entry against a broad allow glob.
+    let (tx, mut rx) = mpsc::channel(4);
+    let handler = ReleaseRegentWebhookHandler::new(
+        tx,
+        pats(&["myorg/*"]),
+        pats(&["myorg/legacy-secrets"]),
+        "release".to_string(),
+        "v".to_string(),
+    );
+
+    let envelope =
+        make_envelope_for_repo("pull_request", "myorg/legacy-secrets", merged_pr_payload());
+    let result = handler.handle_event(&envelope).await;
+
+    assert!(
+        result.is_ok(),
+        "handle_event must return Ok(()) when dropping"
+    );
+    assert!(
+        rx.try_recv().is_err(),
+        "excluded repository's event must never reach the processing channel"
+    );
+}
+
+#[tokio::test]
+async fn test_handle_event_repo_matching_exclude_glob_case_insensitive_is_dropped() {
+    // BA-73: exclude-list matching is case-insensitive.
+    let (tx, mut rx) = mpsc::channel(4);
+    let handler = ReleaseRegentWebhookHandler::new(
+        tx,
+        pats(&["myorg/*"]),
+        lower_pats(&["MyOrg/Legacy-Secrets"]),
+        "release".to_string(),
+        "v".to_string(),
+    );
+
+    let envelope =
+        make_envelope_for_repo("pull_request", "myorg/legacy-secrets", merged_pr_payload());
+    handler
+        .handle_event(&envelope)
+        .await
+        .expect("handle_event must succeed");
+
+    assert!(
+        rx.try_recv().is_err(),
+        "case-insensitively excluded repository's event must never reach the channel"
+    );
+}
+
+#[tokio::test]
+async fn test_handle_event_empty_exclude_list_still_forwards_allow_matching_repo() {
+    // BA-74: an unset/empty exclude-list must not behave as a kill switch.
+    let (tx, mut rx) = mpsc::channel(4);
+    let handler = ReleaseRegentWebhookHandler::new(
+        tx,
+        pats(&["myorg/*"]),
+        vec![],
+        "release".to_string(),
+        "v".to_string(),
+    );
+
+    let envelope = make_envelope_for_repo("pull_request", "myorg/anything", merged_pr_payload());
+    handler
+        .handle_event(&envelope)
+        .await
+        .expect("handle_event must succeed");
+
+    let event = rx
+        .try_recv()
+        .expect("event must be forwarded — exclude-list is empty");
+    assert_eq!(event.repository.owner, "myorg");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -806,7 +1249,8 @@ async fn test_receive_webhook_valid_request_invokes_handler_and_sends_event() {
     let (tx, mut rx) = mpsc::channel(4);
     let handler = Arc::new(ReleaseRegentWebhookHandler::new(
         tx,
-        vec!["*".to_string()],
+        pats(&["*"]),
+        vec![],
         "release".to_string(),
         "v".to_string(),
     ));
@@ -858,4 +1302,107 @@ async fn test_receive_webhook_valid_request_invokes_handler_and_sends_event() {
     assert_eq!(event.event_type, EventType::PullRequestMerged);
     assert_eq!(event.repository.owner, "owner");
     assert_eq!(event.repository.name, "test-repo");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Property-based tests (Tier 3)
+//
+// These verify invariants of `is_allowed` and `compile_repo_patterns` across
+// many generated inputs, rather than a handful of hand-picked examples. They
+// are the primary defense against subtle case-folding bugs (e.g. an
+// implementation that only lowercases the pattern OR the subject, but not
+// both) and against exclude-list / allow-list precedence bugs that a small
+// fixed set of example tests might miss.
+// ─────────────────────────────────────────────────────────────────────────────
+
+mod property_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// Restrict generated repo-name segments to the character classes GitHub
+    /// actually allows in `owner`/`repo` names (alphanumeric, `-`, `_`, `.`),
+    /// with mixed case so tests exercise BA-70/BA-73 case-insensitivity.
+    fn repo_segment() -> impl Strategy<Value = String> {
+        "[A-Za-z][A-Za-z0-9_.-]{0,15}"
+    }
+
+    fn full_name_strategy() -> impl Strategy<Value = (String, String)> {
+        (repo_segment(), repo_segment())
+    }
+
+    proptest! {
+        /// A wildcard `"*"` allow pattern must match every generated `owner/repo`
+        /// combination, in any case combination, with an empty exclude-list
+        /// (BA-68's "acts on every repository" default semantics).
+        #[test]
+        fn prop_is_allowed_wildcard_matches_any_repo_any_case((owner, repo) in full_name_strategy()) {
+            let handler = handler_with_scope(lower_pats(&["*"]), vec![]);
+            let full_name = format!("{owner}/{repo}");
+            prop_assert!(handler.is_allowed(&full_name));
+        }
+
+        /// `is_allowed` must never panic for arbitrary (including adversarial,
+        /// non-UTF8-adjacent-boundary, empty, or glob-metacharacter-laden)
+        /// input strings — it must always resolve to `true` or `false`.
+        #[test]
+        fn prop_is_allowed_never_panics_on_arbitrary_input(
+            full_name in proptest::arbitrary::any::<String>()
+        ) {
+            let handler = handler_with_scope(lower_pats(&["*"]), vec![]);
+            let _ = handler.is_allowed(&full_name);
+        }
+
+        /// For any repo name, an allow pattern built from that repo name's exact
+        /// lowercased form must match the repo name regardless of the case used
+        /// in the incoming (webhook-supplied) full_name — i.e. matching is
+        /// case-insensitive on BOTH sides (BA-70).
+        #[test]
+        fn prop_is_allowed_case_insensitive_for_exact_pattern((owner, repo) in full_name_strategy()) {
+            let full_name = format!("{owner}/{repo}");
+            let handler = handler_with_scope(lower_pats(&[&full_name]), vec![]);
+
+            // Exercise several case permutations of the same logical repo name.
+            prop_assert!(handler.is_allowed(&full_name.to_lowercase()));
+            prop_assert!(handler.is_allowed(&full_name.to_uppercase()));
+        }
+
+        /// BA-72 invariant: whenever a repo matches BOTH an allow pattern and an
+        /// exclude pattern built from its own exact (lowercased) name, the result
+        /// must always be `false` — exclude always wins, for any generated repo
+        /// name and any broad co-existing allow pattern.
+        #[test]
+        fn prop_is_allowed_exact_exclude_always_overrides_broad_allow((owner, repo) in full_name_strategy()) {
+            let full_name = format!("{owner}/{repo}");
+            let broad_allow = format!("{owner}/*");
+            let handler = handler_with_scope(
+                lower_pats(&[&broad_allow]),
+                lower_pats(&[&full_name]),
+            );
+            prop_assert!(!handler.is_allowed(&full_name.to_lowercase()));
+        }
+
+        /// `compile_repo_patterns` must never panic for arbitrary raw pattern
+        /// lists — it must always resolve to `Ok` or a well-formed `Err`.
+        #[test]
+        fn prop_compile_repo_patterns_never_panics_on_arbitrary_input(
+            raw in proptest::collection::vec(proptest::arbitrary::any::<String>(), 0..8)
+        ) {
+            let _ = compile_repo_patterns("allowed_repos", &raw);
+        }
+
+        /// For any raw pattern string built only from characters that are valid,
+        /// non-metacharacter glob literals (so compilation cannot fail),
+        /// `compile_repo_patterns` must produce a pattern whose `as_str()` is
+        /// exactly the lowercased input — the lowercase-normalization invariant
+        /// underlying BA-70/BA-73 must hold for arbitrary literal segments, not
+        /// just the hand-picked "MyOrg" example.
+        #[test]
+        fn prop_compile_repo_patterns_lowercases_arbitrary_literal_pattern(
+            raw in "[A-Za-z][A-Za-z0-9_/-]{0,20}"
+        ) {
+            let compiled = compile_repo_patterns("allowed_repos", &[raw.clone()])
+                .expect("literal alnum/dash/slash pattern must always compile");
+            prop_assert_eq!(compiled[0].as_str(), raw.to_lowercase());
+        }
+    }
 }
