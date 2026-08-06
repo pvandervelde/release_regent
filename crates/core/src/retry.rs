@@ -39,16 +39,42 @@ use crate::errors::CoreResult;
 /// non-retryable error is returned, or `max_retries` retries have been
 /// exhausted.
 pub async fn retry_with_backoff<T, F, Fut>(
-    _config: &ErrorHandlingConfig,
-    _operation_name: &str,
-    _correlation_id: Option<&str>,
-    _f: F,
+    config: &ErrorHandlingConfig,
+    operation_name: &str,
+    correlation_id: Option<&str>,
+    mut f: F,
 ) -> CoreResult<T>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = CoreResult<T>>,
 {
-    todo!("retry_with_backoff is not yet implemented — see GitHub issue #138 (GREEN phase)")
+    let mut attempt: u32 = 0;
+
+    loop {
+        let err = match f().await {
+            Ok(value) => return Ok(value),
+            Err(err) => err,
+        };
+
+        if attempt >= config.max_retries || !err.is_retryable() {
+            return Err(err);
+        }
+
+        attempt += 1;
+        let delay_ms = config.initial_delay_ms as f64
+            * config.backoff_multiplier.powi((attempt - 1) as i32);
+
+        tracing::warn!(
+            operation_name = %operation_name,
+            correlation_id = correlation_id.unwrap_or_default(),
+            attempt,
+            delay_ms,
+            error = %err,
+            "retrying operation after transient failure"
+        );
+
+        tokio::time::sleep(std::time::Duration::from_secs_f64(delay_ms / 1000.0)).await;
+    }
 }
 
 #[cfg(test)]
