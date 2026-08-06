@@ -213,6 +213,7 @@ pub mod manifest;
 pub(crate) mod pr_status_commenter;
 pub mod release_automator;
 pub mod release_orchestrator;
+pub mod retry;
 pub mod traits;
 pub mod versioning;
 
