@@ -51,7 +51,9 @@
 //! ```
 
 use crate::{
+    config::ErrorHandlingConfig,
     release_orchestrator::extract_changelog_from_pr_body,
+    retry::retry_with_backoff,
     traits::{
         event_source::ProcessingEvent,
         github_operations::{CreateReleaseParams, GitHubOperations, Release},
@@ -96,6 +98,12 @@ pub struct AutomatorConfig {
     ///
     /// Defaults to `false`.
     pub generate_release_notes: bool,
+
+    /// Retry policy applied to transient GitHub API failures encountered
+    /// while automating a GitHub release.
+    ///
+    /// Defaults to [`ErrorHandlingConfig::default`].
+    pub error_handling: ErrorHandlingConfig,
 }
 
 impl Default for AutomatorConfig {
@@ -105,6 +113,7 @@ impl Default for AutomatorConfig {
             changelog_header: "## Changelog".to_string(),
             version_prefix: "v".to_string(),
             generate_release_notes: false,
+            error_handling: ErrorHandlingConfig::default(),
         }
     }
 }

@@ -47,7 +47,9 @@
 //! ```
 
 use crate::{
+    config::ErrorHandlingConfig,
     manifest::ManifestFileConfig,
+    retry::retry_with_backoff,
     traits::github_operations::{
         CreatePullRequestParams, FileUpdate, GitHubOperations, PullRequest,
     },
@@ -134,6 +136,12 @@ pub struct OrchestratorConfig {
     ///
     /// Set to `false` to disable auto-detection and rely solely on the explicit list.
     pub auto_detect_manifests: bool,
+
+    /// Retry policy applied to transient GitHub API failures encountered
+    /// while orchestrating a release PR.
+    ///
+    /// Defaults to [`ErrorHandlingConfig::default`].
+    pub error_handling: ErrorHandlingConfig,
 }
 
 impl OrchestratorConfig {
@@ -243,6 +251,7 @@ impl Default for OrchestratorConfig {
             body_template,
             manifest_files: Vec::new(),
             auto_detect_manifests: true,
+            error_handling: ErrorHandlingConfig::default(),
         }
     }
 }

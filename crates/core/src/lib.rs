@@ -347,6 +347,7 @@ where
             ),
             version_prefix: repo_config.core.version_prefix.clone(),
             generate_release_notes: repo_config.releases.generate_notes,
+            error_handling: repo_config.error_handling.clone(),
         };
 
         match ReleaseAutomator::new(
@@ -416,6 +417,7 @@ where
                 body_template: repo_config.release_pr.body_template.clone(),
                 manifest_files: repo_config.release_pr.manifest_files.clone(),
                 auto_detect_manifests: repo_config.release_pr.auto_detect_manifests,
+                error_handling: repo_config.error_handling.clone(),
             },
             allow_override: repo_config.versioning.allow_override,
         };
@@ -1046,6 +1048,7 @@ where
             body_template: repo_config.release_pr.body_template.clone(),
             manifest_files: repo_config.release_pr.manifest_files.clone(),
             auto_detect_manifests: repo_config.release_pr.auto_detect_manifests,
+            error_handling: repo_config.error_handling.clone(),
         };
 
         // Resolve the merged PR number (needed to read override labels on the
@@ -1226,6 +1229,7 @@ where
             ),
             version_prefix: repo_config.core.version_prefix.clone(),
             generate_release_notes: repo_config.releases.generate_notes,
+            error_handling: repo_config.error_handling.clone(),
         };
 
         ReleaseAutomator::new(config, &self.github_operations.scoped_to(installation_id))
