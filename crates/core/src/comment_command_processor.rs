@@ -42,6 +42,7 @@ use tracing::{debug, info, warn, Instrument};
 pub use crate::versioning::BumpKind;
 use crate::{
     release_orchestrator::{OrchestratorConfig, ReleaseOrchestrator},
+    retry::retry_with_backoff,
     traits::{event_source::ProcessingEvent, github_operations::GitHubOperations},
     versioning::{resolve_current_version, SemanticVersion, VersionCalculator},
     CoreResult,
@@ -209,10 +210,16 @@ impl<'a, G: GitHubOperations + Send + Sync> CommentCommandProcessor<'a, G> {
         }
 
         // Only collaborators with write access or above may issue commands.
-        let permission = self
-            .github
-            .get_collaborator_permission(owner, repo, &commenter_login)
-            .await?;
+        let permission = retry_with_backoff(
+            &self.config.orchestrator_config.error_handling,
+            "get_collaborator_permission",
+            Some(event.correlation_id.as_str()),
+            || {
+                self.github
+                    .get_collaborator_permission(owner, repo, &commenter_login)
+            },
+        )
+        .await?;
         if !permission.can_issue_commands() {
             warn!(
                 event_id = %event.event_id,
@@ -299,7 +306,13 @@ impl<'a, G: GitHubOperations + Send + Sync> CommentCommandProcessor<'a, G> {
 
         // Read current labels to detect a replacement (used in the confirmation
         // message).  Propagate errors so transient API failures cause a retry.
-        let current_labels = self.github.list_pr_labels(owner, repo, pr_number).await?;
+        let current_labels = retry_with_backoff(
+            &self.config.orchestrator_config.error_handling,
+            "list_pr_labels",
+            Some(correlation_id),
+            || self.github.list_pr_labels(owner, repo, pr_number),
+        )
+        .await?;
 
         let replaced_kind: Option<&str> = ALL_OVERRIDE_LABELS
             .iter()
@@ -308,10 +321,13 @@ impl<'a, G: GitHubOperations + Send + Sync> CommentCommandProcessor<'a, G> {
 
         // Remove all existing override labels (idempotent; 404 → Ok).
         for label in ALL_OVERRIDE_LABELS {
-            if let Err(e) = self
-                .github
-                .remove_label(owner, repo, pr_number, label)
-                .await
+            if let Err(e) = retry_with_backoff(
+                &self.config.orchestrator_config.error_handling,
+                "remove_label",
+                Some(correlation_id),
+                || self.github.remove_label(owner, repo, pr_number, label),
+            )
+            .await
             {
                 warn!(
                     pr_number,
@@ -324,9 +340,14 @@ impl<'a, G: GitHubOperations + Send + Sync> CommentCommandProcessor<'a, G> {
         }
 
         // Apply the new override label.
-        self.github
-            .add_labels(owner, repo, pr_number, &[new_label])
-            .await?;
+        let new_labels = [new_label];
+        retry_with_backoff(
+            &self.config.orchestrator_config.error_handling,
+            "add_labels",
+            Some(correlation_id),
+            || self.github.add_labels(owner, repo, pr_number, &new_labels),
+        )
+        .await?;
 
         info!(
             pr_number,
@@ -386,7 +407,13 @@ impl<'a, G: GitHubOperations + Send + Sync> CommentCommandProcessor<'a, G> {
         correlation_id: &str,
     ) -> CoreResult<()> {
         // Guard: only accept !set-version on the release PR (head branch release/v*).
-        let pr = self.github.get_pull_request(owner, repo, pr_number).await?;
+        let pr = retry_with_backoff(
+            &self.config.orchestrator_config.error_handling,
+            "get_pull_request",
+            Some(correlation_id),
+            || self.github.get_pull_request(owner, repo, pr_number),
+        )
+        .await?;
         let branch_prefix = &self.config.orchestrator_config.branch_prefix;
         let release_head_prefix = format!("{branch_prefix}/v");
         if !pr.head.ref_name.starts_with(&release_head_prefix) {
@@ -560,10 +587,13 @@ impl<'a, G: GitHubOperations + Send + Sync> CommentCommandProcessor<'a, G> {
         pr_number: u64,
         body: &str,
     ) -> CoreResult<()> {
-        if let Err(e) = self
-            .github
-            .create_issue_comment(owner, repo, pr_number, body)
-            .await
+        if let Err(e) = retry_with_backoff(
+            &self.config.orchestrator_config.error_handling,
+            "create_issue_comment",
+            None,
+            || self.github.create_issue_comment(owner, repo, pr_number, body),
+        )
+        .await
         {
             warn!(
                 pr_number,

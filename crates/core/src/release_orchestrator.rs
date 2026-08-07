@@ -507,10 +507,13 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
         repo: &str,
     ) -> CoreResult<Option<(PullRequest, SemanticVersion)>> {
         let query = format!("is:open head:{}*", self.release_branch_prefix());
-        let prs = self
-            .github
-            .search_pull_requests(owner, repo, &query)
-            .await?;
+        let prs = retry_with_backoff(
+            &self.config.error_handling,
+            "search_pull_requests",
+            None,
+            || self.github.search_pull_requests(owner, repo, &query),
+        )
+        .await?;
 
         debug!(
             count = prs.len(),
@@ -594,15 +597,18 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
 
         // Fetch the existing CHANGELOG.md from the base branch so we can
         // prepend the new version section rather than overwriting history.
-        let existing_changelog_file = self
-            .github
-            .get_file_content(owner, repo, "CHANGELOG.md", base_branch)
-            .await
-            .unwrap_or_else(|e| {
-                warn!(error = %e, "Failed to fetch existing CHANGELOG.md; starting fresh");
-                None
-            })
-            .unwrap_or_default();
+        let existing_changelog_file = retry_with_backoff(
+            &self.config.error_handling,
+            "get_file_content",
+            Some(correlation_id),
+            || self.github.get_file_content(owner, repo, "CHANGELOG.md", base_branch),
+        )
+        .await
+        .unwrap_or_else(|e| {
+            warn!(error = %e, "Failed to fetch existing CHANGELOG.md; starting fresh");
+            None
+        })
+        .unwrap_or_default();
 
         let today = Utc::now().format("%Y-%m-%d").to_string();
         let changelog_file_content = build_changelog_file_content(
@@ -640,32 +646,43 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
         // branch tip is.  The branch ref is then force-updated to the new commit.
         // This ensures the branch tip never equals `base_sha` at any point during
         // the operation, preventing GitHub from auto-closing the open release PR.
-        self.github
-            .batch_commit_files_rebased(
-                owner,
-                repo,
-                &actual_branch,
-                &file_updates,
-                &commit_message,
-                base_sha,
-            )
-            .await?;
+        retry_with_backoff(
+            &self.config.error_handling,
+            "batch_commit_files_rebased",
+            Some(correlation_id),
+            || {
+                self.github.batch_commit_files_rebased(
+                    owner,
+                    repo,
+                    &actual_branch,
+                    &file_updates,
+                    &commit_message,
+                    base_sha,
+                )
+            },
+        )
+        .await?;
 
-        let pr = self
-            .github
-            .create_pull_request(
-                owner,
-                repo,
-                CreatePullRequestParams {
-                    base: base_branch.to_string(),
-                    head: actual_branch.clone(),
-                    title,
-                    body: Some(body),
-                    draft: false,
-                    maintainer_can_modify: true,
-                },
-            )
-            .await?;
+        let pr = retry_with_backoff(
+            &self.config.error_handling,
+            "create_pull_request",
+            Some(correlation_id),
+            || {
+                self.github.create_pull_request(
+                    owner,
+                    repo,
+                    CreatePullRequestParams {
+                        base: base_branch.to_string(),
+                        head: actual_branch.clone(),
+                        title: title.clone(),
+                        body: Some(body.clone()),
+                        draft: false,
+                        maintainer_can_modify: true,
+                    },
+                )
+            },
+        )
+        .await?;
 
         info!(pr_number = pr.number, branch = %actual_branch, "Created release PR");
         Ok((pr, actual_branch))
@@ -676,6 +693,7 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
     ///
     /// Performs a fresh `get_pull_request` before the update so we operate on
     /// current data (prep for future `ETag` enforcement).
+    #[allow(clippy::too_many_arguments)] // owner/repo/existing_pr/version/changelog/sha/correlation_id/previous_version is the minimal update surface
     async fn update_release_pr(
         &self,
         owner: &str,
@@ -688,10 +706,13 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
         previous_version: Option<String>,
     ) -> CoreResult<PullRequest> {
         // Always re-fetch to get the latest body (ETag prep).
-        let fresh_pr = self
-            .github
-            .get_pull_request(owner, repo, existing_pr.number)
-            .await?;
+        let fresh_pr = retry_with_backoff(
+            &self.config.error_handling,
+            "get_pull_request",
+            Some(correlation_id),
+            || self.github.get_pull_request(owner, repo, existing_pr.number),
+        )
+        .await?;
 
         let merged_changelog =
             self.merge_changelog_bodies(fresh_pr.body.as_deref().unwrap_or(""), new_changelog);
@@ -737,15 +758,21 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
         // content written by an older release-regent; the base branch is always the
         // authoritative source of historical changelog data.  This is exactly
         // symmetric with the create_release_branch_and_pr path.
-        let existing_changelog_file = self
-            .github
-            .get_file_content(owner, repo, "CHANGELOG.md", &fresh_pr.base.ref_name)
-            .await
-            .unwrap_or_else(|e| {
-                warn!(error = %e, "Failed to fetch existing CHANGELOG.md; starting fresh");
-                None
-            })
-            .unwrap_or_default();
+        let existing_changelog_file = retry_with_backoff(
+            &self.config.error_handling,
+            "get_file_content",
+            Some(correlation_id),
+            || {
+                self.github
+                    .get_file_content(owner, repo, "CHANGELOG.md", &fresh_pr.base.ref_name)
+            },
+        )
+        .await
+        .unwrap_or_else(|e| {
+            warn!(error = %e, "Failed to fetch existing CHANGELOG.md; starting fresh");
+            None
+        })
+        .unwrap_or_default();
 
         let today = Utc::now().format("%Y-%m-%d").to_string();
         let changelog_file_content = build_changelog_file_content(
@@ -781,30 +808,41 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
             "chore(release): update release files for {}{}",
             self.config.version_prefix, version
         );
-        self.github
-            .batch_commit_files_rebased(
-                owner,
-                repo,
-                &fresh_pr.head.ref_name,
-                &file_updates,
-                &commit_message,
-                base_sha,
-            )
-            .await?;
+        retry_with_backoff(
+            &self.config.error_handling,
+            "batch_commit_files_rebased",
+            Some(correlation_id),
+            || {
+                self.github.batch_commit_files_rebased(
+                    owner,
+                    repo,
+                    &fresh_pr.head.ref_name,
+                    &file_updates,
+                    &commit_message,
+                    base_sha,
+                )
+            },
+        )
+        .await?;
 
         // Update the PR title/body only after the branch files are committed so
         // the metadata always reflects what is actually on the branch.
-        let updated = self
-            .github
-            .update_pull_request(
-                owner,
-                repo,
-                fresh_pr.number,
-                title_update,
-                Some(new_body),
-                None,
-            )
-            .await?;
+        let updated = retry_with_backoff(
+            &self.config.error_handling,
+            "update_pull_request",
+            Some(correlation_id),
+            || {
+                self.github.update_pull_request(
+                    owner,
+                    repo,
+                    fresh_pr.number,
+                    title_update.clone(),
+                    Some(new_body.clone()),
+                    None,
+                )
+            },
+        )
+        .await?;
 
         info!(pr_number = updated.number, "Updated release PR changelog");
         Ok(updated)
@@ -845,17 +883,22 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
             .await?;
 
         // Close the superseded PR.
-        if let Err(e) = self
-            .github
-            .update_pull_request(
-                owner,
-                repo,
-                old_pr.number,
-                None,
-                None,
-                Some("closed".to_string()),
-            )
-            .await
+        if let Err(e) = retry_with_backoff(
+            &self.config.error_handling,
+            "update_pull_request_close",
+            Some(correlation_id),
+            || {
+                self.github.update_pull_request(
+                    owner,
+                    repo,
+                    old_pr.number,
+                    None,
+                    None,
+                    Some("closed".to_string()),
+                )
+            },
+        )
+        .await
         {
             warn!(
                 error = %e,
@@ -866,7 +909,14 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
 
         // Delete the old branch (non-fatal).
         let old_branch = &old_pr.head.ref_name;
-        if let Err(e) = self.github.delete_branch(owner, repo, old_branch).await {
+        if let Err(e) = retry_with_backoff(
+            &self.config.error_handling,
+            "delete_branch",
+            Some(correlation_id),
+            || self.github.delete_branch(owner, repo, old_branch),
+        )
+        .await
+        {
             warn!(
                 error = %e,
                 branch = %old_branch,
@@ -963,10 +1013,13 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
                 if explicit_paths.contains(candidate) {
                     continue; // explicit list takes precedence
                 }
-                match self
-                    .github
-                    .get_file_content(owner, repo, candidate, branch)
-                    .await
+                match retry_with_backoff(
+                    &self.config.error_handling,
+                    "get_file_content",
+                    None,
+                    || self.github.get_file_content(owner, repo, candidate, branch),
+                )
+                .await
                 {
                     Ok(Some(content)) => {
                         probe_cache.insert(candidate.to_string(), content);
@@ -993,10 +1046,13 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
                     if probe_cache.contains_key(&member_path) {
                         continue;
                     }
-                    match self
-                        .github
-                        .get_file_content(owner, repo, &member_path, branch)
-                        .await
+                    match retry_with_backoff(
+                        &self.config.error_handling,
+                        "get_file_content",
+                        None,
+                        || self.github.get_file_content(owner, repo, &member_path, branch),
+                    )
+                    .await
                     {
                         Ok(Some(content)) => {
                             debug!(
@@ -1028,10 +1084,13 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
                 let content = if let Some(cached) = probe_cache.get(manifest.path.as_str()) {
                     cached.clone()
                 } else {
-                    match self
-                        .github
-                        .get_file_content(owner, repo, &manifest.path, branch)
-                        .await
+                    match retry_with_backoff(
+                        &self.config.error_handling,
+                        "get_file_content",
+                        None,
+                        || self.github.get_file_content(owner, repo, &manifest.path, branch),
+                    )
+                    .await
                     {
                         Ok(Some(c)) => c,
                         Ok(None) => {
@@ -1083,10 +1142,13 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
         } else {
             // No auto-detection; process only explicitly configured manifests.
             for manifest in &manifests {
-                let content = match self
-                    .github
-                    .get_file_content(owner, repo, &manifest.path, branch)
-                    .await
+                let content = match retry_with_backoff(
+                    &self.config.error_handling,
+                    "get_file_content",
+                    None,
+                    || self.github.get_file_content(owner, repo, &manifest.path, branch),
+                )
+                .await
                 {
                     Ok(Some(c)) => c,
                     Ok(None) => {
@@ -1145,10 +1207,13 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
         if updates.iter().any(|f| f.path == "Cargo.toml")
             && !updates.iter().any(|f| f.path == "Cargo.lock")
         {
-            match self
-                .github
-                .get_file_content(owner, repo, "Cargo.lock", branch)
-                .await
+            match retry_with_backoff(
+                &self.config.error_handling,
+                "get_file_content",
+                None,
+                || self.github.get_file_content(owner, repo, "Cargo.lock", branch),
+            )
+            .await
             {
                 Ok(Some(lock_content)) => {
                     match update_cargo_lock_workspace_version(&lock_content, &version_str) {
