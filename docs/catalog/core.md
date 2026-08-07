@@ -69,6 +69,7 @@ Core release automation — orchestration, changelog generation, versioning, man
 | `Repository` | struct | `crates/core/src/traits/github_operations.rs:802` | Represents a GitHub repository with metadata and configuration. | core |
 | `RepositoryConfig` | struct | `crates/core/src/traits/configuration_provider.rs:12` | Stores repository settings including naming, paths, and versioning rules. | core |
 | `RepositoryInfo` | struct | `crates/core/src/traits/event_source.rs:50` | Stores repository name, owner, URL, and branch identification data. | core |
+| `retry_with_backoff` | fn | `crates/core/src/retry.rs:41` | Retries a fallible async GitHub operation with exponential backoff, honoring `ErrorHandlingConfig`'s `max_retries`, `backoff_multiplier`, and `initial_delay_ms`; stops immediately on non-retryable `CoreError`s. | core, retry, error-handling |
 | `SemanticVersion` | struct | `crates/core/src/versioning.rs:183` | Represents major.minor.patch version with comparison and increment operations. | core |
 | `SlackConfig` | struct | `crates/core/src/config.rs:245` | Stores Slack integration settings including webhooks and message formatting. | core |
 | `Tag` | struct | `crates/core/src/traits/github_operations.rs:827` | Represents a Git tag with commit reference and metadata. | core |

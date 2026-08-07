@@ -155,6 +155,25 @@ impl<'a, G: GitHubOperations + Send + Sync> ReleaseAutomator<'a, G> {
         Self { config, github }
     }
 
+    /// Retry a GitHub operation using this automator's configured
+    /// [`ErrorHandlingConfig`] retry policy.
+    ///
+    /// Thin wrapper around [`retry_with_backoff`] that captures
+    /// `self.config.error_handling` so call sites only need to supply the
+    /// operation name, correlation ID, and the operation itself.
+    async fn retry<T, F, Fut>(
+        &self,
+        operation_name: &str,
+        correlation_id: Option<&str>,
+        f: F,
+    ) -> CoreResult<T>
+    where
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = CoreResult<T>>,
+    {
+        retry_with_backoff(&self.config.error_handling, operation_name, correlation_id, f).await
+    }
+
     /// Run the release automation workflow for a merged release PR.
     ///
     /// Reads required data from `event.payload` using standard GitHub webhook
@@ -206,13 +225,11 @@ impl<'a, G: GitHubOperations + Send + Sync> ReleaseAutomator<'a, G> {
             // Tag and release both exist — this is a full idempotent retry.
             // Still attempt branch cleanup: a previous run may have succeeded at
             // tag+release creation but failed before (or during) deletion.
-            if let Err(e) = retry_with_backoff(
-                &self.config.error_handling,
-                "delete_branch",
-                Some(correlation_id),
-                || self.github.delete_branch(owner, repo, &branch),
-            )
-            .await
+            if let Err(e) = self
+                .retry("delete_branch", Some(correlation_id), || {
+                    self.github.delete_branch(owner, repo, &branch)
+                })
+                .await
             {
                 warn!(
                     error = %e, branch = %branch,
@@ -228,11 +245,8 @@ impl<'a, G: GitHubOperations + Send + Sync> ReleaseAutomator<'a, G> {
         let changelog = extract_changelog_from_pr_body(&pr_body, &self.config.changelog_header);
         let is_prerelease = version.is_prerelease();
 
-        let release = retry_with_backoff(
-            &self.config.error_handling,
-            "create_release",
-            Some(correlation_id),
-            || {
+        let release = self
+            .retry("create_release", Some(correlation_id), || {
                 self.github.create_release(
                     owner,
                     repo,
@@ -246,9 +260,8 @@ impl<'a, G: GitHubOperations + Send + Sync> ReleaseAutomator<'a, G> {
                         target_commitish: Some(merge_sha.clone()),
                     },
                 )
-            },
-        )
-        .await?;
+            })
+            .await?;
 
         info!(
             release_id = release.id, tag = %tag_name, prerelease = is_prerelease,
@@ -256,13 +269,11 @@ impl<'a, G: GitHubOperations + Send + Sync> ReleaseAutomator<'a, G> {
         );
 
         // Delete the release branch (non-fatal on failure).
-        if let Err(e) = retry_with_backoff(
-            &self.config.error_handling,
-            "delete_branch",
-            Some(correlation_id),
-            || self.github.delete_branch(owner, repo, &branch),
-        )
-        .await
+        if let Err(e) = self
+            .retry("delete_branch", Some(correlation_id), || {
+                self.github.delete_branch(owner, repo, &branch)
+            })
+            .await
         {
             warn!(
                 error = %e, branch = %branch,
@@ -295,11 +306,8 @@ impl<'a, G: GitHubOperations + Send + Sync> ReleaseAutomator<'a, G> {
         merge_sha: &str,
     ) -> CoreResult<Option<Release>> {
         let tag_message = format!("Release {tag_name}");
-        match retry_with_backoff(
-            &self.config.error_handling,
-            "create_tag",
-            None,
-            || {
+        match self
+            .retry("create_tag", None, || {
                 self.github.create_tag(
                     owner,
                     repo,
@@ -308,21 +316,18 @@ impl<'a, G: GitHubOperations + Send + Sync> ReleaseAutomator<'a, G> {
                     Some(tag_message.clone()),
                     None,
                 )
-            },
-        )
-        .await
+            })
+            .await
         {
             Ok(_) => Ok(None),
             Err(CoreError::NotSupported { .. }) => {
                 // Tag already exists; check whether a release also exists.
                 tracing::debug!(tag = %tag_name, "Tag already exists; checking for existing release");
-                match retry_with_backoff(
-                    &self.config.error_handling,
-                    "get_release_by_tag",
-                    None,
-                    || self.github.get_release_by_tag(owner, repo, tag_name),
-                )
-                .await
+                match self
+                    .retry("get_release_by_tag", None, || {
+                        self.github.get_release_by_tag(owner, repo, tag_name)
+                    })
+                    .await
                 {
                     Ok(existing_release) => {
                         info!(

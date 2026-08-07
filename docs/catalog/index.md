@@ -9,12 +9,12 @@
 |--------|---------|-------------|
 | [cli](cli.md) | 3 | CLI binary — commands for manually triggering releases and running the event loop with mock or real processors |
 | [config-provider](config-provider.md) | 11 | Configuration loading — file-based provider, TOML format parsing and validation, schema validation, and config builder |
-| [core](core.md) | 78 | Core release automation — orchestration, changelog generation, versioning, manifest updates, comment commands, and release PR/tag creation |
+| [core](core.md) | 79 | Core release automation — orchestration, changelog generation, versioning, manifest updates, comment commands, and release PR/tag creation |
 | [github-client](github-client.md) | 6 | GitHub API client — App authentication (JWT, token exchange), webhook secret provider, and REST operations (PRs, releases, tags, files) |
 | [server](server.md) | 4 | Server binary — webhook ingress, event classification, channel-based event source, and startup wiring |
 | [testing](testing.md) | 37 | Testing utilities — mock implementations, test data builders, spec assertion helpers, and fixture factories |
 
-**Total: 139 entries across 6 domains**
+**Total: 140 entries across 6 domains**
 
 ## All Entries
 
@@ -98,6 +98,7 @@
 | `Repository` | struct | `crates/core/src/traits/github_operations.rs:802` | Represents a GitHub repository with metadata and configuration. | core |
 | `RepositoryConfig` | struct | `crates/core/src/traits/configuration_provider.rs:12` | Stores repository settings including naming, paths, and versioning rules. | core |
 | `RepositoryInfo` | struct | `crates/core/src/traits/event_source.rs:50` | Stores repository name, owner, URL, and branch identification data. | core |
+| `retry_with_backoff` | fn | `crates/core/src/retry.rs:41` | Retries a fallible async GitHub operation with exponential backoff, honoring `ErrorHandlingConfig`'s `max_retries`, `backoff_multiplier`, and `initial_delay_ms`; stops immediately on non-retryable `CoreError`s. | core, retry, error-handling |
 | `SemanticVersion` | struct | `crates/core/src/versioning.rs:183` | Represents major.minor.patch version with comparison and increment operations. | core |
 | `SlackConfig` | struct | `crates/core/src/config.rs:245` | Stores Slack integration settings including webhooks and message formatting. | core |
 | `Tag` | struct | `crates/core/src/traits/github_operations.rs:827` | Represents a Git tag with commit reference and metadata. | core |
