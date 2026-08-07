@@ -5,12 +5,6 @@
 //! `backoff_multiplier`, `initial_delay_ms`) was parsed and merged but never
 //! consulted by any call site, so transient GitHub API failures (rate limits,
 //! network blips, timeouts, optimistic-lock conflicts) were never retried.
-//!
-//! # Status
-//!
-//! This is a signature-only stub (TDD RED phase). The body is intentionally
-//! `todo!()` — the Coder replaces it in the GREEN phase. Do not call this
-//! function from production code until the implementation lands.
 
 use crate::config::ErrorHandlingConfig;
 use crate::errors::CoreResult;
