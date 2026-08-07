@@ -763,6 +763,117 @@ async fn test_retry_with_backoff_logs_contain_operation_name_when_retrying() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Tier 2 — Security regression tests (pathological `backoff_multiplier`,
+// GitHub issue #138 security review, CRITICAL/HIGH/MEDIUM findings)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// CRITICAL: an extreme `backoff_multiplier` (e.g. `1e308`) makes
+/// `backoff_multiplier.powi(n)` overflow to `f64::INFINITY` within a couple
+/// of retries. `Duration::from_secs_f64` panics on infinite input, so
+/// without the `MAX_DELAY_MS` cap this would crash the event-processing
+/// task. Asserts the call completes normally (returns `Err`, does not
+/// panic).
+#[tokio::test(start_paused = true)]
+async fn test_retry_with_backoff_extreme_multiplier_no_panic() {
+    let config = config_with(3, 1e308, 1000);
+    let calls = Arc::new(AtomicU32::new(0));
+    let calls_clone = Arc::clone(&calls);
+
+    let result: CoreResult<()> = retry_with_backoff(&config, "extreme-multiplier", None, move || {
+        let calls = Arc::clone(&calls_clone);
+        async move {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Err(CoreError::network("always fails"))
+        }
+    })
+    .await;
+
+    assert!(
+        result.is_err(),
+        "an always-failing operation must still return Err after retries are exhausted"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 4, "1 initial + 3 retries");
+}
+
+/// MEDIUM: a negative `backoff_multiplier` (e.g. `-5.0`) produces
+/// alternating-sign delays via `powi`, which is also invalid input to
+/// `Duration::from_secs_f64` (panics on negative values, not just infinite/
+/// NaN). Asserts no panic and eventual `Err` after exhausting retries.
+#[tokio::test(start_paused = true)]
+async fn test_retry_with_backoff_negative_multiplier_no_panic() {
+    let config = config_with(3, -5.0, 1000);
+    let calls = Arc::new(AtomicU32::new(0));
+    let calls_clone = Arc::clone(&calls);
+
+    let result: CoreResult<()> =
+        retry_with_backoff(&config, "negative-multiplier", None, move || {
+            let calls = Arc::clone(&calls_clone);
+            async move {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Err(CoreError::network("always fails"))
+            }
+        })
+        .await;
+
+    assert!(
+        result.is_err(),
+        "an always-failing operation must still return Err after retries are exhausted"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 4, "1 initial + 3 retries");
+}
+
+/// CRITICAL: a NaN `backoff_multiplier` propagates through `powi` to a NaN
+/// delay. `Duration::from_secs_f64` panics on NaN input, and `f64::clamp`
+/// leaves NaN unchanged (comparisons with NaN are always false), so the
+/// implementation must special-case non-finite values explicitly. Asserts
+/// no panic.
+#[tokio::test(start_paused = true)]
+async fn test_retry_with_backoff_nan_multiplier_no_panic() {
+    let config = config_with(3, f64::NAN, 1000);
+    let calls = Arc::new(AtomicU32::new(0));
+    let calls_clone = Arc::clone(&calls);
+
+    let result: CoreResult<()> = retry_with_backoff(&config, "nan-multiplier", None, move || {
+        let calls = Arc::clone(&calls_clone);
+        async move {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Err(CoreError::network("always fails"))
+        }
+    })
+    .await;
+
+    assert!(
+        result.is_err(),
+        "an always-failing operation must still return Err after retries are exhausted"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 4, "1 initial + 3 retries");
+}
+
+/// HIGH: even without overflowing to infinity, a large-but-finite
+/// multiplier (e.g. `10.0` with several retries) would otherwise produce
+/// multi-hour/day delays. Using the paused-clock technique, asserts the
+/// simulated elapsed time for a single retry delay never exceeds
+/// `MAX_DELAY_MS` (30_000ms), i.e. the cap is actually enforced and not
+/// merely panic-safe.
+#[tokio::test(start_paused = true)]
+async fn test_retry_with_backoff_delay_capped_at_max_ms() {
+    let config = config_with(1, 1e308, 1000);
+    let start = tokio::time::Instant::now();
+
+    let result: CoreResult<()> = retry_with_backoff(&config, "capped-delay", None, || async {
+        Err(CoreError::network("always fails"))
+    })
+    .await;
+
+    assert!(result.is_err());
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed <= Duration::from_millis(30_000),
+        "retry delay must be capped at MAX_DELAY_MS (30_000ms), got {elapsed:?}"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Tier 3 — Property-based tests
 // ─────────────────────────────────────────────────────────────────────────────
 
