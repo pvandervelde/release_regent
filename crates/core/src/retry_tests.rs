@@ -623,6 +623,56 @@ async fn test_retry_with_backoff_cumulative_delay_matches_exponential_schedule()
     );
 }
 
+/// Mutation-kill: pins the exact delay of the FIRST retry attempt (n=1) to
+/// `initial_delay_ms * backoff_multiplier^0 == initial_delay_ms`, with a tight
+/// upper bound. This specifically catches an off-by-one in the exponent
+/// (`attempt - 1` vs `attempt`) that the looser cumulative-schedule test
+/// (`test_retry_with_backoff_cumulative_delay_matches_exponential_schedule`,
+/// bounded `[700ms, 2000ms)`) does not catch: mutating `attempt - 1` to
+/// `attempt / 1` (a semantically-identical no-op division) shifts the
+/// exponent by one, doubling the first-retry delay from 1000ms to 2000ms,
+/// which still fits under that test's generous 2000ms ceiling and survives.
+/// cargo-mutants confirmed this exact survivor
+/// (`crates/core/src/retry.rs:87:55: replace - with / in retry_with_backoff`)
+/// on 2026-08-08; this test closes that gap.
+#[tokio::test(start_paused = true)]
+async fn test_retry_with_backoff_first_retry_delay_matches_initial_delay_exactly() {
+    // max_retries=1, initial_delay_ms=1000, multiplier=2.0.
+    // Exponent for the first (and only) retry must be 0, so delay == 1000ms
+    // exactly, not 2000ms (which an `attempt - 1` -> `attempt` off-by-one
+    // mutation would produce).
+    let config = config_with(1, 2.0, 1_000);
+    let calls = Arc::new(AtomicU32::new(0));
+    let calls_clone = Arc::clone(&calls);
+    let start = tokio::time::Instant::now();
+
+    let result: CoreResult<()> =
+        retry_with_backoff(&config, "first-retry-delay-pin", None, move || {
+            let calls = Arc::clone(&calls_clone);
+            async move {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Err::<(), _>(CoreError::network("always fails"))
+            }
+        })
+        .await;
+
+    assert!(result.is_err());
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed >= Duration::from_millis(1_000),
+        "first retry delay must be at least initial_delay_ms (1000ms), got {elapsed:?}"
+    );
+    // Tight upper bound: an off-by-one exponent mutation (attempt - 1 ->
+    // attempt) would double this to 2000ms and must fail this assertion.
+    assert!(
+        elapsed < Duration::from_millis(1_500),
+        "first retry delay must equal initial_delay_ms (1000ms) exactly \
+         (exponent must be 0, not 1) — got {elapsed:?}, which suggests an \
+         off-by-one in the backoff exponent calculation"
+    );
+}
+
 /// State isolation: two independent `retry_with_backoff` invocations (with
 /// independent counters) must not influence each other's attempt counts.
 #[tokio::test(start_paused = true)]
