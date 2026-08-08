@@ -511,6 +511,14 @@ generate_notes = false
 
 ## `error_handling` — retry behaviour
 
+> **Note:** These settings are applied automatically to every GitHub API call Release Regent
+> makes (creating release PRs, publishing releases, posting comments, etc.). Only transient
+> failures — network errors, rate limiting, timeouts, and optimistic-lock conflicts — are
+> retried; permanent failures such as `404 Not Found`, authentication errors, and validation
+> errors always fail immediately with no delay. Regardless of the `backoff_multiplier` and
+> `initial_delay_ms` you configure, the delay before each retry attempt is capped at a fixed
+> **30 seconds**, so an aggressive multiplier will never cause a wait longer than that.
+
 ### `error_handling.max_retries`
 
 **Type**: integer

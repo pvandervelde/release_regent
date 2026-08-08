@@ -32,6 +32,8 @@ The `core` crate contains every piece of release logic:
 - Release PR creation and update decisions
 - GitHub release creation
 - PR comment command processing
+- Retrying transient GitHub API failures with exponential backoff, honoring the
+  `error_handling` configuration (see [Configuration reference](../reference/configuration.md))
 
 `core` defines **port traits** (`GitHubOperations`, `ConfigurationProvider`, `VersionCalculator`,
 `GitOperations`) but contains no concrete implementations of them. This is the hexagonal
@@ -42,7 +44,8 @@ pattern: core business logic depends on abstractions, not on I/O implementations
 Implements the `GitHubOperations` trait using the GitHub REST API. Handles:
 
 - JWT signing and installation token exchange
-- Rate limiting and exponential backoff retry
+- Classifying failures (rate limits, network errors, timeouts) as retryable or permanent —
+  the retry loop itself lives in `core`
 - REST API calls for PRs, releases, tags, commits, and labels
 - Webhook HMAC-SHA256 signature validation
 
