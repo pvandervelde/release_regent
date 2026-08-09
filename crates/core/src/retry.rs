@@ -77,8 +77,8 @@ where
         }
 
         attempt += 1;
-        let raw_delay_ms = config.initial_delay_ms as f64
-            * config.backoff_multiplier.powi((attempt - 1) as i32);
+        let raw_delay_ms =
+            config.initial_delay_ms as f64 * config.backoff_multiplier.powi((attempt - 1) as i32);
 
         // Defense-in-depth: `raw_delay_ms` is derived from
         // attacker-controllable config (`backoff_multiplier`,

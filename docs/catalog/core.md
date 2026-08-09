@@ -6,7 +6,7 @@
 Core release automation — orchestration, changelog generation, versioning, manifest updates, comment commands, and release PR/tag creation
 
 | Name | Kind | Location | Description | Tags |
-|------|------|----------|-------------|------|
+| ------ | ------ | ---------- | ------------- | ------ |
 | `AutomatorConfig` | struct | `crates/core/src/release_automator.rs:66` | Configures release automation behavior and GitHub integration settings. | core |
 | `AutomatorResult` | enum | `crates/core/src/release_automator.rs:89` | Represents outcomes from automated release operations. | core |
 | `BranchConfig` | struct | `crates/core/src/config.rs:14` | Stores branch-specific settings including naming patterns and protection rules. | core |

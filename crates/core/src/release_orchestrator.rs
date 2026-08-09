@@ -388,7 +388,13 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
         F: FnMut() -> Fut,
         Fut: std::future::Future<Output = CoreResult<T>>,
     {
-        retry_with_backoff(&self.config.error_handling, operation_name, correlation_id, f).await
+        retry_with_backoff(
+            &self.config.error_handling,
+            operation_name,
+            correlation_id,
+            f,
+        )
+        .await
     }
 
     // ── Public API ─────────────────────────────────────────────────────────
@@ -616,7 +622,8 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
         // prepend the new version section rather than overwriting history.
         let existing_changelog_file = self
             .retry("get_file_content", Some(correlation_id), || {
-                self.github.get_file_content(owner, repo, "CHANGELOG.md", base_branch)
+                self.github
+                    .get_file_content(owner, repo, "CHANGELOG.md", base_branch)
             })
             .await
             .unwrap_or_else(|e| {
@@ -714,7 +721,8 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
         // Always re-fetch to get the latest body (ETag prep).
         let fresh_pr = self
             .retry("get_pull_request", Some(correlation_id), || {
-                self.github.get_pull_request(owner, repo, existing_pr.number)
+                self.github
+                    .get_pull_request(owner, repo, existing_pr.number)
             })
             .await?;
 
@@ -1031,7 +1039,8 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
                     }
                     match self
                         .retry("get_file_content", None, || {
-                            self.github.get_file_content(owner, repo, &member_path, branch)
+                            self.github
+                                .get_file_content(owner, repo, &member_path, branch)
                         })
                         .await
                     {
@@ -1067,7 +1076,8 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
                 } else {
                     match self
                         .retry("get_file_content", None, || {
-                            self.github.get_file_content(owner, repo, &manifest.path, branch)
+                            self.github
+                                .get_file_content(owner, repo, &manifest.path, branch)
                         })
                         .await
                     {
@@ -1123,7 +1133,8 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
             for manifest in &manifests {
                 let content = match self
                     .retry("get_file_content", None, || {
-                        self.github.get_file_content(owner, repo, &manifest.path, branch)
+                        self.github
+                            .get_file_content(owner, repo, &manifest.path, branch)
                     })
                     .await
                 {
@@ -1186,7 +1197,8 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
         {
             match self
                 .retry("get_file_content", None, || {
-                    self.github.get_file_content(owner, repo, "Cargo.lock", branch)
+                    self.github
+                        .get_file_content(owner, repo, "Cargo.lock", branch)
                 })
                 .await
             {

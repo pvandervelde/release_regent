@@ -606,7 +606,8 @@ impl<'a, G: GitHubOperations + Send + Sync> CommentCommandProcessor<'a, G> {
     ) -> CoreResult<()> {
         if let Err(e) = self
             .retry("create_issue_comment", None, || {
-                self.github.create_issue_comment(owner, repo, pr_number, body)
+                self.github
+                    .create_issue_comment(owner, repo, pr_number, body)
             })
             .await
         {

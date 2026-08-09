@@ -829,14 +829,15 @@ async fn test_retry_with_backoff_extreme_multiplier_no_panic() {
     let calls = Arc::new(AtomicU32::new(0));
     let calls_clone = Arc::clone(&calls);
 
-    let result: CoreResult<()> = retry_with_backoff(&config, "extreme-multiplier", None, move || {
-        let calls = Arc::clone(&calls_clone);
-        async move {
-            calls.fetch_add(1, Ordering::SeqCst);
-            Err(CoreError::network("always fails"))
-        }
-    })
-    .await;
+    let result: CoreResult<()> =
+        retry_with_backoff(&config, "extreme-multiplier", None, move || {
+            let calls = Arc::clone(&calls_clone);
+            async move {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Err(CoreError::network("always fails"))
+            }
+        })
+        .await;
 
     assert!(
         result.is_err(),

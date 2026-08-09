@@ -171,7 +171,13 @@ impl<'a, G: GitHubOperations + Send + Sync> ReleaseAutomator<'a, G> {
         F: FnMut() -> Fut,
         Fut: std::future::Future<Output = CoreResult<T>>,
     {
-        retry_with_backoff(&self.config.error_handling, operation_name, correlation_id, f).await
+        retry_with_backoff(
+            &self.config.error_handling,
+            operation_name,
+            correlation_id,
+            f,
+        )
+        .await
     }
 
     /// Run the release automation workflow for a merged release PR.

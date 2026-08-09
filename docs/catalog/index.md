@@ -6,7 +6,7 @@
 ## Domains
 
 | Domain | Entries | Description |
-|--------|---------|-------------|
+| -------- | --------- | ------------- |
 | [cli](cli.md) | 3 | CLI binary — commands for manually triggering releases and running the event loop with mock or real processors |
 | [config-provider](config-provider.md) | 11 | Configuration loading — file-based provider, TOML format parsing and validation, schema validation, and config builder |
 | [core](core.md) | 79 | Core release automation — orchestration, changelog generation, versioning, manifest updates, comment commands, and release PR/tag creation |
@@ -19,7 +19,7 @@
 ## All Entries
 
 | Name | Kind | Location | Description | Tags |
-|------|------|----------|-------------|------|
+| ------ | ------ | ---------- | ------------- | ------ |
 | `CliError` | enum | `crates/cli/src/errors.rs:10` | Enumerates CLI execution errors and failure conditions. | cli |
 | `MockProcessor` | type | `crates/cli/src/factory.rs:33` | Type alias for mock processor implementation used in testing. | cli |
 | `ProductionProcessor` | type | `crates/cli/src/factory.rs:37` | Type alias for production-grade release regent processor. | cli |
