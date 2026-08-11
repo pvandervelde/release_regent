@@ -611,36 +611,42 @@ async fn test_retry_with_backoff_cumulative_delay_matches_exponential_schedule()
     assert!(result.is_err());
     assert_eq!(calls.load(Ordering::SeqCst), 4);
     let elapsed = start.elapsed();
+    // ±25% jitter is applied per-term (per `docs/specs/design/error-handling.md`),
+    // so the cumulative range widens from the nominal 700ms to approximately
+    // [525ms, 875ms]. Bounds below are widened further to [450ms, 950ms) to
+    // absorb timer-resolution rounding, while the upper bound still stays well
+    // below the off-by-one-exponent mutant's jittered range (starting at ~1050ms).
     assert!(
-        elapsed >= Duration::from_millis(700),
-        "expected cumulative simulated delay >= 700ms (100+200+400), got {elapsed:?}"
+        elapsed >= Duration::from_millis(450),
+        "expected cumulative simulated delay >= 450ms (jittered 100+200+400 schedule), got {elapsed:?}"
     );
-    // Generous upper bound to catch a stub that sleeps a fixed/huge duration
-    // regardless of config.
     assert!(
-        elapsed < Duration::from_millis(2_000),
-        "cumulative delay grew far beyond the exponential schedule, got {elapsed:?}"
+        elapsed < Duration::from_millis(950),
+        "cumulative delay grew far beyond the jittered exponential schedule, got {elapsed:?}"
     );
 }
 
-/// Mutation-kill: pins the exact delay of the FIRST retry attempt (n=1) to
-/// `initial_delay_ms * backoff_multiplier^0 == initial_delay_ms`, with a tight
-/// upper bound. This specifically catches an off-by-one in the exponent
+/// Mutation-kill: pins the delay of the FIRST retry attempt (n=1) to
+/// `initial_delay_ms * backoff_multiplier^0 == initial_delay_ms`, widened by
+/// ±25% to tolerate jitter (per `docs/specs/design/error-handling.md`), with a
+/// tight upper bound. This specifically catches an off-by-one in the exponent
 /// (`attempt - 1` vs `attempt`) that the looser cumulative-schedule test
-/// (`test_retry_with_backoff_cumulative_delay_matches_exponential_schedule`,
-/// bounded `[700ms, 2000ms)`) does not catch: mutating `attempt - 1` to
-/// `attempt / 1` (a semantically-identical no-op division) shifts the
-/// exponent by one, doubling the first-retry delay from 1000ms to 2000ms,
-/// which still fits under that test's generous 2000ms ceiling and survives.
+/// (`test_retry_with_backoff_cumulative_delay_matches_exponential_schedule`)
+/// does not catch: mutating `attempt - 1` to `attempt / 1` (a
+/// semantically-identical no-op division) shifts the exponent by one,
+/// doubling the first-retry delay from a nominal 1000ms to 2000ms — whose
+/// jittered range `[1500, 2500]` remains cleanly separated from this test's
+/// real jittered range `[750, 1250]ms`.
 /// cargo-mutants confirmed this exact survivor
 /// (`crates/core/src/retry.rs:87:55: replace - with / in retry_with_backoff`)
 /// on 2026-08-08; this test closes that gap.
 #[tokio::test(start_paused = true)]
 async fn test_retry_with_backoff_first_retry_delay_matches_initial_delay_exactly() {
     // max_retries=1, initial_delay_ms=1000, multiplier=2.0.
-    // Exponent for the first (and only) retry must be 0, so delay == 1000ms
-    // exactly, not 2000ms (which an `attempt - 1` -> `attempt` off-by-one
-    // mutation would produce).
+    // Exponent for the first (and only) retry must be 0, so the nominal delay
+    // is 1000ms (jittered range [750, 1250]ms), not 2000ms (which an
+    // `attempt - 1` -> `attempt` off-by-one mutation would produce, with
+    // jittered range [1500, 2500]ms).
     let config = config_with(1, 2.0, 1_000);
     let calls = Arc::new(AtomicU32::new(0));
     let calls_clone = Arc::clone(&calls);
@@ -659,15 +665,19 @@ async fn test_retry_with_backoff_first_retry_delay_matches_initial_delay_exactly
     assert!(result.is_err());
     assert_eq!(calls.load(Ordering::SeqCst), 2);
     let elapsed = start.elapsed();
+    // Nominal delay is 1000ms; jitter tolerance widens the lower bound down to
+    // 700ms (below the jittered floor of 750ms, to absorb timer rounding).
     assert!(
-        elapsed >= Duration::from_millis(1_000),
-        "first retry delay must be at least initial_delay_ms (1000ms), got {elapsed:?}"
+        elapsed >= Duration::from_millis(700),
+        "first retry delay must be at least ~initial_delay_ms with -25% jitter tolerance (1000ms), got {elapsed:?}"
     );
-    // Tight upper bound: an off-by-one exponent mutation (attempt - 1 ->
-    // attempt) would double this to 2000ms and must fail this assertion.
+    // Tight upper bound: still cleanly separates the real jittered range
+    // ([750,1250]ms) from an off-by-one exponent mutation (attempt - 1 ->
+    // attempt), which would double the nominal delay to 2000ms (jittered
+    // range [1500,2500]ms) and must fail this assertion.
     assert!(
-        elapsed < Duration::from_millis(1_500),
-        "first retry delay must equal initial_delay_ms (1000ms) exactly \
+        elapsed < Duration::from_millis(1_400),
+        "first retry delay must equal initial_delay_ms (1000ms) plus jitter tolerance \
          (exponent must be 0, not 1) — got {elapsed:?}, which suggests an \
          off-by-one in the backoff exponent calculation"
     );
@@ -1054,9 +1064,12 @@ mod property_tests {
                 let expected_ms: f64 = (0..max_retries)
                     .map(|k| initial_delay_ms as f64 * backoff_multiplier.powi(k as i32))
                     .sum();
-                // Allow a small tolerance for timer-resolution rounding.
+                // Tolerance accounts for the worst case where every term is
+                // jittered by the full -25% (per
+                // `docs/specs/design/error-handling.md`), plus a small margin
+                // for timer-resolution rounding.
                 prop_assert!(
-                    elapsed_ms >= expected_ms * 0.9,
+                    elapsed_ms >= expected_ms * 0.65,
                     "elapsed {elapsed_ms}ms below expected cumulative backoff {expected_ms}ms"
                 );
                 Ok(())

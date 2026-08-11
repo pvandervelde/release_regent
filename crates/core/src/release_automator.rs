@@ -225,7 +225,7 @@ impl<'a, G: GitHubOperations + Send + Sync> ReleaseAutomator<'a, G> {
         // Create the annotated Git tag, handling the idempotent case where the
         // tag already exists.
         if let Some(existing) = self
-            .ensure_tag_and_get_existing_release(owner, repo, &tag_name, &merge_sha)
+            .ensure_tag_and_get_existing_release(owner, repo, &tag_name, &merge_sha, correlation_id)
             .await?
         {
             // Tag and release both exist — this is a full idempotent retry.
@@ -310,10 +310,11 @@ impl<'a, G: GitHubOperations + Send + Sync> ReleaseAutomator<'a, G> {
         repo: &str,
         tag_name: &str,
         merge_sha: &str,
+        correlation_id: &str,
     ) -> CoreResult<Option<Release>> {
         let tag_message = format!("Release {tag_name}");
         match self
-            .retry("create_tag", None, || {
+            .retry("create_tag", Some(correlation_id), || {
                 self.github.create_tag(
                     owner,
                     repo,
@@ -330,7 +331,7 @@ impl<'a, G: GitHubOperations + Send + Sync> ReleaseAutomator<'a, G> {
                 // Tag already exists; check whether a release also exists.
                 tracing::debug!(tag = %tag_name, "Tag already exists; checking for existing release");
                 match self
-                    .retry("get_release_by_tag", None, || {
+                    .retry("get_release_by_tag", Some(correlation_id), || {
                         self.github.get_release_by_tag(owner, repo, tag_name)
                     })
                     .await

@@ -650,8 +650,15 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
         // of whatever stale versions were left on the old release branch head.
         // On a freshly-created branch this is equivalent since it was just branched
         // from base_sha.
-        self.collect_manifest_updates(owner, repo, base_branch, version, &mut file_updates)
-            .await;
+        self.collect_manifest_updates(
+            owner,
+            repo,
+            base_branch,
+            version,
+            &mut file_updates,
+            correlation_id,
+        )
+        .await;
 
         // Deduplicate by path — detect_standard_manifests may emit two configs for
         // the same file (e.g. PEP-617 + Poetry keys for pyproject.toml).  Keep the
@@ -806,6 +813,7 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
             &fresh_pr.base.ref_name,
             version,
             &mut file_updates,
+            correlation_id,
         )
         .await;
 
@@ -967,6 +975,7 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
         branch: &str,
         version: &SemanticVersion,
         updates: &mut Vec<FileUpdate>,
+        correlation_id: &str,
     ) {
         use crate::manifest::{
             detect_standard_manifests, update_cargo_lock_workspace_version, update_manifest_content,
@@ -1007,7 +1016,7 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
                     continue; // explicit list takes precedence
                 }
                 match self
-                    .retry("get_file_content", None, || {
+                    .retry("get_file_content", Some(correlation_id), || {
                         self.github.get_file_content(owner, repo, candidate, branch)
                     })
                     .await
@@ -1038,7 +1047,7 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
                         continue;
                     }
                     match self
-                        .retry("get_file_content", None, || {
+                        .retry("get_file_content", Some(correlation_id), || {
                             self.github
                                 .get_file_content(owner, repo, &member_path, branch)
                         })
@@ -1075,7 +1084,7 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
                     cached.clone()
                 } else {
                     match self
-                        .retry("get_file_content", None, || {
+                        .retry("get_file_content", Some(correlation_id), || {
                             self.github
                                 .get_file_content(owner, repo, &manifest.path, branch)
                         })
@@ -1132,7 +1141,7 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
             // No auto-detection; process only explicitly configured manifests.
             for manifest in &manifests {
                 let content = match self
-                    .retry("get_file_content", None, || {
+                    .retry("get_file_content", Some(correlation_id), || {
                         self.github
                             .get_file_content(owner, repo, &manifest.path, branch)
                     })
@@ -1196,7 +1205,7 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
             && !updates.iter().any(|f| f.path == "Cargo.lock")
         {
             match self
-                .retry("get_file_content", None, || {
+                .retry("get_file_content", Some(correlation_id), || {
                     self.github
                         .get_file_content(owner, repo, "Cargo.lock", branch)
                 })
