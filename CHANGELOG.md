@@ -1,5 +1,46 @@
 # Changelog
 
+## [0.7.0] - 2026-08-12
+
+### Features
+- **server**: implement repository allow-list and exclude-list glob matching (FR-9) [1339158721b61b67f467044730dc08106754fe8c]
+- Repository allow-list and exclude-list for large-org installations (#216) [5ebbb9e73bdce4859f34c2ac00efc1356d6b394a]
+### Bug Fixes
+- **core**: address PR review findings on retry backoff (#138) [030a506b15c4cebaeb90ec8736b1a00906591092]
+- **core**: cap retry backoff delay to prevent panic/DoS from pathological config (#138) [ef1069bf95d0ebae3e987e2f3a270d5aaeb8b2c5]
+- **core**: implement retry-with-backoff for error_handling config (#138) (#219) [ce8a67e7772fb46db36aeac350c455dadcf5d7f9]
+- **core**: implement retry_with_backoff (#138) [0b8d04d67ac65ab30238c8f7c3d64f0a049a97f9]
+- **core**: thread error_handling config through orchestrator and automator (#138) [14df065fa20ccf50792a4ef74f57c705eb925b63]
+- **core**: wrap GitHub API call sites with retry_with_backoff (#138) [18a0471ea0a649158c48b7708362a20f96199e85]
+- **server**: address PR review findings (panic, TOML footgun, config-dir dedup, log clarity) [8e248c0d0e469f1e0a9b401c40091d78250326ae]
+- **server**: strip source line content from TOML parse-error messages [6e61223cef231b746908b2b86ec327a309dc582c]
+### Documentation
+- **config**: add [changelog] section, fix default discrepancies, document all placeholders (#215) [df9585283ede70cb56f034cdf9626a61574eef92]
+- **config**: add changelog section, fix defaults and document all placeholders [d2d91b0ff5df7d633dd5197142bc04488016379f]
+- **core**: document retry behavior and 30s delay cap (#138) [b83da64f0510f682f95d9ac270663a2132044ad0]
+- **core**: remove stale RED-phase stub comment from retry.rs (#138) [2497e26dc636e2dc991e9b17890cbc4c6c1393a6]
+- **server**: add EXCLUDED_REPOS to environment variables summary table [3d467b1a47f1526f7ddaded4769db23385aa281a]
+- **server**: reconcile ALLOWED_REPOS user docs with fire-and-forget behavior [6d56fcc4256bc8c5231bbf5a3d3f2532b4f82f1b]
+- **specs**: add repository allow-list and exclude-list for large orgs [05d2a54cbd82d63eaedeb55e761e74e881f4efbe]
+- **specs**: mark FR-9/US-10 implemented, fix error-message overspecification [e8796bf5699eb2599ccdb2ba92a679c10af143ac]
+- fix locked_fields table and include_authors accuracy [9a0437cf79b434ad1ca2635ded9647373477e79b]
+### Styles
+- apply rustfmt/markdown formatter output (no logic changes) [a0c873fb110ca1f984f4577aef29c6161af9e43a]
+### Code Refactoring
+- **core**: extract self.retry() helper to dedupe retry_with_backoff call sites (#138) [fb020927bf1e61b5e2f6c5234239b8d334e87a57]
+- **server**: extract matches_any and resolve_config_dir helpers [3448c3452c59ef262ab1a7d3771d7bc0eac1c521]
+### Tests
+- **core**: add retry_with_backoff test suite (#138) [fd1e628df15c72b72a85fb4c8da2fe7564aa4d44]
+- **core**: pin exact first-retry delay to kill exponent off-by-one mutant (#138) [f4abfd0ba8253aa65ff509ee0156436ae821bd88]
+- **server**: add regression tests for TOML parse-error panic and misplaced repo-scope keys [b421185a93d8a63ebdd73361904be86196fe214f]
+- **server**: add repository allow-list/exclude-list glob matching tests (BA-66..BA-75) [dbdea6fec5164ab56031dd9f29dcc25164188c7b]
+- **server**: kill surviving mutant in repository allow-list matching [e33464cf7e24771a26bf5cb181d6770162d8b9ef]
+### Chores
+- **changeset**: add changeset for error_handling retry fix (#138) [eb6eaa233cdef1aba422c5ef78edc1ad094bf461]
+- **deps**: bump crossbeam-epoch to 0.9.20 (RUSTSEC-2026-0204) [26390a79f625be9cdd7bcdc181cead859a4c6554]
+- Initial plan [88c72067c367792d690be10ccb592727ef2e8d2d]
+- remove unneeded changeset file [e6dc3ae221f0ad09be471220778c1f2fc4bb2006]
+
 ## [0.6.0] - 2026-07-01
 
 ### Features
@@ -138,4 +179,5 @@
 - Update dependencies [521f7c2ea7d3a7ea6e7c0f5b6c0a525779469b58]
 - Update renovate to only update once a week [5d028e78b8730bbd7f93ebc80a06528d1188cf61]
 - Update renovate to only update once a week (#177) [e5b04072194a70a67b0110d2f3caae87e06a070a]
+
 
