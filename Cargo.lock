@@ -3063,6 +3063,7 @@ dependencies = [
  "git-cliff-core",
  "git-conventional 1.1.0",
  "proptest",
+ "rand 0.10.1",
  "regex",
  "release_regent_testing",
  "serde",

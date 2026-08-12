@@ -47,7 +47,9 @@
 //! ```
 
 use crate::{
+    config::ErrorHandlingConfig,
     manifest::ManifestFileConfig,
+    retry::retry_with_backoff,
     traits::github_operations::{
         CreatePullRequestParams, FileUpdate, GitHubOperations, PullRequest,
     },
@@ -134,6 +136,12 @@ pub struct OrchestratorConfig {
     ///
     /// Set to `false` to disable auto-detection and rely solely on the explicit list.
     pub auto_detect_manifests: bool,
+
+    /// Retry policy applied to transient GitHub API failures encountered
+    /// while orchestrating a release PR.
+    ///
+    /// Defaults to [`ErrorHandlingConfig::default`].
+    pub error_handling: ErrorHandlingConfig,
 }
 
 impl OrchestratorConfig {
@@ -243,6 +251,7 @@ impl Default for OrchestratorConfig {
             body_template,
             manifest_files: Vec::new(),
             auto_detect_manifests: true,
+            error_handling: ErrorHandlingConfig::default(),
         }
     }
 }
@@ -361,6 +370,31 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
     /// - `github`: A reference to the `GitHubOperations` implementation to use
     pub fn new(config: OrchestratorConfig, github: &'a G) -> Self {
         Self { config, github }
+    }
+
+    /// Retry a GitHub operation using this orchestrator's configured
+    /// [`ErrorHandlingConfig`] retry policy.
+    ///
+    /// Thin wrapper around [`retry_with_backoff`] that captures
+    /// `self.config.error_handling` so call sites only need to supply the
+    /// operation name, correlation ID, and the operation itself.
+    async fn retry<T, F, Fut>(
+        &self,
+        operation_name: &str,
+        correlation_id: Option<&str>,
+        f: F,
+    ) -> CoreResult<T>
+    where
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = CoreResult<T>>,
+    {
+        retry_with_backoff(
+            &self.config.error_handling,
+            operation_name,
+            correlation_id,
+            f,
+        )
+        .await
     }
 
     // ── Public API ─────────────────────────────────────────────────────────
@@ -499,8 +533,9 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
     ) -> CoreResult<Option<(PullRequest, SemanticVersion)>> {
         let query = format!("is:open head:{}*", self.release_branch_prefix());
         let prs = self
-            .github
-            .search_pull_requests(owner, repo, &query)
+            .retry("search_pull_requests", None, || {
+                self.github.search_pull_requests(owner, repo, &query)
+            })
             .await?;
 
         debug!(
@@ -586,8 +621,10 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
         // Fetch the existing CHANGELOG.md from the base branch so we can
         // prepend the new version section rather than overwriting history.
         let existing_changelog_file = self
-            .github
-            .get_file_content(owner, repo, "CHANGELOG.md", base_branch)
+            .retry("get_file_content", Some(correlation_id), || {
+                self.github
+                    .get_file_content(owner, repo, "CHANGELOG.md", base_branch)
+            })
             .await
             .unwrap_or_else(|e| {
                 warn!(error = %e, "Failed to fetch existing CHANGELOG.md; starting fresh");
@@ -613,8 +650,15 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
         // of whatever stale versions were left on the old release branch head.
         // On a freshly-created branch this is equivalent since it was just branched
         // from base_sha.
-        self.collect_manifest_updates(owner, repo, base_branch, version, &mut file_updates)
-            .await;
+        self.collect_manifest_updates(
+            owner,
+            repo,
+            base_branch,
+            version,
+            &mut file_updates,
+            correlation_id,
+        )
+        .await;
 
         // Deduplicate by path — detect_standard_manifests may emit two configs for
         // the same file (e.g. PEP-617 + Poetry keys for pyproject.toml).  Keep the
@@ -631,8 +675,8 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
         // branch tip is.  The branch ref is then force-updated to the new commit.
         // This ensures the branch tip never equals `base_sha` at any point during
         // the operation, preventing GitHub from auto-closing the open release PR.
-        self.github
-            .batch_commit_files_rebased(
+        self.retry("batch_commit_files_rebased", Some(correlation_id), || {
+            self.github.batch_commit_files_rebased(
                 owner,
                 repo,
                 &actual_branch,
@@ -640,22 +684,24 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
                 &commit_message,
                 base_sha,
             )
-            .await?;
+        })
+        .await?;
 
         let pr = self
-            .github
-            .create_pull_request(
-                owner,
-                repo,
-                CreatePullRequestParams {
-                    base: base_branch.to_string(),
-                    head: actual_branch.clone(),
-                    title,
-                    body: Some(body),
-                    draft: false,
-                    maintainer_can_modify: true,
-                },
-            )
+            .retry("create_pull_request", Some(correlation_id), || {
+                self.github.create_pull_request(
+                    owner,
+                    repo,
+                    CreatePullRequestParams {
+                        base: base_branch.to_string(),
+                        head: actual_branch.clone(),
+                        title: title.clone(),
+                        body: Some(body.clone()),
+                        draft: false,
+                        maintainer_can_modify: true,
+                    },
+                )
+            })
             .await?;
 
         info!(pr_number = pr.number, branch = %actual_branch, "Created release PR");
@@ -667,6 +713,7 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
     ///
     /// Performs a fresh `get_pull_request` before the update so we operate on
     /// current data (prep for future `ETag` enforcement).
+    #[allow(clippy::too_many_arguments)] // owner/repo/existing_pr/version/changelog/sha/correlation_id/previous_version is the minimal update surface
     async fn update_release_pr(
         &self,
         owner: &str,
@@ -680,8 +727,10 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
     ) -> CoreResult<PullRequest> {
         // Always re-fetch to get the latest body (ETag prep).
         let fresh_pr = self
-            .github
-            .get_pull_request(owner, repo, existing_pr.number)
+            .retry("get_pull_request", Some(correlation_id), || {
+                self.github
+                    .get_pull_request(owner, repo, existing_pr.number)
+            })
             .await?;
 
         let merged_changelog =
@@ -729,8 +778,10 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
         // authoritative source of historical changelog data.  This is exactly
         // symmetric with the create_release_branch_and_pr path.
         let existing_changelog_file = self
-            .github
-            .get_file_content(owner, repo, "CHANGELOG.md", &fresh_pr.base.ref_name)
+            .retry("get_file_content", Some(correlation_id), || {
+                self.github
+                    .get_file_content(owner, repo, "CHANGELOG.md", &fresh_pr.base.ref_name)
+            })
             .await
             .unwrap_or_else(|e| {
                 warn!(error = %e, "Failed to fetch existing CHANGELOG.md; starting fresh");
@@ -762,6 +813,7 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
             &fresh_pr.base.ref_name,
             version,
             &mut file_updates,
+            correlation_id,
         )
         .await;
 
@@ -772,8 +824,8 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
             "chore(release): update release files for {}{}",
             self.config.version_prefix, version
         );
-        self.github
-            .batch_commit_files_rebased(
+        self.retry("batch_commit_files_rebased", Some(correlation_id), || {
+            self.github.batch_commit_files_rebased(
                 owner,
                 repo,
                 &fresh_pr.head.ref_name,
@@ -781,20 +833,22 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
                 &commit_message,
                 base_sha,
             )
-            .await?;
+        })
+        .await?;
 
         // Update the PR title/body only after the branch files are committed so
         // the metadata always reflects what is actually on the branch.
         let updated = self
-            .github
-            .update_pull_request(
-                owner,
-                repo,
-                fresh_pr.number,
-                title_update,
-                Some(new_body),
-                None,
-            )
+            .retry("update_pull_request", Some(correlation_id), || {
+                self.github.update_pull_request(
+                    owner,
+                    repo,
+                    fresh_pr.number,
+                    title_update.clone(),
+                    Some(new_body.clone()),
+                    None,
+                )
+            })
             .await?;
 
         info!(pr_number = updated.number, "Updated release PR changelog");
@@ -837,15 +891,16 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
 
         // Close the superseded PR.
         if let Err(e) = self
-            .github
-            .update_pull_request(
-                owner,
-                repo,
-                old_pr.number,
-                None,
-                None,
-                Some("closed".to_string()),
-            )
+            .retry("update_pull_request_close", Some(correlation_id), || {
+                self.github.update_pull_request(
+                    owner,
+                    repo,
+                    old_pr.number,
+                    None,
+                    None,
+                    Some("closed".to_string()),
+                )
+            })
             .await
         {
             warn!(
@@ -857,7 +912,12 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
 
         // Delete the old branch (non-fatal).
         let old_branch = &old_pr.head.ref_name;
-        if let Err(e) = self.github.delete_branch(owner, repo, old_branch).await {
+        if let Err(e) = self
+            .retry("delete_branch", Some(correlation_id), || {
+                self.github.delete_branch(owner, repo, old_branch)
+            })
+            .await
+        {
             warn!(
                 error = %e,
                 branch = %old_branch,
@@ -915,6 +975,7 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
         branch: &str,
         version: &SemanticVersion,
         updates: &mut Vec<FileUpdate>,
+        correlation_id: &str,
     ) {
         use crate::manifest::{
             detect_standard_manifests, update_cargo_lock_workspace_version, update_manifest_content,
@@ -955,8 +1016,9 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
                     continue; // explicit list takes precedence
                 }
                 match self
-                    .github
-                    .get_file_content(owner, repo, candidate, branch)
+                    .retry("get_file_content", Some(correlation_id), || {
+                        self.github.get_file_content(owner, repo, candidate, branch)
+                    })
                     .await
                 {
                     Ok(Some(content)) => {
@@ -985,8 +1047,10 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
                         continue;
                     }
                     match self
-                        .github
-                        .get_file_content(owner, repo, &member_path, branch)
+                        .retry("get_file_content", Some(correlation_id), || {
+                            self.github
+                                .get_file_content(owner, repo, &member_path, branch)
+                        })
                         .await
                     {
                         Ok(Some(content)) => {
@@ -1020,8 +1084,10 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
                     cached.clone()
                 } else {
                     match self
-                        .github
-                        .get_file_content(owner, repo, &manifest.path, branch)
+                        .retry("get_file_content", Some(correlation_id), || {
+                            self.github
+                                .get_file_content(owner, repo, &manifest.path, branch)
+                        })
                         .await
                     {
                         Ok(Some(c)) => c,
@@ -1075,8 +1141,10 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
             // No auto-detection; process only explicitly configured manifests.
             for manifest in &manifests {
                 let content = match self
-                    .github
-                    .get_file_content(owner, repo, &manifest.path, branch)
+                    .retry("get_file_content", Some(correlation_id), || {
+                        self.github
+                            .get_file_content(owner, repo, &manifest.path, branch)
+                    })
                     .await
                 {
                     Ok(Some(c)) => c,
@@ -1137,8 +1205,10 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
             && !updates.iter().any(|f| f.path == "Cargo.lock")
         {
             match self
-                .github
-                .get_file_content(owner, repo, "Cargo.lock", branch)
+                .retry("get_file_content", Some(correlation_id), || {
+                    self.github
+                        .get_file_content(owner, repo, "Cargo.lock", branch)
+                })
                 .await
             {
                 Ok(Some(lock_content)) => {

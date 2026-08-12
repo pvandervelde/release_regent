@@ -44,8 +44,11 @@ Look for log lines at `ERROR` or `WARN` level that contain `repository`, `pull_r
 **Fix**:
 
 - If the webhook was never delivered, use GitHub's **Redeliver** button.
-- If the webhook was delivered but processing failed (e.g., GitHub API rate limit), wait and
-  redeliver.
+- If the webhook was delivered but processing failed, Release Regent already retries transient
+  GitHub API failures (rate limits, network errors, timeouts) automatically per the
+  `error_handling` configuration (see [Configuration reference](../../reference/configuration.md)).
+  If the failure persists in the logs after those retries are exhausted, wait for the rate
+  limit to reset and redeliver.
 - If the configuration caused the failure (e.g., a syntax error in `.release-regent.toml`),
   fix the config and redeliver.
 
@@ -108,8 +111,10 @@ There is no automated rollback for published GitHub releases. The safest approac
   when one already exists at a lower version causes an upgrade; at the same version, it
   updates the changelog. Only the GitHub release creation step is not idempotent because GitHub
   does not allow duplicate tags.
-- **Rate limits**: If you see `rate limit` errors in logs, wait for the limit to reset (GitHub
-  shows the reset time in the API response headers) and redeliver the event.
+- **Rate limits**: Rate-limit and other transient GitHub API failures are retried automatically
+  with exponential backoff (capped at 30 seconds per attempt). If you still see `rate limit`
+  errors in logs after retries are exhausted, wait for the limit to reset (GitHub shows the
+  reset time in the API response headers) and redeliver the event.
 - **Check branch protection**: If branch protection rules require status checks before merging,
   confirm those checks passed. Release Regent cannot merge PRs on its own if branch protection
   blocks the merge.

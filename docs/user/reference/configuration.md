@@ -511,12 +511,25 @@ generate_notes = false
 
 ## `error_handling` — retry behaviour
 
+> **Note:** These settings are applied automatically to every GitHub API call Release Regent
+> makes (creating release PRs, publishing releases, posting comments, etc.). Only transient
+> failures — network errors, rate limiting, timeouts, and optimistic-lock conflicts — are
+> retried; permanent failures such as `404 Not Found`, authentication errors, and validation
+> errors always fail immediately with no delay. Regardless of the `backoff_multiplier` and
+> `initial_delay_ms` you configure, the delay before each retry attempt is capped at a fixed
+> **30 seconds**, so an aggressive multiplier will never cause a wait longer than that. Each
+> delay also has **±25% random jitter** applied so that many repositories retrying at once
+> against the same GitHub rate limit don't all retry in lockstep. `max_retries` is likewise
+> capped at a fixed maximum of **20** retries regardless of the configured value, so an
+> unreasonably large `max_retries` cannot block event processing indefinitely.
+
 ### `error_handling.max_retries`
 
 **Type**: integer
 **Default**: `5`
 
-Maximum number of retries for transient GitHub API failures.
+Maximum number of retries for transient GitHub API failures. Capped at 20 regardless of the
+configured value.
 
 ```toml
 [error_handling]
