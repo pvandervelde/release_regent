@@ -1533,6 +1533,34 @@ impl GitHubOperations for GitHubClient {
         Ok(())
     }
 
+    #[instrument(skip(self, _params))]
+    async fn create_issue(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _params: release_regent_core::traits::github_operations::CreateIssueParams,
+    ) -> CoreResult<release_regent_core::traits::github_operations::Issue> {
+        // TODO(notifications-config GREEN phase): implement via the GitHub Issues API.
+        Err(CoreError::not_supported(
+            "create_issue",
+            "not yet implemented",
+        ))
+    }
+
+    #[instrument(skip(self, _options))]
+    async fn list_issues(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _options: release_regent_core::traits::github_operations::ListIssuesOptions,
+    ) -> CoreResult<Vec<release_regent_core::traits::github_operations::Issue>> {
+        // TODO(notifications-config GREEN phase): implement via the GitHub Issues API.
+        Err(CoreError::not_supported(
+            "list_issues",
+            "not yet implemented",
+        ))
+    }
+
     #[instrument(skip(self))]
     async fn get_installation_id_for_repo(&self, owner: &str, repo: &str) -> CoreResult<u64> {
         info!(owner, repo, "Looking up installation ID for repository");

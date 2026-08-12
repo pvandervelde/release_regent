@@ -459,6 +459,24 @@ impl GitHubOperations for TestGitHub {
         Ok(vec![])
     }
 
+    async fn create_issue(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _params: crate::traits::github_operations::CreateIssueParams,
+    ) -> CoreResult<crate::traits::github_operations::Issue> {
+        Err(CoreError::not_supported("create_issue", "stub"))
+    }
+
+    async fn list_issues(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _options: crate::traits::github_operations::ListIssuesOptions,
+    ) -> CoreResult<Vec<crate::traits::github_operations::Issue>> {
+        Ok(vec![])
+    }
+
     async fn get_installation_id_for_repo(&self, _owner: &str, _repo: &str) -> CoreResult<u64> {
         Ok(0)
     }

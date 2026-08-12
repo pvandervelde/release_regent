@@ -37,16 +37,19 @@ use tokio::sync::RwLock;
 // Re-export core traits for type identity
 pub use release_regent_core::traits::configuration_provider::ConfigurationProvider;
 pub use release_regent_core::traits::github_operations::GitHubOperations;
+pub use release_regent_core::traits::notification_sender::NotificationSender;
 pub use release_regent_core::traits::version_calculator::VersionCalculator;
 
 pub mod configuration_provider;
 pub mod event_source;
 pub mod github_operations;
+pub mod notification_sender;
 pub mod version_calculator;
 
 pub use configuration_provider::MockConfigurationProvider;
 pub use event_source::MockEventSource;
 pub use github_operations::MockGitHubOperations;
+pub use notification_sender::MockNotificationSender;
 pub use version_calculator::MockVersionCalculator;
 
 /// Mock behavior configuration for all trait implementations

@@ -136,6 +136,32 @@ pub trait GitHubOperations: GitOperations + Send + Sync {
         body: &str,
     ) -> CoreResult<()>;
 
+    /// Create a new issue in a repository.
+    ///
+    /// Used by the GitHub Issue [`crate::notifications`] notification strategy
+    /// to open an issue describing a processing error. Callers should first
+    /// check [`GitHubOperations::list_issues`] for an existing open issue with
+    /// a matching idempotency marker before calling this method, to avoid
+    /// creating duplicate issues for the same recurring error.
+    ///
+    /// # Parameters
+    /// - `owner`: Repository owner name
+    /// - `repo`: Repository name
+    /// - `params`: Issue creation parameters
+    ///
+    /// # Returns
+    /// The newly created issue.
+    ///
+    /// # Errors
+    /// - `CoreError::InvalidInput` - `params.title` is empty
+    /// - `CoreError::GitHub` - API communication failed
+    async fn create_issue(
+        &self,
+        owner: &str,
+        repo: &str,
+        params: CreateIssueParams,
+    ) -> CoreResult<Issue>;
+
     /// Create a new pull request
     ///
     /// # Parameters
@@ -380,6 +406,29 @@ pub trait GitHubOperations: GitOperations + Send + Sync {
         repo: &str,
         issue_number: u64,
     ) -> CoreResult<Vec<IssueComment>>;
+
+    /// List issues in a repository, optionally filtered by state and labels.
+    ///
+    /// Used by the GitHub Issue notification strategy to search for an
+    /// existing open issue with a matching idempotency marker before
+    /// deciding whether to create a new issue.
+    ///
+    /// # Parameters
+    /// - `owner`: Repository owner name
+    /// - `repo`: Repository name
+    /// - `options`: State and label filters
+    ///
+    /// # Returns
+    /// Issues matching the filters.
+    ///
+    /// # Errors
+    /// - `CoreError::GitHub` - API communication failed
+    async fn list_issues(
+        &self,
+        owner: &str,
+        repo: &str,
+        options: ListIssuesOptions,
+    ) -> CoreResult<Vec<Issue>>;
 
     /// List pull requests in a repository
     ///
@@ -834,6 +883,61 @@ pub struct IssueComment {
     pub id: u64,
     /// GitHub login of the comment author, if available.
     pub user_login: Option<String>,
+}
+
+/// Parameters for creating a new issue via [`GitHubOperations::create_issue`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateIssueParams {
+    /// Issue title. Must not be empty.
+    pub title: String,
+    /// Issue body (Markdown supported).
+    pub body: Option<String>,
+    /// Labels to apply to the new issue.
+    pub labels: Vec<String>,
+    /// GitHub logins to assign to the new issue.
+    pub assignees: Vec<String>,
+}
+
+/// Filter options for [`GitHubOperations::list_issues`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListIssuesOptions {
+    /// Filter by issue state.
+    pub state: IssueState,
+    /// Filter to issues carrying all of these labels. An empty vector applies
+    /// no label filter.
+    pub labels: Vec<String>,
+}
+
+/// Issue state filter for [`GitHubOperations::list_issues`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IssueState {
+    /// Only open issues.
+    Open,
+    /// Only closed issues.
+    Closed,
+    /// Both open and closed issues.
+    All,
+}
+
+/// A GitHub issue.
+///
+/// Returned by [`GitHubOperations::create_issue`] and
+/// [`GitHubOperations::list_issues`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Issue {
+    /// Issue number.
+    pub number: u64,
+    /// Issue title.
+    pub title: String,
+    /// Issue body (Markdown), if any.
+    pub body: Option<String>,
+    /// Issue state as returned by the API (e.g. `"open"`, `"closed"`).
+    pub state: String,
+    /// Labels currently applied to the issue.
+    pub labels: Vec<Label>,
+    /// Web URL for the issue.
+    pub html_url: String,
 }
 
 /// A GitHub label applied to an issue or pull request.

@@ -11,8 +11,9 @@ use release_regent_core::{
             GetCommitsOptions, GitCommit, GitRepository, GitTag, GitTagType, ListTagsOptions,
         },
         github_operations::{
-            CollaboratorPermission, CreatePullRequestParams, CreateReleaseParams, IssueComment,
-            Label, PullRequest, PullRequestBranch, Release, Repository, Tag, UpdateReleaseParams,
+            CollaboratorPermission, CreateIssueParams, CreatePullRequestParams, CreateReleaseParams,
+            Issue, IssueComment, IssueState, Label, ListIssuesOptions, PullRequest,
+            PullRequestBranch, Release, Repository, Tag, UpdateReleaseParams,
         },
     },
     CoreError, CoreResult, GitHubOperations, GitOperations,
@@ -109,6 +110,13 @@ pub struct MockGitHubOperations {
     list_issue_comments_calls: Arc<RwLock<Vec<(String, String, u64)>>>,
     /// Recorded `update_issue_comment` calls: (owner, repo, comment_id, body).
     update_issue_comment_calls: Arc<RwLock<Vec<(String, String, u64, String)>>>,
+    /// Issues keyed `"owner/repo"`. Used by `list_issues` (returns the vec,
+    /// filtered by state/labels) and `create_issue` (appends a new issue).
+    issues: Arc<RwLock<HashMap<String, Vec<Issue>>>>,
+    /// Recorded `create_issue` calls: (owner, repo, params).
+    create_issue_calls: Arc<RwLock<Vec<(String, String, CreateIssueParams)>>>,
+    /// Recorded `list_issues` calls: (owner, repo, options).
+    list_issues_calls: Arc<RwLock<Vec<(String, String, ListIssuesOptions)>>>,
 }
 
 impl MockGitHubOperations {
@@ -166,6 +174,9 @@ impl MockGitHubOperations {
             issue_comments: Arc::new(RwLock::new(HashMap::new())),
             list_issue_comments_calls: Arc::new(RwLock::new(Vec::new())),
             update_issue_comment_calls: Arc::new(RwLock::new(Vec::new())),
+            issues: Arc::new(RwLock::new(HashMap::new())),
+            create_issue_calls: Arc::new(RwLock::new(Vec::new())),
+            list_issues_calls: Arc::new(RwLock::new(Vec::new())),
         }
     }
 
@@ -219,6 +230,23 @@ impl MockGitHubOperations {
         &self,
     ) -> Vec<(String, String, String, Vec<String>, String, String)> {
         self.batch_commit_files_rebased_calls.read().await.clone()
+    }
+
+    /// Seed an existing issue for a repository, returned by `list_issues` and
+    /// findable by `create_issue`'s idempotency callers.
+    pub async fn with_issue(&self, owner: &str, repo: &str, issue: Issue) {
+        let key = format!("{owner}/{repo}");
+        self.issues.write().await.entry(key).or_default().push(issue);
+    }
+
+    /// Return all recorded `create_issue` calls: `(owner, repo, params)`.
+    pub async fn create_issue_calls(&self) -> Vec<(String, String, CreateIssueParams)> {
+        self.create_issue_calls.read().await.clone()
+    }
+
+    /// Return all recorded `list_issues` calls: `(owner, repo, options)`.
+    pub async fn list_issues_calls(&self) -> Vec<(String, String, ListIssuesOptions)> {
+        self.list_issues_calls.read().await.clone()
     }
 
     /// Record a method call for tracking
@@ -285,6 +313,9 @@ impl MockGitHubOperations {
             issue_comments: Arc::new(RwLock::new(HashMap::new())),
             list_issue_comments_calls: Arc::new(RwLock::new(Vec::new())),
             update_issue_comment_calls: Arc::new(RwLock::new(Vec::new())),
+            issues: Arc::new(RwLock::new(HashMap::new())),
+            create_issue_calls: Arc::new(RwLock::new(Vec::new())),
+            list_issues_calls: Arc::new(RwLock::new(Vec::new())),
         }
     }
 
@@ -529,6 +560,9 @@ impl Clone for MockGitHubOperations {
             issue_comments: Arc::clone(&self.issue_comments),
             list_issue_comments_calls: Arc::clone(&self.list_issue_comments_calls),
             update_issue_comment_calls: Arc::clone(&self.update_issue_comment_calls),
+            issues: Arc::clone(&self.issues),
+            create_issue_calls: Arc::clone(&self.create_issue_calls),
+            list_issues_calls: Arc::clone(&self.list_issues_calls),
         }
     }
 }
@@ -1219,6 +1253,77 @@ impl GitHubOperations for MockGitHubOperations {
         Ok(())
     }
 
+    async fn create_issue(
+        &self,
+        owner: &str,
+        repo: &str,
+        params: CreateIssueParams,
+    ) -> CoreResult<Issue> {
+        let method = "create_issue";
+        let params_str = format!("owner={owner}, repo={repo}, title={}", params.title);
+
+        self.check_quota().await?;
+        self.simulate_latency().await;
+
+        if params.title.trim().is_empty() {
+            let error = CoreError::invalid_input("title", "title must not be empty");
+            self.record_call(method, &params_str, CallResult::Error(error.to_string()))
+                .await;
+            return Err(error);
+        }
+
+        if self.should_simulate_failure().await {
+            let error = CoreError::network("Simulated GitHub API error");
+            self.record_call(method, &params_str, CallResult::Error(error.to_string()))
+                .await;
+            return Err(error);
+        }
+
+        if let Some(msg) = self.method_errors.get(method) {
+            let error = CoreError::network(msg.clone());
+            self.record_call(method, &params_str, CallResult::Error(error.to_string()))
+                .await;
+            return Err(error);
+        }
+
+        let number = self.generate_mock_id();
+        let issue = Issue {
+            number,
+            title: params.title.clone(),
+            body: params.body.clone(),
+            state: "open".to_string(),
+            labels: params
+                .labels
+                .iter()
+                .map(|name| Label {
+                    id: 0,
+                    name: name.clone(),
+                    color: "ededed".to_string(),
+                    description: None,
+                })
+                .collect(),
+            html_url: format!("https://github.com/{owner}/{repo}/issues/{number}"),
+        };
+
+        let key = format!("{owner}/{repo}");
+        self.issues
+            .write()
+            .await
+            .entry(key)
+            .or_default()
+            .push(issue.clone());
+
+        self.create_issue_calls.write().await.push((
+            owner.to_string(),
+            repo.to_string(),
+            params,
+        ));
+
+        self.record_call(method, &params_str, CallResult::Success)
+            .await;
+        Ok(issue)
+    }
+
     async fn get_collaborator_permission(
         &self,
         owner: &str,
@@ -1429,6 +1534,64 @@ impl GitHubOperations for MockGitHubOperations {
         Ok(comments)
     }
 
+    async fn list_issues(
+        &self,
+        owner: &str,
+        repo: &str,
+        options: ListIssuesOptions,
+    ) -> CoreResult<Vec<Issue>> {
+        let method = "list_issues";
+        let params_str = format!(
+            "owner={owner}, repo={repo}, state={:?}, labels={:?}",
+            options.state, options.labels
+        );
+
+        self.check_quota().await?;
+        self.simulate_latency().await;
+
+        if self.should_simulate_failure().await {
+            let error = CoreError::network("Simulated GitHub API error");
+            self.record_call(method, &params_str, CallResult::Error(error.to_string()))
+                .await;
+            return Err(error);
+        }
+
+        if let Some(msg) = self.method_errors.get(method) {
+            let error = CoreError::network(msg.clone());
+            self.record_call(method, &params_str, CallResult::Error(error.to_string()))
+                .await;
+            return Err(error);
+        }
+
+        let key = format!("{owner}/{repo}");
+        let issues = self.issues.read().await.get(&key).cloned().unwrap_or_default();
+
+        let filtered: Vec<Issue> = issues
+            .into_iter()
+            .filter(|issue| match options.state {
+                IssueState::All => true,
+                IssueState::Open => issue.state == "open",
+                IssueState::Closed => issue.state == "closed",
+            })
+            .filter(|issue| {
+                options.labels.is_empty()
+                    || options
+                        .labels
+                        .iter()
+                        .all(|wanted| issue.labels.iter().any(|l| &l.name == wanted))
+            })
+            .collect();
+
+        self.list_issues_calls.write().await.push((
+            owner.to_string(),
+            repo.to_string(),
+            options,
+        ));
+        self.record_call(method, &params_str, CallResult::Success)
+            .await;
+        Ok(filtered)
+    }
+
     async fn update_issue_comment(
         &self,
         owner: &str,
@@ -1501,6 +1664,9 @@ impl GitHubOperations for MockGitHubOperations {
             issue_comments: Arc::clone(&self.issue_comments),
             list_issue_comments_calls: Arc::clone(&self.list_issue_comments_calls),
             update_issue_comment_calls: Arc::clone(&self.update_issue_comment_calls),
+            issues: Arc::clone(&self.issues),
+            create_issue_calls: Arc::clone(&self.create_issue_calls),
+            list_issues_calls: Arc::clone(&self.list_issues_calls),
         }
     }
 

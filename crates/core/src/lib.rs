@@ -210,6 +210,7 @@ pub(crate) mod default_version_calculator;
 pub mod errors;
 pub(crate) mod github_version_calculator;
 pub mod manifest;
+pub mod notifications;
 pub(crate) mod pr_status_commenter;
 pub mod release_automator;
 pub mod release_orchestrator;

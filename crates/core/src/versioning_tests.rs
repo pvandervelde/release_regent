@@ -1247,6 +1247,22 @@ mod cross_calculator_consistency {
         ) -> crate::CoreResult<CollaboratorPermission> {
             Ok(CollaboratorPermission::Write)
         }
+        async fn create_issue(
+            &self,
+            _: &str,
+            _: &str,
+            _: crate::traits::github_operations::CreateIssueParams,
+        ) -> crate::CoreResult<crate::traits::github_operations::Issue> {
+            Err(CoreError::not_supported("create_issue", "stub"))
+        }
+        async fn list_issues(
+            &self,
+            _: &str,
+            _: &str,
+            _: crate::traits::github_operations::ListIssuesOptions,
+        ) -> crate::CoreResult<Vec<crate::traits::github_operations::Issue>> {
+            Ok(vec![])
+        }
         async fn get_installation_id_for_repo(&self, _: &str, _: &str) -> crate::CoreResult<u64> {
             Ok(0)
         }
