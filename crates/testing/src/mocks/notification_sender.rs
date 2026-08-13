@@ -21,6 +21,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+type SendWebhookCalls = Arc<RwLock<Vec<(String, HashMap<String, String>, serde_json::Value)>>>;
+type SendSlackCalls = Arc<RwLock<Vec<(String, Option<String>, String)>>>;
+
 /// Mock implementation of `NotificationSender`.
 ///
 /// # Example Usage
@@ -33,9 +36,9 @@ use tokio::sync::RwLock;
 #[derive(Debug)]
 pub struct MockNotificationSender {
     /// Recorded `send_webhook` calls: `(url, headers, payload)`.
-    send_webhook_calls: Arc<RwLock<Vec<(String, HashMap<String, String>, serde_json::Value)>>>,
+    send_webhook_calls: SendWebhookCalls,
     /// Recorded `send_slack` calls: `(webhook_url, channel, text)`.
-    send_slack_calls: Arc<RwLock<Vec<(String, Option<String>, String)>>>,
+    send_slack_calls: SendSlackCalls,
     /// When `Some`, `send_webhook` returns this error message instead of succeeding.
     webhook_error: Option<String>,
     /// When `Some`, `send_slack` returns this error message instead of succeeding.

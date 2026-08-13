@@ -27,9 +27,14 @@
 //! imports an HTTP client directly. `core` remains free of any concrete
 //! delivery mechanism.
 
-use crate::config::NotificationConfig;
-use crate::traits::{github_operations::GitHubOperations, notification_sender::NotificationSender};
-use crate::CoreResult;
+use crate::config::{NotificationConfig, NotificationStrategy};
+use crate::traits::{
+    github_operations::{CreateIssueParams, GitHubOperations, IssueState, ListIssuesOptions},
+    notification_sender::NotificationSender,
+};
+use crate::{CoreError, CoreResult};
+use sha2::{Digest, Sha256};
+
 
 /// The kind of event being reported to [`NotificationDispatcher::dispatch`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,22 +96,146 @@ impl<'a, G: GitHubOperations, N: NotificationSender> NotificationDispatcher<'a, 
     ///   absent.
     /// - Any error propagated unchanged from the underlying
     ///   [`GitHubOperations`] or [`NotificationSender`] port call.
-    ///
-    /// # Panics
-    /// This is a RED-phase skeleton: the body is intentionally unimplemented
-    /// and always panics. A Coder implements the real dispatch logic in the
-    /// GREEN phase.
     pub async fn dispatch(
         &self,
         config: &NotificationConfig,
         event: &NotificationEvent,
     ) -> CoreResult<()> {
-        // Reference both ports so the fields are not flagged as dead code
-        // while this method is unimplemented.
-        let _ = self.github_operations;
-        let _ = self.notification_sender;
-        let _ = (config, event);
-        todo!("RED phase: NotificationDispatcher::dispatch is not yet implemented")
+        if !config.enabled {
+            return Ok(());
+        }
+
+        match config.strategy {
+            NotificationStrategy::None => Ok(()),
+            NotificationStrategy::GitHubIssue => self.dispatch_github_issue(config, event).await,
+            NotificationStrategy::Webhook => self.dispatch_webhook(config, event).await,
+            NotificationStrategy::Slack => self.dispatch_slack(config, event).await,
+        }
+    }
+
+    /// Handle [`NotificationStrategy::GitHubIssue`] dispatch.
+    ///
+    /// Computes the idempotency marker, lists open issues carrying the
+    /// configured labels, and either comments on a matching existing issue or
+    /// creates a new one.
+    async fn dispatch_github_issue(
+        &self,
+        config: &NotificationConfig,
+        event: &NotificationEvent,
+    ) -> CoreResult<()> {
+        let github_issue_config = config.github_issue.clone().unwrap_or_default();
+        let marker = notification_marker(&event.owner, &event.repo, event.kind, &event.summary);
+
+        let existing = self
+            .github_operations
+            .list_issues(
+                &event.owner,
+                &event.repo,
+                ListIssuesOptions {
+                    state: IssueState::Open,
+                    labels: github_issue_config.labels.clone(),
+                },
+            )
+            .await?;
+
+        let matching_issue = existing
+            .into_iter()
+            .find(|issue| issue.body.as_deref().is_some_and(|body| body.contains(&marker)));
+
+        if let Some(issue) = matching_issue {
+            self.github_operations
+                .create_issue_comment(&event.owner, &event.repo, issue.number, &event.details)
+                .await?;
+        } else {
+            self.github_operations
+                .create_issue(
+                    &event.owner,
+                    &event.repo,
+                    CreateIssueParams {
+                        title: event.summary.clone(),
+                        body: Some(format!("{marker}\n\n{}", event.details)),
+                        labels: github_issue_config.labels,
+                        assignees: github_issue_config.assignees,
+                    },
+                )
+                .await?;
+        }
+
+        Ok(())
+    }
+
+    /// Handle [`NotificationStrategy::Webhook`] dispatch.
+    async fn dispatch_webhook(
+        &self,
+        config: &NotificationConfig,
+        event: &NotificationEvent,
+    ) -> CoreResult<()> {
+        let webhook = config
+            .webhook
+            .as_ref()
+            .ok_or_else(|| CoreError::config(
+                "notifications.webhook is required when notifications.strategy is \"webhook\"",
+            ))?;
+
+        let payload = serde_json::json!({
+            "event": event_kind_as_str(event.kind),
+            "owner": event.owner,
+            "repo": event.repo,
+            "correlation_id": event.correlation_id,
+            "summary": event.summary,
+            "details": event.details,
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+        });
+
+        self.notification_sender
+            .send_webhook(&webhook.url, &webhook.headers, &payload)
+            .await
+    }
+
+    /// Handle [`NotificationStrategy::Slack`] dispatch.
+    async fn dispatch_slack(
+        &self,
+        config: &NotificationConfig,
+        event: &NotificationEvent,
+    ) -> CoreResult<()> {
+        let slack = config
+            .slack
+            .as_ref()
+            .ok_or_else(|| CoreError::config(
+                "notifications.slack is required when notifications.strategy is \"slack\"",
+            ))?;
+
+        let text = format!("*{}*\n{}", event.summary, event.details);
+
+        self.notification_sender
+            .send_slack(&slack.webhook_url, slack.channel.as_deref(), &text)
+            .await
+    }
+}
+
+/// Compute the deterministic idempotency marker embedded in GitHub issue
+/// bodies created by the [`NotificationStrategy::GitHubIssue`] strategy.
+///
+/// The hash is computed over `(owner, repo, kind, summary)` so that the same
+/// recurring error produces the same marker across dispatcher invocations.
+fn notification_marker(
+    owner: &str,
+    repo: &str,
+    kind: NotificationEventKind,
+    summary: &str,
+) -> String {
+    let input = format!("{owner}/{repo}/{kind:?}/{summary}");
+    let digest = Sha256::digest(input.as_bytes());
+    let hex = digest.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    format!("<!-- release-regent:notification:{hex} -->")
+}
+
+/// Render a [`NotificationEventKind`] as the lowercase snake_case string used
+/// in the `event` field of webhook payloads.
+fn event_kind_as_str(kind: NotificationEventKind) -> &'static str {
+    match kind {
+        NotificationEventKind::ProcessingError => "processing_error",
+        NotificationEventKind::ReleaseCreated => "release_created",
     }
 }
 

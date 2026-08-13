@@ -32,6 +32,7 @@ type BatchCommitFilesCalls = Arc<RwLock<Vec<(String, String, String, Vec<String>
 type BatchCommitFilesRebasedCalls =
     Arc<RwLock<Vec<(String, String, String, Vec<String>, String, String)>>>;
 type UpsertFileCalls = Arc<RwLock<Vec<(String, String, String, String, String, String)>>>;
+type UpdateIssueCommentCalls = Arc<RwLock<Vec<(String, String, u64, String)>>>;
 
 /// Mock implementation of `GitHubOperations` trait
 ///
@@ -109,7 +110,7 @@ pub struct MockGitHubOperations {
     /// Recorded `list_issue_comments` calls: (owner, repo, issue_number).
     list_issue_comments_calls: Arc<RwLock<Vec<(String, String, u64)>>>,
     /// Recorded `update_issue_comment` calls: (owner, repo, comment_id, body).
-    update_issue_comment_calls: Arc<RwLock<Vec<(String, String, u64, String)>>>,
+    update_issue_comment_calls: UpdateIssueCommentCalls,
     /// Issues keyed `"owner/repo"`. Used by `list_issues` (returns the vec,
     /// filtered by state/labels) and `create_issue` (appends a new issue).
     issues: Arc<RwLock<HashMap<String, Vec<Issue>>>>,
