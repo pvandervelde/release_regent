@@ -40,7 +40,7 @@ toml_edit = "0.25"
 
 # GitHub integration
 github-bot-sdk = "0.2.0"
-octocrab = "0.53"
+octocrab = "0.54"
 reqwest = { version = "0.13", features = ["json", "rustls"] }
 
 # Crypto and security
