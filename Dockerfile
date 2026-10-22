@@ -34,7 +34,7 @@
 # Pin to a specific Rust release so that builds on different days produce
 # identical binaries.  Update this together with rust-version in Cargo.toml
 # when raising the MSRV.  Current stable at the time of writing: 1.96.
-FROM rust:1.96-slim@sha256:3b05f7c617a200c41c3506097f0d15fc193a1c93bfd8f141007b47cac8f95d3c AS deps
+FROM rust:1.96-slim@sha256:31ee7fc65186be7e0e0ccb3f2ca305f14e4739e7642a1ae65753aa5d7b874523 AS deps
 
 # TARGETARCH is injected by BuildKit (values: amd64, arm64, etc.).
 # cmake, clang, pkg-config are required on all platforms by aws-lc-sys.
