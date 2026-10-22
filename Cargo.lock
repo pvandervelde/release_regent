@@ -1393,7 +1393,7 @@ dependencies = [
  "chrono",
  "hex",
  "hmac 0.13.0",
- "jsonwebtoken",
+ "jsonwebtoken 10.4.0",
  "rand 0.10.1",
  "reqwest",
  "rsa",
@@ -2036,6 +2036,23 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "signature",
+ "simple_asn1",
+ "zeroize",
+]
+
+[[package]]
+name = "jsonwebtoken"
+version = "11.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e75fe14a82d81e5f5af639997db37d8b96045938a7ac6ab18cdbe1c7467e05e1"
+dependencies = [
+ "base64 0.22.1",
+ "getrandom 0.2.17",
+ "js-sys",
+ "pem",
+ "serde",
+ "serde_json",
  "signature",
  "simple_asn1",
  "zeroize",
@@ -3118,7 +3135,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "github-bot-sdk",
- "jsonwebtoken",
+ "jsonwebtoken 11.1.0",
  "mockall",
  "release-regent-core",
  "reqwest",
