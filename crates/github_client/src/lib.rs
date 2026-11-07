@@ -22,9 +22,10 @@ use release_regent_core::{
             GitUser as GitOpsUser, ListTagsOptions, TagSortOrder,
         },
         github_operations::{
-            CollaboratorPermission, CreatePullRequestParams, CreateReleaseParams, FileUpdate,
-            GitHubOperations, GitUser as GitHubUser, IssueComment, Label, PullRequest,
-            PullRequestBranch, Release, Repository, Tag, UpdateReleaseParams,
+            CollaboratorPermission, CreateIssueParams, CreatePullRequestParams,
+            CreateReleaseParams, FileUpdate, GitHubOperations, GitUser as GitHubUser, Issue,
+            IssueComment, IssueState, Label, ListIssuesOptions, PullRequest, PullRequestBranch,
+            Release, Repository, Tag, UpdateReleaseParams,
         },
     },
     CoreError, CoreResult,
@@ -49,6 +50,9 @@ const SECONDARY_RATE_LIMIT_RETRY_SECS: u64 = 60;
 
 pub mod auth;
 pub use auth::{AuthConfig, EnvSecretProvider};
+
+pub mod notification_sender;
+pub use notification_sender::HttpNotificationSender;
 
 // Re-export SDK types for convenience
 pub use github_bot_sdk::auth::{GitHubAppId, InstallationId as SdkInstallationId, PrivateKey};
@@ -1533,32 +1537,66 @@ impl GitHubOperations for GitHubClient {
         Ok(())
     }
 
-    #[instrument(skip(self, _params))]
-    async fn create_issue(
-        &self,
-        _owner: &str,
-        _repo: &str,
-        _params: release_regent_core::traits::github_operations::CreateIssueParams,
-    ) -> CoreResult<release_regent_core::traits::github_operations::Issue> {
-        // TODO(notifications-config GREEN phase): implement via the GitHub Issues API.
-        Err(CoreError::not_supported(
-            "create_issue",
-            "not yet implemented",
-        ))
+    #[instrument(skip(self, params))]
+    async fn create_issue(&self, owner: &str, repo: &str, params: CreateIssueParams) -> CoreResult<Issue> {
+        if params.title.trim().is_empty() {
+            return Err(CoreError::invalid_input("title", "title must not be empty"));
+        }
+
+        info!(owner, repo, title = %params.title, "Creating issue");
+
+        let installation = self.installation().await?;
+        let path = format!("/repos/{owner}/{repo}/issues");
+        let body = serde_json::json!({
+            "title": params.title,
+            "body": params.body,
+            "labels": params.labels,
+            "assignees": params.assignees,
+        });
+
+        let response = installation
+            .post(&path, &body)
+            .await
+            .map_err(map_sdk_error)?;
+        let raw: serde_json::Value = response.json().await.map_err(CoreError::github)?;
+
+        Ok(json_to_issue(&raw))
     }
 
-    #[instrument(skip(self, _options))]
+    #[instrument(skip(self))]
     async fn list_issues(
         &self,
-        _owner: &str,
-        _repo: &str,
-        _options: release_regent_core::traits::github_operations::ListIssuesOptions,
-    ) -> CoreResult<Vec<release_regent_core::traits::github_operations::Issue>> {
-        // TODO(notifications-config GREEN phase): implement via the GitHub Issues API.
-        Err(CoreError::not_supported(
-            "list_issues",
-            "not yet implemented",
-        ))
+        owner: &str,
+        repo: &str,
+        options: ListIssuesOptions,
+    ) -> CoreResult<Vec<Issue>> {
+        let state_str = match options.state {
+            IssueState::Open => "open",
+            IssueState::Closed => "closed",
+            IssueState::All => "all",
+        };
+
+        info!(owner, repo, state = state_str, "Listing issues");
+
+        let installation = self.installation().await?;
+        let mut path = format!("/repos/{owner}/{repo}/issues?state={state_str}");
+        if !options.labels.is_empty() {
+            let labels_param = urlencoding_encode_query_value(&options.labels.join(","));
+            path.push_str(&format!("&labels={labels_param}"));
+        }
+
+        let response = installation.get(&path).await.map_err(map_sdk_error)?;
+        let raw: Vec<serde_json::Value> = response.json().await.map_err(CoreError::github)?;
+
+        let issues = raw
+            .into_iter()
+            // GitHub's /issues endpoint also returns pull requests; PRs carry a
+            // "pull_request" key that plain issues never have.
+            .filter(|v| v.get("pull_request").is_none())
+            .map(|v| json_to_issue(&v))
+            .collect();
+
+        Ok(issues)
     }
 
     #[instrument(skip(self))]
@@ -1762,6 +1800,34 @@ struct ListPrBranchRepo {
 #[derive(serde::Deserialize)]
 struct ListPrUser {
     login: String,
+}
+
+/// Convert a raw GitHub issue API JSON object into the core [`Issue`] type.
+///
+/// Shared by [`GitHubClient::create_issue`] (single-object response) and
+/// [`GitHubClient::list_issues`] (array response, mapped element-wise).
+fn json_to_issue(v: &serde_json::Value) -> Issue {
+    let labels = v["labels"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|l| Label {
+            id: l["id"].as_u64().unwrap_or(0),
+            name: l["name"].as_str().unwrap_or("").to_string(),
+            color: l["color"].as_str().unwrap_or("").to_string(),
+            description: l["description"].as_str().map(str::to_string),
+        })
+        .collect();
+
+    Issue {
+        number: v["number"].as_u64().unwrap_or(0),
+        title: v["title"].as_str().unwrap_or("").to_string(),
+        body: v["body"].as_str().map(str::to_string),
+        state: v["state"].as_str().unwrap_or("").to_string(),
+        labels,
+        html_url: v["html_url"].as_str().unwrap_or("").to_string(),
+    }
 }
 
 /// Percent-encode a file path for use in a GitHub Contents API URL.
@@ -2201,3 +2267,7 @@ mod release_tests;
 #[cfg(test)]
 #[path = "pr_management_tests.rs"]
 mod pr_management_tests;
+
+#[cfg(test)]
+#[path = "issue_management_tests.rs"]
+mod issue_management_tests;
