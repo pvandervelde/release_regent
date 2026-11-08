@@ -57,3 +57,32 @@ pub trait NotificationSender: Send + Sync {
     async fn send_slack(&self, webhook_url: &str, channel: Option<&str>, text: &str)
         -> CoreResult<()>;
 }
+
+/// Blanket implementation so a boxed trait object can satisfy the
+/// [`NotificationSender`] bound required by
+/// [`crate::notifications::NotificationDispatcher`].
+///
+/// [`crate::ReleaseRegentProcessor`] stores its sender as a
+/// `Box<dyn NotificationSender>` field (rather than a generic type parameter)
+/// to limit the blast radius on its generic bounds; the dispatcher borrows
+/// `&Box<dyn NotificationSender>` as its sized `N` port via this impl.
+#[async_trait]
+impl NotificationSender for Box<dyn NotificationSender> {
+    async fn send_webhook(
+        &self,
+        url: &str,
+        headers: &HashMap<String, String>,
+        payload: &serde_json::Value,
+    ) -> CoreResult<()> {
+        (**self).send_webhook(url, headers, payload).await
+    }
+
+    async fn send_slack(
+        &self,
+        webhook_url: &str,
+        channel: Option<&str>,
+        text: &str,
+    ) -> CoreResult<()> {
+        (**self).send_slack(webhook_url, channel, text).await
+    }
+}

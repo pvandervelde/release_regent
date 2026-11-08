@@ -39,12 +39,13 @@
 //! ```rust,ignore
 //! use release_regent_core::ReleaseRegentProcessor;
 //! use release_regent_testing::{MockGitHubOperations, MockConfigurationProvider,
-//!                             MockVersionCalculator};
+//!                             MockVersionCalculator, MockNotificationSender};
 //!
 //! let processor = ReleaseRegentProcessor::new(
 //!     MockGitHubOperations::new(),      // GitHub API operations
 //!     MockConfigurationProvider::new(), // Configuration loading
 //!     MockVersionCalculator::new(),     // Version calculation
+//!     MockNotificationSender::new(),    // Notification delivery
 //! );
 //! ```
 //!
@@ -135,11 +136,13 @@
 //!     let github_client = GitHubClient::new("github_token".to_string())?;
 //!     let config_provider = FileConfigurationProvider::new("./config")?;
 //!     let version_calculator = MyVersionCalculator::new();
+//!     let notification_sender = HttpNotificationSender::new()?;
 //!
 //!     let processor = ReleaseRegentProcessor::new(
 //!         github_client,
 //!         config_provider,
 //!         version_calculator,
+//!         notification_sender,
 //!     );
 //!
 //!     Ok(())
@@ -312,7 +315,18 @@ where
                 .await;
                 Ok(())
             }
-            Err(e) => Err(e),
+            Err(e) => {
+                self.dispatch_notification(
+                    &event.repository.owner,
+                    &event.repository.name,
+                    &event.correlation_id,
+                    notifications::NotificationEventKind::ProcessingError,
+                    "Release Regent: failed to process merged pull request",
+                    &e.to_string(),
+                )
+                .await;
+                Err(e)
+            }
         }
     }
 
@@ -377,9 +391,29 @@ where
                     &event.repository.default_branch,
                 )
                 .await;
+                self.dispatch_notification(
+                    owner,
+                    repo,
+                    correlation_id,
+                    notifications::NotificationEventKind::ReleaseCreated,
+                    "Release Regent: release created",
+                    &format!("{result:?}"),
+                )
+                .await;
                 Ok(())
             }
-            Err(e) => Err(e),
+            Err(e) => {
+                self.dispatch_notification(
+                    owner,
+                    repo,
+                    correlation_id,
+                    notifications::NotificationEventKind::ProcessingError,
+                    "Release Regent: failed to automate release",
+                    &e.to_string(),
+                )
+                .await;
+                Err(e)
+            }
         }
     }
 
@@ -423,20 +457,35 @@ where
             allow_override: repo_config.versioning.allow_override,
         };
 
-        CommentCommandProcessor::new(
+        let result = CommentCommandProcessor::new(
             config,
             &self
                 .github_operations
                 .scoped_to(self.resolve_installation_id(owner, repo).await?),
         )
         .process(event)
-        .await
+        .await;
+
+        if let Err(error) = &result {
+            self.dispatch_notification(
+                owner,
+                repo,
+                &event.correlation_id,
+                notifications::NotificationEventKind::ProcessingError,
+                "Release Regent: failed to process PR comment command",
+                &error.to_string(),
+            )
+            .await;
+        }
+
+        result
     }
 
     async fn handle_pull_request_activity(
         &self,
         event: &traits::event_source::ProcessingEvent,
     ) -> CoreResult<()> {
+        let result: CoreResult<()> = async {
         use release_automator::is_release_pr_branch;
         use traits::configuration_provider::LoadOptions;
         use traits::version_calculator::{CalculationOptions, VersionContext, VersioningStrategy};
@@ -610,6 +659,22 @@ where
 
         pr_status_commenter::upsert_pr_status_comment(&scoped_github, owner, repo, pr_number, &body)
             .await
+        }
+        .await;
+
+        if let Err(error) = &result {
+            self.dispatch_notification(
+                &event.repository.owner,
+                &event.repository.name,
+                &event.correlation_id,
+                notifications::NotificationEventKind::ProcessingError,
+                "Release Regent: failed to update PR status comment",
+                &error.to_string(),
+            )
+            .await;
+        }
+
+        result
     }
 }
 ///
@@ -829,15 +894,17 @@ struct MergeCalcResult {
 /// # Examples
 /// ```ignore
 /// use release_regent_core::{ReleaseRegentProcessor, config::ReleaseRegentConfig};
-/// use release_regent_testing::{MockGitHubOperations, MockConfigurationProvider, MockVersionCalculator};
+/// use release_regent_testing::{MockGitHubOperations, MockConfigurationProvider,
+///     MockVersionCalculator, MockNotificationSender};
 ///
 /// let github_ops = MockGitHubOperations::new();
 /// let config_provider = MockConfigurationProvider::new();
 /// let version_calc = MockVersionCalculator::new();
+/// let notification_sender = MockNotificationSender::new();
 ///
-/// let processor = ReleaseRegentProcessor::new(github_ops, config_provider, version_calc);
+/// let processor = ReleaseRegentProcessor::new(
+///     github_ops, config_provider, version_calc, notification_sender);
 /// ```
-#[derive(Debug)]
 pub struct ReleaseRegentProcessor<G, C, V>
 where
     G: GitHubOperations,
@@ -847,6 +914,23 @@ where
     github_operations: G,
     configuration_provider: C,
     version_calculator: V,
+    notification_sender: Box<dyn traits::notification_sender::NotificationSender>,
+}
+
+impl<G, C, V> std::fmt::Debug for ReleaseRegentProcessor<G, C, V>
+where
+    G: GitHubOperations + std::fmt::Debug,
+    C: ConfigurationProvider + std::fmt::Debug,
+    V: VersionCalculator + std::fmt::Debug,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReleaseRegentProcessor")
+            .field("github_operations", &self.github_operations)
+            .field("configuration_provider", &self.configuration_provider)
+            .field("version_calculator", &self.version_calculator)
+            .field("notification_sender", &"<dyn NotificationSender>")
+            .finish()
+    }
 }
 
 impl<G, C, V> ReleaseRegentProcessor<G, C, V>
@@ -861,23 +945,35 @@ where
     /// * `github_operations` - GitHub API operations implementation
     /// * `configuration_provider` - Configuration loading implementation
     /// * `version_calculator` - Version calculation implementation
+    /// * `notification_sender` - Notification delivery port (webhook/Slack);
+    ///   stored as a boxed trait object so it does not widen the processor's
+    ///   generic bounds
     ///
     /// # Examples
     /// ```ignore
     /// use release_regent_core::ReleaseRegentProcessor;
-    /// use release_regent_testing::{MockGitHubOperations, MockConfigurationProvider, MockVersionCalculator};
+    /// use release_regent_testing::{MockGitHubOperations, MockConfigurationProvider,
+    ///     MockVersionCalculator, MockNotificationSender};
     ///
     /// let github_ops = MockGitHubOperations::new();
     /// let config_provider = MockConfigurationProvider::new();
     /// let version_calc = MockVersionCalculator::new();
+    /// let notification_sender = MockNotificationSender::new();
     ///
-    /// let processor = ReleaseRegentProcessor::new(github_ops, config_provider, version_calc);
+    /// let processor = ReleaseRegentProcessor::new(
+    ///     github_ops, config_provider, version_calc, notification_sender);
     /// ```
-    pub fn new(github_operations: G, configuration_provider: C, version_calculator: V) -> Self {
+    pub fn new(
+        github_operations: G,
+        configuration_provider: C,
+        version_calculator: V,
+        notification_sender: impl traits::notification_sender::NotificationSender + 'static,
+    ) -> Self {
         Self {
             github_operations,
             configuration_provider,
             version_calculator,
+            notification_sender: Box::new(notification_sender),
         }
     }
 
@@ -904,6 +1000,97 @@ where
         self.github_operations
             .get_installation_id_for_repo(owner, repo)
             .await
+    }
+
+    /// Best-effort dispatch of a notification for a processing outcome.
+    ///
+    /// This helper is called from the event-handler trait methods after a
+    /// release is created or a processing error occurs. It is deliberately
+    /// infallible: notification delivery is a side channel and must never
+    /// change the `CoreResult` the primary handler returns, nor panic.
+    ///
+    /// On any failure — installation-id resolution, configuration loading, or
+    /// the dispatch itself — it emits a `warn!` with structured fields and
+    /// returns without propagating. When notifications are disabled or the
+    /// configured strategy is `None`, the dispatcher is a no-op.
+    ///
+    /// `details` must be derived from [`CoreError`]'s `Display` (already
+    /// sanitised), never `Debug`, to avoid leaking paths or secrets.
+    async fn dispatch_notification(
+        &self,
+        owner: &str,
+        repo: &str,
+        correlation_id: &str,
+        event_kind: notifications::NotificationEventKind,
+        summary: &str,
+        details: &str,
+    ) {
+        use traits::configuration_provider::LoadOptions;
+
+        let installation_id = match self.resolve_installation_id(owner, repo).await {
+            Ok(id) => id,
+            Err(error) => {
+                tracing::warn!(
+                    owner = %owner,
+                    repo = %repo,
+                    correlation_id = %correlation_id,
+                    error = %error,
+                    "Skipping notification dispatch: failed to resolve installation id"
+                );
+                return;
+            }
+        };
+
+        let repo_config = match self
+            .configuration_provider
+            .get_merged_config(
+                owner,
+                repo,
+                LoadOptions {
+                    installation_id: Some(installation_id),
+                    ..Default::default()
+                },
+            )
+            .await
+        {
+            Ok(config) => config,
+            Err(error) => {
+                tracing::warn!(
+                    owner = %owner,
+                    repo = %repo,
+                    correlation_id = %correlation_id,
+                    error = %error,
+                    "Skipping notification dispatch: failed to load configuration"
+                );
+                return;
+            }
+        };
+
+        let scoped_github = self.github_operations.scoped_to(installation_id);
+        let dispatcher =
+            notifications::NotificationDispatcher::new(&scoped_github, &self.notification_sender);
+
+        let event = notifications::NotificationEvent {
+            kind: event_kind,
+            owner: owner.to_string(),
+            repo: repo.to_string(),
+            correlation_id: correlation_id.to_string(),
+            summary: summary.to_string(),
+            details: details.to_string(),
+        };
+
+        if let Err(error) = dispatcher
+            .dispatch(&repo_config.notifications, &event)
+            .await
+        {
+            tracing::warn!(
+                owner = %owner,
+                repo = %repo,
+                correlation_id = %correlation_id,
+                error = %error,
+                "Notification dispatch failed; swallowing error"
+            );
+        }
     }
 
     /// Handle a merged pull request event by orchestrating the creation or

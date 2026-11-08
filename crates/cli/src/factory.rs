@@ -12,7 +12,7 @@
 
 use release_regent_core::ReleaseRegentProcessor;
 use release_regent_testing::mocks::{
-    MockConfigurationProvider, MockGitHubOperations, MockVersionCalculator,
+    MockConfigurationProvider, MockGitHubOperations, MockNotificationSender, MockVersionCalculator,
 };
 use tracing::info;
 
@@ -60,7 +60,8 @@ pub fn create_mock_processor() -> MockProcessor {
     let github_ops = MockGitHubOperations::new();
     let config_provider = MockConfigurationProvider::new();
     let version_calc = MockVersionCalculator::new();
-    ReleaseRegentProcessor::new(github_ops, config_provider, version_calc)
+    let notification_sender = MockNotificationSender::new();
+    ReleaseRegentProcessor::new(github_ops, config_provider, version_calc, notification_sender)
 }
 
 /// Create a processor that uses production dependencies sourced from environment variables.
@@ -120,9 +121,12 @@ pub async fn create_production_processor() -> CliResult<ProductionProcessor> {
 
     let version_calculator = DefaultVersionCalculator::new();
 
+    let notification_sender = release_regent_github_client::HttpNotificationSender::new()?;
+
     Ok(ReleaseRegentProcessor::new(
         github_client,
         config_provider,
         version_calculator,
+        notification_sender,
     ))
 }
