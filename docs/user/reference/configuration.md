@@ -562,14 +562,28 @@ initial_delay_ms = 1000
 
 ---
 
-## `notifications` — error notifications
+## `notifications` — release and error notifications
+
+Release Regent dispatches a notification in two situations: when a release PR merge
+successfully creates a release (`ReleaseCreated`), and when any of the four event
+handlers (merged PR, release PR automation, PR comment command, PR status comment)
+hits a processing error (`ProcessingError`). Delivery is routed through exactly one of
+three strategies — GitHub Issue, Webhook, or Slack — selected by `notifications.strategy`.
+
+**Notification delivery is best-effort and never affects the outcome of the triggering
+operation.** If a notification fails to send — a misconfigured webhook, a network
+timeout, an invalid Slack URL — the failure is logged as a warning and swallowed. A
+release that was created, or an error that occurred, is reported back to the caller
+exactly as it would be if notifications were disabled; a broken notification channel
+can never fail a release or mask a processing error.
 
 ### `notifications.enabled`
 
 **Type**: boolean
 **Default**: `true`
 
-Whether to send notifications when Release Regent encounters an error.
+Master on/off switch. When `false`, the dispatcher returns immediately without calling
+any delivery strategy — equivalent to `strategy = "none"`.
 
 ```toml
 [notifications]
@@ -581,14 +595,14 @@ enabled = true
 **Type**: string
 **Default**: `"github_issue"`
 
-How errors are reported.
+Which delivery strategy handles `ReleaseCreated` and `ProcessingError` events.
 
 | Value | Behaviour |
 | :--- | :--- |
-| `"github_issue"` | Open a GitHub issue in the repository (default) |
-| `"webhook"` | POST to an HTTP endpoint |
-| `"slack"` | Send a Slack message |
-| `"none"` | Do not send notifications |
+| `"github_issue"` | Open (or comment on) a GitHub issue in the repository (default) |
+| `"webhook"` | POST a JSON payload to an HTTP endpoint |
+| `"slack"` | POST a formatted message to a Slack incoming webhook |
+| `"none"` | Do not send notifications — same effect as `enabled = false` |
 
 ```toml
 [notifications]
@@ -599,19 +613,29 @@ strategy = "github_issue"
 
 Settings used when `strategy` is `"github_issue"`.
 
+This strategy is **idempotent**: before opening an issue, Release Regent lists open
+issues in the repository carrying `notifications.github_issue.labels` and checks each
+one's body for a hidden marker comment (`<!-- release-regent:notification:... -->`)
+derived from the repository, event kind, and summary. If a matching issue is already
+open, Release Regent adds a comment to it instead of opening a duplicate. Only when no
+matching open issue exists does it create a new one, with the marker embedded in the
+issue body.
+
 #### `notifications.github_issue.labels`
 
 **Type**: list of strings
 **Default**: `["release-regent", "bug"]`
 
-Labels applied to newly created error issues.
+Labels applied to newly created issues, and used to narrow the search for an existing
+open issue to comment on instead.
 
 #### `notifications.github_issue.assignees`
 
 **Type**: list of strings
 **Default**: `[]`
 
-GitHub usernames to assign to newly created error issues.
+GitHub usernames to assign to newly created issues. Not applied when commenting on an
+existing issue.
 
 ```toml
 [notifications]
@@ -624,20 +648,41 @@ assignees = []
 
 ### `notifications.webhook`
 
-Settings used when `strategy` is `"webhook"`.
+Settings used when `strategy` is `"webhook"`. Release Regent POSTs the following JSON
+body to `notifications.webhook.url`:
+
+```json
+{
+  "event": "release_created",
+  "owner": "myorg",
+  "repo": "myrepo",
+  "correlation_id": "...",
+  "summary": "Release Regent: release created",
+  "details": "...",
+  "timestamp": "2026-01-01T00:00:00Z"
+}
+```
+
+`event` is `"release_created"` or `"processing_error"`. `summary` is a short one-line
+description; `details` carries the fuller human-readable text (for errors, the
+sanitised error message — never a stack trace or raw debug output).
 
 #### `notifications.webhook.url`
 
 **Type**: string (**required** when strategy is `"webhook"`)
 
-HTTP endpoint to POST the error payload to.
+HTTP endpoint to POST the payload to. **HTTPS is strongly recommended** — this URL is
+treated as a secret (it is never written to logs), but a non-HTTPS endpoint sends the
+payload, and any configured headers, in plaintext. Release Regent logs a warning
+(scheme and host only, never the full URL) if a non-HTTPS endpoint is configured.
 
 #### `notifications.webhook.headers`
 
 **Type**: object (string → string)
 **Default**: `{}`
 
-Additional HTTP headers included in the POST request.
+Additional HTTP headers included in the POST request (e.g. an `Authorization` header
+for endpoints that require one).
 
 ```toml
 [notifications]
@@ -652,13 +697,23 @@ Authorization = "Bearer mytoken"
 
 ### `notifications.slack`
 
-Settings used when `strategy` is `"slack"`.
+Settings used when `strategy` is `"slack"`. Release Regent POSTs a message of the form:
+
+```text
+*{summary}*
+{details}
+```
+
+to `notifications.slack.webhook_url` (Slack's standard incoming-webhook JSON body, with
+an optional `channel` override).
 
 #### `notifications.slack.webhook_url`
 
 **Type**: string (**required** when strategy is `"slack"`)
 
-Slack incoming webhook URL.
+Slack incoming webhook URL. Like `notifications.webhook.url`, this is a secret and is
+never logged; HTTPS is required in practice since Slack's incoming webhooks are
+HTTPS-only.
 
 #### `notifications.slack.channel`
 
@@ -675,6 +730,23 @@ strategy = "slack"
 webhook_url = "https://hooks.slack.com/services/T00/B00/xxx"
 channel = "#releases"
 ```
+
+### Security posture for `webhook` and `slack` strategies
+
+Both HTTP-based strategies share a single hardened client:
+
+- **Secrets are never logged.** `notifications.webhook.url` and
+  `notifications.slack.webhook_url` are excluded from all log output, including error
+  logs on delivery failure.
+- **No redirects.** The client does not follow HTTP redirects; a redirect response is
+  treated as a delivery failure rather than being followed, since following it would
+  re-POST the notification body (and any configured headers) to a different,
+  potentially attacker-controlled, host.
+- **10-second timeout.** Every webhook/Slack request is bounded to 10 seconds; there is
+  no configuration key to change this.
+- **TLS via rustls.** HTTPS connections use the `rustls` TLS backend.
+- **HTTPS warning.** A non-HTTPS endpoint is still permitted (for on-prem receivers) but
+  logs a warning containing only the scheme and host.
 
 ---
 

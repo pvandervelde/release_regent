@@ -243,7 +243,8 @@ assignees = []
 [notifications.webhook]
 url = "https://example.com/webhook"
 headers = {}
-timeout_ms = 5000
+# No `timeout_ms` key: the webhook/Slack HTTP client applies a fixed 10-second
+# request timeout internally; it is not configurable per repository.
 
 [notifications.slack]
 webhook_url = "https://hooks.slack.com/services/XXX/YYY/ZZZ"
@@ -255,6 +256,47 @@ level = "info"              # "debug" | "info" | "warn" | "error"
 format = "json"             # "json" | "text"
 correlation_ids = true
 ```
+
+## Notification Delivery Behavior (Active)
+
+`[notifications]` is now consumed by a `NotificationDispatcher` wired into every
+event-processing path. Two event kinds are dispatched: `ReleaseCreated` (on a
+successful release-PR merge) and `ProcessingError` (on a handler failure in any of the
+merged-PR, release-automation, PR-comment-command, or PR-status-comment handlers).
+`enabled = false` or `strategy = "none"` makes dispatch a no-op — no port is called.
+
+**Strategies**:
+
+- `github_issue` — Idempotent. Before creating an issue, lists open issues carrying
+  `notifications.github_issue.labels` and checks each body for a deterministic hidden
+  marker (`<!-- release-regent:notification:{sha256_hex} -->`, hashed over owner, repo,
+  event kind, and summary). A matching open issue gets a comment instead of a new
+  issue; otherwise a new issue is created with the marker embedded in the body.
+- `webhook` — POSTs `{event, owner, repo, correlation_id, summary, details,
+  timestamp}` as JSON to `notifications.webhook.url`, with
+  `notifications.webhook.headers` applied as additional request headers.
+- `slack` — POSTs `*{summary}*\n{details}` to `notifications.slack.webhook_url`, with
+  `notifications.slack.channel` as an optional channel override.
+
+**Delivery guarantee**: best-effort and non-blocking. A delivery failure (network
+error, non-2xx response, misconfiguration) is logged as a `warn!` and swallowed; it
+never changes the `CoreResult` the triggering handler returns. A broken notification
+channel cannot fail a release or hide a processing error from its normal error path.
+
+**Security hardening** (`webhook` and `slack` strategies, see
+`crates/github_client/src/notification_sender.rs`):
+
+- `notifications.webhook.url` and `notifications.slack.webhook_url` are treated as
+  secrets and excluded from all log output, including failure logs.
+- The shared HTTP client disables redirect-following (a redirect would re-POST the
+  notification body, and any configured headers, to a different host), applies a
+  10-second request timeout, and uses the `rustls` TLS backend.
+- A non-HTTPS endpoint is permitted but logs a warning containing only the scheme and
+  host, never the full URL.
+
+Mattermost was considered as a fourth strategy during design but is **not
+implemented** — there is no `MattermostConfig` in the schema and no corresponding
+`NotificationStrategy` variant. Do not document it as available until it ships.
 
 ## Validation Rules
 
@@ -338,9 +380,16 @@ These fields must be correct or the application will fail to start:
 **`notifications.webhook.url`** (if webhook notifications):
 
 - **Required**: When `notifications.strategy` is `"webhook"`
-- **Format**: Valid HTTPS URL
-- **Validation**: `^https://[a-zA-Z0-9.-]+(/.*)?$`
-- **Error**: "Webhook URL must be a valid HTTPS URL"
+- **Error**: "Webhook configuration required when strategy is 'webhook'" if the
+  `[notifications.webhook]` section is absent
+- **Format**: HTTPS is strongly recommended but not enforced at config-load time. A
+  non-HTTPS endpoint is accepted (to support on-prem receivers) but logs a warning
+  (scheme and host only) on every delivery attempt.
+  <!-- TODO(spec-owner): this section previously documented a strict
+  `^https://...` regex with a hard validation error for non-HTTPS URLs. The
+  implemented behavior (see crates/github_client/src/notification_sender.rs) is
+  warn-and-continue, not reject. Confirm which behavior is intended and reconcile;
+  this doc has been updated to match current implementation. -->
 
 ### Optional Field Validation (Defaults)
 

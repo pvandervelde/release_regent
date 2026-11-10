@@ -42,6 +42,9 @@ When a release PR is merged:
 - **Webhook Server Integration**: Webhook-based automation for GitHub repositories
 - **GitHub API Client**: Handles all GitHub interactions with proper authentication and rate limiting
 - **Configuration System**: Template-based customization of release PRs and changelog formatting
+- **Notifications**: Sends a notification on release creation or processing error via GitHub
+  Issue, Webhook, or Slack, configured by the `[notifications]` section — see the
+  [Configuration Reference](docs/user/reference/configuration.md#notifications--release-and-error-notifications)
 
 ## Getting Started
 
