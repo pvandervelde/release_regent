@@ -1257,3 +1257,95 @@ mod property_tests {
         }
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Scenario — idempotency marker hash-input completeness
+//
+// `notification_marker` hashes `(owner, repo, kind, summary)`. The property
+// tests above only prove `summary` is an input. These unit tests pin each of
+// the remaining inputs (`owner`, `repo`, `kind`) independently, so that a
+// change dropping any one of them from the hash — which `cargo-mutants` cannot
+// synthesise because it never mutates inside the `format!` interpolation —
+// would be caught. Collapsing any input would let unrelated repositories or
+// event kinds dedup onto the same GitHub issue.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_marker_changes_when_owner_differs() {
+    let a = notification_marker(
+        "owner-a",
+        "repo",
+        NotificationEventKind::ProcessingError,
+        "summary",
+    );
+    let b = notification_marker(
+        "owner-b",
+        "repo",
+        NotificationEventKind::ProcessingError,
+        "summary",
+    );
+    assert_ne!(
+        a, b,
+        "owner must be a hash input: different owners produced the same marker"
+    );
+}
+
+#[test]
+fn test_marker_changes_when_repo_differs() {
+    let a = notification_marker(
+        "owner",
+        "repo-a",
+        NotificationEventKind::ProcessingError,
+        "summary",
+    );
+    let b = notification_marker(
+        "owner",
+        "repo-b",
+        NotificationEventKind::ProcessingError,
+        "summary",
+    );
+    assert_ne!(
+        a, b,
+        "repo must be a hash input: different repos produced the same marker"
+    );
+}
+
+#[test]
+fn test_marker_changes_when_kind_differs() {
+    let a = notification_marker(
+        "owner",
+        "repo",
+        NotificationEventKind::ProcessingError,
+        "summary",
+    );
+    let b = notification_marker(
+        "owner",
+        "repo",
+        NotificationEventKind::ReleaseCreated,
+        "summary",
+    );
+    assert_ne!(
+        a, b,
+        "kind must be a hash input: different kinds produced the same marker"
+    );
+}
+
+#[test]
+fn test_marker_changes_when_summary_differs_unit() {
+    let a = notification_marker(
+        "owner",
+        "repo",
+        NotificationEventKind::ProcessingError,
+        "summary-a",
+    );
+    let b = notification_marker(
+        "owner",
+        "repo",
+        NotificationEventKind::ProcessingError,
+        "summary-b",
+    );
+    assert_ne!(
+        a, b,
+        "summary must be a hash input: different summaries produced the same marker"
+    );
+}
