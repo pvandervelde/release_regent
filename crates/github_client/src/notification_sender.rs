@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use release_regent_core::{traits::notification_sender::NotificationSender, CoreError, CoreResult};
-use tracing::instrument;
+use tracing::{instrument, warn};
 
 /// Timeout applied to every webhook/Slack HTTP request.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -40,8 +40,15 @@ impl HttpNotificationSender {
     pub fn new() -> CoreResult<Self> {
         let client = reqwest::Client::builder()
             .timeout(REQUEST_TIMEOUT)
+            // Do not follow redirects: a redirect would re-POST the payload (and
+            // replay caller-supplied headers) to an attacker-controlled target,
+            // exfiltrating notification contents. Callers must target the final
+            // endpoint directly.
+            .redirect(reqwest::redirect::Policy::none())
             .build()
-            .map_err(|e| CoreError::network(format!("failed to build HTTP client: {e}")))?;
+            .map_err(|e| {
+                CoreError::network(format!("failed to build HTTP client: {}", e.without_url()))
+            })?;
         Ok(Self { client })
     }
 
@@ -59,6 +66,20 @@ impl HttpNotificationSender {
         payload: &serde_json::Value,
         stage: &str,
     ) -> CoreResult<()> {
+        // On-prem receivers over plain `http://` are permitted, but a cleartext
+        // endpoint is a silent downgrade worth surfacing. Warn with scheme/host
+        // only — never the full URL (path/query is the secret). Parse failures
+        // are non-fatal: the send below will surface any real problem.
+        if let Ok(parsed) = reqwest::Url::parse(url) {
+            if parsed.scheme() != "https" {
+                warn!(
+                    scheme = %parsed.scheme(),
+                    host = ?parsed.host_str(),
+                    "notification endpoint is not HTTPS"
+                );
+            }
+        }
+
         let mut request = self
             .client
             .post(url)
@@ -71,7 +92,11 @@ impl HttpNotificationSender {
             .json(payload)
             .send()
             .await
-            .map_err(|e| CoreError::network(format!("{stage} request failed: {e}")))?;
+            // `reqwest::Error`'s `Display` embeds the full dialed URL (path +
+            // query), which for webhook/Slack endpoints is itself the secret.
+            // Strip it with `without_url` before the error is formatted and
+            // later logged by the dispatcher.
+            .map_err(|e| CoreError::network(format!("{stage} request failed: {}", e.without_url())))?;
 
         let status = response.status();
         if !status.is_success() {
@@ -87,7 +112,7 @@ impl HttpNotificationSender {
 
 #[async_trait]
 impl NotificationSender for HttpNotificationSender {
-    #[instrument(skip(self, headers, payload))]
+    #[instrument(skip(self, url, headers, payload))]
     async fn send_webhook(
         &self,
         url: &str,
@@ -97,7 +122,7 @@ impl NotificationSender for HttpNotificationSender {
         self.post_json(url, headers, payload, "webhook").await
     }
 
-    #[instrument(skip(self, text))]
+    #[instrument(skip(self, webhook_url, channel, text))]
     async fn send_slack(
         &self,
         webhook_url: &str,

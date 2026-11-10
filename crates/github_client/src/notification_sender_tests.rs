@@ -75,6 +75,41 @@ async fn test_send_webhook_connection_failure_returns_network_error() {
     assert!(matches!(result, Err(CoreError::Network { .. })));
 }
 
+/// Regression test for H3: a `CoreError` produced from a failed request must
+/// not embed the secret path/query of the target URL. `reqwest::Error`'s
+/// `Display` includes the full dialed URL, so the adapter must strip it via
+/// `without_url` before formatting the error.
+#[tokio::test]
+async fn test_send_webhook_network_error_does_not_leak_url_secret() {
+    let sender = HttpNotificationSender::new().expect("sender construction should not fail");
+    let payload = serde_json::json!({ "event": "release_created" });
+
+    // Port 0 never connects, forcing a transport error. The path/query carries
+    // a recognisable secret token that must not appear in the error message.
+    let secret_path = "T00000000/B11111111/super-secret-token-value";
+    let url = format!("http://127.0.0.1:0/{secret_path}?token=another-secret");
+
+    let result = sender
+        .send_webhook(&url, &HashMap::new(), &payload)
+        .await;
+
+    let err = result.expect_err("connection to port 0 must fail");
+    let message = err.to_string();
+
+    assert!(
+        !message.contains("super-secret-token-value"),
+        "error must not leak the URL path secret: {message}"
+    );
+    assert!(
+        !message.contains("another-secret"),
+        "error must not leak the URL query secret: {message}"
+    );
+    assert!(
+        !message.contains(secret_path),
+        "error must not leak the full secret path: {message}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // send_slack
 // ---------------------------------------------------------------------------
