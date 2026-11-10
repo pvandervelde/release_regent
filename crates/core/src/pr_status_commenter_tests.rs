@@ -275,6 +275,24 @@ impl GitHubOperations for TestGitHubForUpsert {
         Ok(None)
     }
 
+    async fn create_issue(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _params: crate::traits::github_operations::CreateIssueParams,
+    ) -> crate::CoreResult<crate::traits::github_operations::Issue> {
+        Err(CoreError::not_supported("create_issue", "stub"))
+    }
+
+    async fn list_issues(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _options: crate::traits::github_operations::ListIssuesOptions,
+    ) -> crate::CoreResult<Vec<crate::traits::github_operations::Issue>> {
+        Ok(vec![])
+    }
+
     async fn get_installation_id_for_repo(
         &self,
         _owner: &str,

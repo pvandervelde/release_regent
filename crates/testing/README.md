@@ -65,8 +65,15 @@ let mock_github = MockGitHubOperations::new()
     .with_pull_requests(vec![test_pr])
     .with_rate_limit_error_after(5); // Simulate rate limiting
 
-// Use in place of real GitHub client
-let processor = ReleaseRegentProcessor::new(mock_github, ...);
+// Use in place of real GitHub client. The processor takes four dependencies:
+// GitHub operations, configuration provider, version calculator, and a
+// notification sender (use `MockNotificationSender::new()` in tests).
+let processor = ReleaseRegentProcessor::new(
+    mock_github,
+    mock_config,
+    mock_calculator,
+    MockNotificationSender::new(),
+);
 ```
 
 #### `MockVersionCalculator`

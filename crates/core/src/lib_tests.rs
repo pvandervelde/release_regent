@@ -1062,6 +1062,24 @@ impl GitHubOperations for TestGitHubForLib {
             .unwrap_or_default())
     }
 
+    async fn create_issue(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _params: crate::traits::github_operations::CreateIssueParams,
+    ) -> CoreResult<crate::traits::github_operations::Issue> {
+        Err(CoreError::not_supported("create_issue", "stub"))
+    }
+
+    async fn list_issues(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _options: crate::traits::github_operations::ListIssuesOptions,
+    ) -> CoreResult<Vec<crate::traits::github_operations::Issue>> {
+        Ok(vec![])
+    }
+
     async fn get_installation_id_for_repo(&self, _owner: &str, _repo: &str) -> CoreResult<u64> {
         Ok(0)
     }
@@ -1344,6 +1362,95 @@ impl ConfigurationProvider for TestConfigWith {
     }
 }
 
+// ── SpyNotificationSender ─────────────────────────────────────────────────────
+
+use traits::notification_sender::NotificationSender;
+
+/// Local in-process `NotificationSender` double for lib-level handler tests.
+///
+/// A cross-crate `release_regent_testing::MockNotificationSender` cannot be used
+/// here: these tests are `#[path]`-included into the `core` crate, so a type
+/// from another crate would be a distinct type at the boxed trait-object
+/// boundary. This double records webhook and Slack deliveries so tests can
+/// prove a dispatch happened, and can be configured to fail so tests can prove
+/// that a dispatch failure is swallowed by the handler.
+#[derive(Default)]
+struct SpyNotificationState {
+    /// Recorded `send_webhook` calls: `(url, headers, payload)`.
+    webhook_calls: Vec<(String, HashMap<String, String>, serde_json::Value)>,
+    /// Recorded `send_slack` calls: `(webhook_url, channel, text)`.
+    slack_calls: Vec<(String, Option<String>, String)>,
+    /// When `true`, every send returns `CoreError::Webhook` instead of recording.
+    fail: bool,
+}
+
+#[derive(Clone, Default)]
+struct SpyNotificationSender {
+    state: Arc<Mutex<SpyNotificationState>>,
+}
+
+impl SpyNotificationSender {
+    /// A recording no-op sender (used by every processor construction site).
+    fn new() -> Self {
+        Self::default()
+    }
+
+    /// A sender whose every delivery fails, to prove failures are swallowed.
+    fn failing() -> Self {
+        Self {
+            state: Arc::new(Mutex::new(SpyNotificationState {
+                fail: true,
+                ..Default::default()
+            })),
+        }
+    }
+
+    async fn webhook_calls(&self) -> Vec<(String, HashMap<String, String>, serde_json::Value)> {
+        self.state.lock().await.webhook_calls.clone()
+    }
+
+    async fn slack_calls(&self) -> Vec<(String, Option<String>, String)> {
+        self.state.lock().await.slack_calls.clone()
+    }
+}
+
+#[async_trait]
+impl NotificationSender for SpyNotificationSender {
+    async fn send_webhook(
+        &self,
+        url: &str,
+        headers: &HashMap<String, String>,
+        payload: &serde_json::Value,
+    ) -> CoreResult<()> {
+        let mut state = self.state.lock().await;
+        if state.fail {
+            return Err(CoreError::webhook("webhook", "spy failure"));
+        }
+        state
+            .webhook_calls
+            .push((url.to_string(), headers.clone(), payload.clone()));
+        Ok(())
+    }
+
+    async fn send_slack(
+        &self,
+        webhook_url: &str,
+        channel: Option<&str>,
+        text: &str,
+    ) -> CoreResult<()> {
+        let mut state = self.state.lock().await;
+        if state.fail {
+            return Err(CoreError::webhook("slack", "spy failure"));
+        }
+        state.slack_calls.push((
+            webhook_url.to_string(),
+            channel.map(str::to_string),
+            text.to_string(),
+        ));
+        Ok(())
+    }
+}
+
 // ── TestVersionCalcForLib ───────────────────────────────────────────────────
 
 #[derive(Clone)]
@@ -1521,7 +1628,7 @@ async fn test_handle_merged_pr_creates_release_pr_when_none_exists() {
     let config = TestConfigForLib;
     let version_calc = TestVersionCalcForLib::returning("0.2.0");
 
-    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc);
+    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc, SpyNotificationSender::new());
 
     let event = ProcessingEvent {
         event_id: "evt-1".into(),
@@ -1573,7 +1680,7 @@ async fn test_handle_merged_pr_returns_invalid_input_when_sha_missing() {
     let config = TestConfigForLib;
     let version_calc = TestVersionCalcForLib::returning("0.2.0");
 
-    let processor = ReleaseRegentProcessor::new(github, config, version_calc);
+    let processor = ReleaseRegentProcessor::new(github, config, version_calc, SpyNotificationSender::new());
 
     let event = ProcessingEvent {
         event_id: "evt-2".into(),
@@ -1609,7 +1716,7 @@ async fn test_handle_merged_pr_uses_default_branch_when_base_ref_absent() {
     let config = TestConfigForLib;
     let version_calc = TestVersionCalcForLib::returning("1.0.0");
 
-    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc);
+    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc, SpyNotificationSender::new());
 
     let event = ProcessingEvent {
         event_id: "evt-3".into(),
@@ -1669,7 +1776,7 @@ async fn test_handle_merged_pr_includes_changelog_entries_in_pr_body() {
         },
     ]);
 
-    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc);
+    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc, SpyNotificationSender::new());
 
     let event = ProcessingEvent {
         event_id: "evt-4".into(),
@@ -1756,7 +1863,7 @@ async fn test_handle_merged_feature_pr_with_override_major_label_applies_floor()
     let config = TestConfigForLib;
     let version_calc = TestVersionCalcForLib::returning("1.1.0");
 
-    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc);
+    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc, SpyNotificationSender::new());
 
     let event = ProcessingEvent {
         event_id: "evt-floor-1".into(),
@@ -1848,7 +1955,7 @@ async fn test_handle_merged_feature_pr_without_override_label_uses_calculated_ve
     let config = TestConfigForLib;
     let version_calc = TestVersionCalcForLib::returning("1.1.0");
 
-    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc);
+    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc, SpyNotificationSender::new());
 
     let event = ProcessingEvent {
         event_id: "evt-floor-2".into(),
@@ -1919,7 +2026,7 @@ async fn test_handle_merged_release_pr_clears_stale_override_labels_from_open_pr
     let config = TestConfigForLib;
     let version_calc = TestVersionCalcForLib::returning("1.1.0");
 
-    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc);
+    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc, SpyNotificationSender::new());
 
     let event = ProcessingEvent {
         event_id: "evt-floor-3".into(),
@@ -1996,7 +2103,7 @@ async fn test_merged_release_pr_creates_tag_not_new_release_branch() {
     let config = TestConfigForLib;
     let version_calc = TestVersionCalcForLib::returning("1.0.0");
 
-    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc);
+    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc, SpyNotificationSender::new());
 
     let event = ProcessingEvent {
         event_id: "evt-release-pr".into(),
@@ -2063,7 +2170,7 @@ async fn test_clear_stale_labels_skips_prs_without_override_labels() {
 
     let config = TestConfigForLib;
     let version_calc = TestVersionCalcForLib::returning("2.0.0");
-    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc);
+    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc, SpyNotificationSender::new());
 
     let event = ProcessingEvent {
         event_id: "evt-no-labels".into(),
@@ -2136,7 +2243,7 @@ async fn test_clear_stale_labels_posts_one_comment_per_pr_regardless_of_label_co
 
     let config = TestConfigForLib;
     let version_calc = TestVersionCalcForLib::returning("3.0.0");
-    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc);
+    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc, SpyNotificationSender::new());
 
     let event = ProcessingEvent {
         event_id: "evt-multi-label".into(),
@@ -2222,7 +2329,7 @@ async fn test_handle_merged_feature_pr_with_override_minor_label_applies_floor()
     let config = TestConfigForLib;
     let version_calc = TestVersionCalcForLib::returning("1.2.4");
 
-    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc);
+    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc, SpyNotificationSender::new());
 
     let event = ProcessingEvent {
         event_id: "evt-minor-floor".into(),
@@ -2299,7 +2406,7 @@ async fn test_handle_merged_feature_pr_with_patch_floor_no_effect_when_calculate
     let config = TestConfigForLib;
     let version_calc = TestVersionCalcForLib::returning("1.3.0");
 
-    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc);
+    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc, SpyNotificationSender::new());
 
     let event = ProcessingEvent {
         event_id: "evt-patch-floor".into(),
@@ -2379,7 +2486,7 @@ async fn test_handle_merged_release_pr_list_labels_failure_for_one_pr_continues(
 
     let config = TestConfigForLib;
     let version_calc = TestVersionCalcForLib::returning("1.1.0");
-    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc);
+    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc, SpyNotificationSender::new());
 
     let event = ProcessingEvent {
         event_id: "evt-label-list-fail".into(),
@@ -2442,7 +2549,7 @@ async fn test_handle_merged_release_pr_remove_label_failure_still_posts_cleanup_
 
     let config = TestConfigForLib;
     let version_calc = TestVersionCalcForLib::returning("1.1.0");
-    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc);
+    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc, SpyNotificationSender::new());
 
     let event = ProcessingEvent {
         event_id: "evt-remove-fail".into(),
@@ -2505,7 +2612,7 @@ async fn test_handle_merged_release_pr_cleanup_comment_failure_event_still_succe
 
     let config = TestConfigForLib;
     let version_calc = TestVersionCalcForLib::returning("1.1.0");
-    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc);
+    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc, SpyNotificationSender::new());
 
     let event = ProcessingEvent {
         event_id: "evt-comment-fail".into(),
@@ -2579,7 +2686,7 @@ async fn test_handle_merged_feature_pr_audit_comment_failure_returns_ok() {
 
     let config = TestConfigForLib;
     let version_calc = TestVersionCalcForLib::returning("1.1.0");
-    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc);
+    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc, SpyNotificationSender::new());
 
     let event = ProcessingEvent {
         event_id: "evt-audit-fail".into(),
@@ -2660,7 +2767,7 @@ async fn test_handle_merged_non_bumping_feature_pr_after_release_does_not_recrea
         TestVersionCalcForLib::returning("0.3.0").with_version_bump(VersionBump::None);
     let github = TestGitHubForLib::new_empty().with_tags(vec![tag]);
     let config = TestConfigForLib;
-    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc);
+    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc, SpyNotificationSender::new());
 
     let event = ProcessingEvent {
         event_id: "evt-chore-after-release".into(),
@@ -2743,7 +2850,7 @@ async fn test_handle_merged_non_bumping_pr_with_patch_floor_creates_next_patch_r
         .with_tags(vec![tag])
         .with_pr_labels(99, vec![override_label]);
     let config = TestConfigForLib;
-    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc);
+    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc, SpyNotificationSender::new());
 
     let event = ProcessingEvent {
         event_id: "evt-patch-floor-after-release".into(),
@@ -2843,7 +2950,7 @@ async fn test_feature_pr_opened_creates_status_comment_with_projected_version() 
     let github = TestGitHubForLib::new_empty();
     let config = TestConfigForLib;
     let version_calc = TestVersionCalcForLib::returning("1.2.0");
-    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc);
+    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc, SpyNotificationSender::new());
 
     let event = ProcessingEvent {
         event_id: "f4-a".into(),
@@ -2896,7 +3003,7 @@ async fn test_feature_pr_updated_updates_existing_status_comment_in_place() {
         TestGitHubForLib::new_empty().with_stored_issue_comments(42, vec![existing_comment]);
     let config = TestConfigForLib;
     let version_calc = TestVersionCalcForLib::returning("1.2.0");
-    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc);
+    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc, SpyNotificationSender::new());
 
     let event = ProcessingEvent {
         event_id: "f4-b".into(),
@@ -2949,7 +3056,7 @@ async fn test_merged_feature_pr_refreshes_open_prs_with_existing_marker() {
         .with_stored_issue_comments(11, vec![marker_comment]);
     let config = TestConfigForLib;
     let version_calc = TestVersionCalcForLib::returning("0.2.0");
-    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc);
+    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc, SpyNotificationSender::new());
 
     // Build a merged-PR event
     let event = ProcessingEvent {
@@ -2991,7 +3098,7 @@ async fn test_release_pr_opened_creates_status_comment_with_release_version() {
     let github = TestGitHubForLib::new_empty();
     let config = TestConfigForLib;
     let version_calc = TestVersionCalcForLib::returning("2.0.0"); // should NOT be used
-    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc);
+    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc, SpyNotificationSender::new());
 
     let event = ProcessingEvent {
         event_id: "f4-d".into(),
@@ -3033,7 +3140,7 @@ async fn test_pr_status_comment_omits_commands_when_allow_override_is_false() {
     let github = TestGitHubForLib::new_empty();
     let config = TestConfigWith::new(cfg);
     let version_calc = TestVersionCalcForLib::returning("1.1.0");
-    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc);
+    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc, SpyNotificationSender::new());
 
     // Feature PR
     let feature_event = ProcessingEvent {
@@ -3091,7 +3198,7 @@ async fn test_feature_pr_from_excluded_author_skips_status_comment() {
     let github = TestGitHubForLib::new_empty();
     let config = TestConfigWith::new(cfg);
     let version_calc = TestVersionCalcForLib::returning("1.0.1");
-    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc);
+    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc, SpyNotificationSender::new());
 
     let event = ProcessingEvent {
         event_id: "f4-f".into(),
@@ -3145,7 +3252,7 @@ async fn test_batch_refresh_skips_excluded_author_and_refreshes_normal_pr() {
         .with_stored_issue_comments(31, vec![marker_comment]);
     let config = TestConfigWith::new(cfg);
     let version_calc = TestVersionCalcForLib::returning("0.2.0");
-    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc);
+    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc, SpyNotificationSender::new());
 
     let event = ProcessingEvent {
         event_id: "f4-g".into(),
@@ -3191,7 +3298,7 @@ async fn test_feature_pr_opened_with_queued_release_includes_annotation() {
     let config = TestConfigForLib;
     // version_calc returns 1.3.0 — same as already-queued release
     let version_calc = TestVersionCalcForLib::returning("1.3.0");
-    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc);
+    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc, SpyNotificationSender::new());
 
     let event = ProcessingEvent {
         event_id: "f4-h".into(),
@@ -3251,7 +3358,7 @@ async fn test_feature_pr_opened_uses_version_prefix_for_base_ref_when_prefix_is_
     let github = TestGitHubForLib::new_empty().with_tags(vec![tag]);
     let config = TestConfigWith::new(cfg);
     let version_calc = TestVersionCalcForLib::returning("0.6.0");
-    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc.clone());
+    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc.clone(), SpyNotificationSender::new());
 
     let event = ProcessingEvent {
         event_id: "prefix-empty-1".into(),
@@ -3302,7 +3409,7 @@ async fn test_feature_pr_opened_uses_version_prefix_for_base_ref_when_prefix_is_
     let github = TestGitHubForLib::new_empty().with_tags(vec![tag]);
     let config = TestConfigWith::new(cfg);
     let version_calc = TestVersionCalcForLib::returning("0.6.0");
-    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc.clone());
+    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc.clone(), SpyNotificationSender::new());
 
     let event = ProcessingEvent {
         event_id: "prefix-v-1".into(),
@@ -3356,7 +3463,7 @@ async fn test_merged_pr_uses_version_prefix_for_base_ref_when_prefix_is_empty() 
     let github = TestGitHubForLib::new_empty().with_tags(vec![tag]);
     let config = TestConfigWith::new(cfg);
     let version_calc = TestVersionCalcForLib::returning("0.6.0");
-    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc.clone());
+    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc.clone(), SpyNotificationSender::new());
 
     // Fire a feature-PR merged event.  Using the pub async fn directly avoids
     // the refresh path so only the merge-calculation context is captured.
@@ -3434,7 +3541,7 @@ async fn test_pr_refresh_scan_uses_version_prefix_for_base_ref_when_prefix_is_em
         .with_stored_issue_comments(20, vec![marker_comment]);
     let config = TestConfigWith::new(cfg);
     let version_calc = TestVersionCalcForLib::returning("0.6.0");
-    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc.clone());
+    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc.clone(), SpyNotificationSender::new());
 
     // Invoke via the trait impl so that try_refresh_feature_pr_status_comments
     // is called after orchestration.  After this, last_context() holds the
@@ -3472,5 +3579,215 @@ async fn test_pr_refresh_scan_uses_version_prefix_for_base_ref_when_prefix_is_em
         "base_ref in the PR refresh scan must not get a hardcoded 'v' prefix \
          when version_prefix is empty; got {:?}",
         ctx.base_ref
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Handler-level notification dispatch tests
+//
+// These prove the Section-6 wiring: handlers dispatch notifications as a
+// best-effort side channel that never changes the primary `CoreResult`.  They
+// use a webhook notification strategy so dispatch is observable through the
+// `SpyNotificationSender` (the GitHub-issue strategy routes through the GitHub
+// operations port instead, not the sender).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Build a `ReleaseRegentConfig` whose `notifications` section is `n` and all
+/// other sections are defaults.
+fn config_with_notifications(n: config::NotificationConfig) -> config::ReleaseRegentConfig {
+    config::ReleaseRegentConfig {
+        notifications: n,
+        ..config::ReleaseRegentConfig::default()
+    }
+}
+
+/// A webhook notification config with the given `enabled` flag.
+fn webhook_notifications(enabled: bool) -> config::NotificationConfig {
+    config::NotificationConfig {
+        enabled,
+        strategy: config::NotificationStrategy::Webhook,
+        github_issue: None,
+        webhook: Some(config::WebhookConfig {
+            url: "https://example.com/hooks/rr".to_string(),
+            headers: HashMap::new(),
+        }),
+        slack: None,
+    }
+}
+
+/// A `ReleasePrMerged` event whose payload drives a successful automation run.
+fn release_pr_merged_event() -> ProcessingEvent {
+    ProcessingEvent {
+        event_id: "evt-release".into(),
+        correlation_id: "corr-release".into(),
+        event_type: EventType::ReleasePrMerged,
+        repository: test_repo(),
+        payload: serde_json::json!({
+            "pull_request": {
+                "head": { "ref": "release/v1.2.0" },
+                "merge_commit_sha": "a".repeat(40),
+                "title": "chore(release): v1.2.0",
+                "body": "## Changelog\n\n- Added a feature"
+            }
+        }),
+        received_at: Utc::now(),
+        source: EventSourceKind::Webhook,
+        installation_id: 0,
+    }
+}
+
+/// A `PullRequestMerged` event whose payload is missing the merge SHA, forcing
+/// the inherent handler to return `CoreError::InvalidInput`.
+fn merged_pr_event_missing_sha() -> ProcessingEvent {
+    ProcessingEvent {
+        event_id: "evt-bad".into(),
+        correlation_id: "corr-bad".into(),
+        event_type: EventType::PullRequestMerged,
+        repository: test_repo(),
+        payload: serde_json::json!({ "pull_request": { "base": { "ref": "main" } } }),
+        received_at: Utc::now(),
+        source: EventSourceKind::Webhook,
+        installation_id: 0,
+    }
+}
+
+/// A successful release automation dispatches a `ReleaseCreated` notification.
+#[tokio::test]
+async fn test_handle_release_pr_merged_success_dispatches_release_created() {
+    let github = TestGitHubForLib::new_empty();
+    let config = TestConfigWith::new(config_with_notifications(webhook_notifications(true)));
+    let version_calc = TestVersionCalcForLib::returning("1.2.0");
+    let spy = SpyNotificationSender::new();
+
+    let processor = ReleaseRegentProcessor::new(github, config, version_calc, spy.clone());
+
+    let event = release_pr_merged_event();
+
+    MergedPullRequestHandler::handle_release_pr_merged(&processor, &event)
+        .await
+        .expect("release automation should succeed");
+
+    let calls = spy.webhook_calls().await;
+    assert_eq!(calls.len(), 1, "exactly one notification should be dispatched");
+    assert_eq!(
+        calls[0].2.get("event").and_then(serde_json::Value::as_str),
+        Some("release_created"),
+        "the dispatched event must be a release_created notification"
+    );
+}
+
+/// When a handler's inner logic fails, a `ProcessingError` notification is
+/// dispatched AND the original error is returned unchanged.
+#[tokio::test]
+async fn test_handle_merged_pull_request_inner_error_dispatches_processing_error_and_returns_err() {
+    let github = TestGitHubForLib::new_empty();
+    let config = TestConfigWith::new(config_with_notifications(webhook_notifications(true)));
+    let version_calc = TestVersionCalcForLib::returning("0.2.0");
+    let spy = SpyNotificationSender::new();
+
+    let processor = ReleaseRegentProcessor::new(github, config, version_calc, spy.clone());
+
+    let event = merged_pr_event_missing_sha();
+
+    let result = MergedPullRequestHandler::handle_merged_pull_request(&processor, &event).await;
+
+    let err = result.expect_err("handler must return the inner error");
+    assert!(
+        matches!(err, CoreError::InvalidInput { .. }),
+        "the primary error must be preserved; got {err:?}"
+    );
+
+    let calls = spy.webhook_calls().await;
+    assert_eq!(
+        calls.len(),
+        1,
+        "a processing-error notification should be dispatched"
+    );
+    assert_eq!(
+        calls[0].2.get("event").and_then(serde_json::Value::as_str),
+        Some("processing_error"),
+        "the dispatched event must be a processing_error notification"
+    );
+}
+
+/// A failure inside notification dispatch itself is swallowed and does not
+/// change the `CoreResult` the handler returns.
+#[tokio::test]
+async fn test_handle_merged_pull_request_dispatch_failure_is_swallowed() {
+    let github = TestGitHubForLib::new_empty();
+    let config = TestConfigWith::new(config_with_notifications(webhook_notifications(true)));
+    let version_calc = TestVersionCalcForLib::returning("0.2.0");
+    // This sender fails every delivery.
+    let spy = SpyNotificationSender::failing();
+
+    let processor = ReleaseRegentProcessor::new(github, config, version_calc, spy.clone());
+
+    let event = merged_pr_event_missing_sha();
+
+    let result = MergedPullRequestHandler::handle_merged_pull_request(&processor, &event).await;
+
+    let err = result.expect_err("handler must still return the inner error");
+    assert!(
+        matches!(err, CoreError::InvalidInput { .. }),
+        "a dispatch failure must not mask or replace the primary error; got {err:?}"
+    );
+
+    // The failing sender records nothing, confirming the swallow path was taken.
+    assert!(
+        spy.webhook_calls().await.is_empty(),
+        "a failing sender records no successful deliveries"
+    );
+}
+
+/// When notifications are disabled, no dispatch side effects occur.
+#[tokio::test]
+async fn test_handle_merged_pull_request_disabled_notifications_no_dispatch() {
+    let github = TestGitHubForLib::new_empty();
+    let config = TestConfigWith::new(config_with_notifications(webhook_notifications(false)));
+    let version_calc = TestVersionCalcForLib::returning("0.2.0");
+    let spy = SpyNotificationSender::new();
+
+    let processor = ReleaseRegentProcessor::new(github, config, version_calc, spy.clone());
+
+    let event = merged_pr_event_missing_sha();
+
+    let result = MergedPullRequestHandler::handle_merged_pull_request(&processor, &event).await;
+
+    assert!(
+        result.is_err(),
+        "the primary error is still returned regardless of notification config"
+    );
+    assert!(
+        spy.webhook_calls().await.is_empty() && spy.slack_calls().await.is_empty(),
+        "disabled notifications must produce no dispatch side effects"
+    );
+}
+
+/// A `NotificationStrategy::None` is also a no-op even when notifications are
+/// marked enabled.
+#[tokio::test]
+async fn test_handle_merged_pull_request_strategy_none_no_dispatch() {
+    let github = TestGitHubForLib::new_empty();
+    let none_config = config::NotificationConfig {
+        enabled: true,
+        strategy: config::NotificationStrategy::None,
+        github_issue: None,
+        webhook: None,
+        slack: None,
+    };
+    let config = TestConfigWith::new(config_with_notifications(none_config));
+    let version_calc = TestVersionCalcForLib::returning("0.2.0");
+    let spy = SpyNotificationSender::new();
+
+    let processor = ReleaseRegentProcessor::new(github, config, version_calc, spy.clone());
+
+    let event = merged_pr_event_missing_sha();
+
+    let result = MergedPullRequestHandler::handle_merged_pull_request(&processor, &event).await;
+
+    assert!(result.is_err(), "the primary error is still returned");
+    assert!(
+        spy.webhook_calls().await.is_empty() && spy.slack_calls().await.is_empty(),
+        "the None strategy must produce no dispatch side effects"
     );
 }

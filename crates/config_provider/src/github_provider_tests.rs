@@ -837,6 +837,26 @@ impl GitHubOperations for TestGitHub {
         Ok(())
     }
 
+    async fn create_issue(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _params: release_regent_core::traits::github_operations::CreateIssueParams,
+    ) -> release_regent_core::CoreResult<release_regent_core::traits::github_operations::Issue>
+    {
+        Err(CoreError::not_supported("create_issue", "stub"))
+    }
+
+    async fn list_issues(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _options: release_regent_core::traits::github_operations::ListIssuesOptions,
+    ) -> release_regent_core::CoreResult<Vec<release_regent_core::traits::github_operations::Issue>>
+    {
+        Ok(vec![])
+    }
+
     async fn get_installation_id_for_repo(
         &self,
         _owner: &str,

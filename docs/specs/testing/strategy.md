@@ -193,7 +193,7 @@ mod tests {
             mock_github,
             mock_config,
             version_calculator,
-            "test-correlation-id".to_string(),
+            MockNotificationSender::new(),
         );
 
         // Add test commits to mock
@@ -240,7 +240,7 @@ async fn test_full_release_pr_workflow() {
         mock_github,
         mock_config,
         ConventionalCommitVersionCalculator::new(),
-        "integration-test-id".to_string(),
+        MockNotificationSender::new(),
     );
 
     let webhook_event = create_realistic_webhook_event();

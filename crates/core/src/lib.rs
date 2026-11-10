@@ -39,12 +39,13 @@
 //! ```rust,ignore
 //! use release_regent_core::ReleaseRegentProcessor;
 //! use release_regent_testing::{MockGitHubOperations, MockConfigurationProvider,
-//!                             MockVersionCalculator};
+//!                             MockVersionCalculator, MockNotificationSender};
 //!
 //! let processor = ReleaseRegentProcessor::new(
 //!     MockGitHubOperations::new(),      // GitHub API operations
 //!     MockConfigurationProvider::new(), // Configuration loading
 //!     MockVersionCalculator::new(),     // Version calculation
+//!     MockNotificationSender::new(),    // Notification delivery
 //! );
 //! ```
 //!
@@ -135,11 +136,13 @@
 //!     let github_client = GitHubClient::new("github_token".to_string())?;
 //!     let config_provider = FileConfigurationProvider::new("./config")?;
 //!     let version_calculator = MyVersionCalculator::new();
+//!     let notification_sender = HttpNotificationSender::new()?;
 //!
 //!     let processor = ReleaseRegentProcessor::new(
 //!         github_client,
 //!         config_provider,
 //!         version_calculator,
+//!         notification_sender,
 //!     );
 //!
 //!     Ok(())
@@ -210,6 +213,7 @@ pub(crate) mod default_version_calculator;
 pub mod errors;
 pub(crate) mod github_version_calculator;
 pub mod manifest;
+pub mod notifications;
 pub(crate) mod pr_status_commenter;
 pub mod release_automator;
 pub mod release_orchestrator;
@@ -311,7 +315,15 @@ where
                 .await;
                 Ok(())
             }
-            Err(e) => Err(e),
+            Err(e) => {
+                self.dispatch_processing_error(
+                    event,
+                    "Release Regent: failed to process merged pull request",
+                    &e,
+                )
+                .await;
+                Err(e)
+            }
         }
     }
 
@@ -376,9 +388,26 @@ where
                     &event.repository.default_branch,
                 )
                 .await;
+                self.dispatch_notification(
+                    owner,
+                    repo,
+                    correlation_id,
+                    notifications::NotificationEventKind::ReleaseCreated,
+                    "Release Regent: release created",
+                    &format!("{result:?}"),
+                )
+                .await;
                 Ok(())
             }
-            Err(e) => Err(e),
+            Err(e) => {
+                self.dispatch_processing_error(
+                    event,
+                    "Release Regent: failed to automate release",
+                    &e,
+                )
+                .await;
+                Err(e)
+            }
         }
     }
 
@@ -422,193 +451,218 @@ where
             allow_override: repo_config.versioning.allow_override,
         };
 
-        CommentCommandProcessor::new(
+        let result = CommentCommandProcessor::new(
             config,
             &self
                 .github_operations
                 .scoped_to(self.resolve_installation_id(owner, repo).await?),
         )
         .process(event)
-        .await
+        .await;
+
+        if let Err(error) = &result {
+            self.dispatch_processing_error(
+                event,
+                "Release Regent: failed to process PR comment command",
+                error,
+            )
+            .await;
+        }
+
+        result
     }
 
     async fn handle_pull_request_activity(
         &self,
         event: &traits::event_source::ProcessingEvent,
     ) -> CoreResult<()> {
-        use release_automator::is_release_pr_branch;
-        use traits::configuration_provider::LoadOptions;
-        use traits::version_calculator::{CalculationOptions, VersionContext, VersioningStrategy};
+        let result: CoreResult<()> = async {
+            use release_automator::is_release_pr_branch;
+            use traits::configuration_provider::LoadOptions;
+            use traits::version_calculator::{CalculationOptions, VersionContext, VersioningStrategy};
 
-        let owner = &event.repository.owner;
-        let repo = &event.repository.name;
+            let owner = &event.repository.owner;
+            let repo = &event.repository.name;
 
-        let pr_number = event
-            .payload
-            .pointer("/pull_request/number")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0);
+            let pr_number = event
+                .payload
+                .pointer("/pull_request/number")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0);
 
-        if pr_number == 0 {
-            tracing::warn!(
-                event_id = %event.event_id,
-                "PR number missing from payload; skipping status comment"
-            );
-            return Ok(());
-        }
+            if pr_number == 0 {
+                tracing::warn!(
+                    event_id = %event.event_id,
+                    "PR number missing from payload; skipping status comment"
+                );
+                return Ok(());
+            }
 
-        let pr_head_sha = event
-            .payload
-            .pointer("/pull_request/head/sha")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_default()
-            .to_string();
+            let pr_head_sha = event
+                .payload
+                .pointer("/pull_request/head/sha")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string();
 
-        if pr_head_sha.is_empty() {
-            tracing::warn!(
-                event_id = %event.event_id,
-                pr = pr_number,
-                "PR head SHA missing from payload; skipping status comment"
-            );
-            return Ok(());
-        }
+            if pr_head_sha.is_empty() {
+                tracing::warn!(
+                    event_id = %event.event_id,
+                    pr = pr_number,
+                    "PR head SHA missing from payload; skipping status comment"
+                );
+                return Ok(());
+            }
 
-        let pr_head_branch = event
-            .payload
-            .pointer("/pull_request/head/ref")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-        let pr_author_login = event
-            .payload
-            .pointer("/pull_request/user/login")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_default()
-            .to_string();
+            let pr_head_branch = event
+                .payload
+                .pointer("/pull_request/head/ref")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let pr_author_login = event
+                .payload
+                .pointer("/pull_request/user/login")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string();
 
-        let installation_id = self.resolve_installation_id(owner, repo).await?;
+            let installation_id = self.resolve_installation_id(owner, repo).await?;
 
-        let repo_config = self
-            .configuration_provider
-            .get_merged_config(
-                owner,
-                repo,
-                LoadOptions {
-                    installation_id: Some(installation_id),
-                    default_branch: Some(event.repository.default_branch.clone()),
-                    ..Default::default()
-                },
-            )
-            .await?;
-
-        // Skip PRs from excluded authors.
-        if repo_config
-            .versioning
-            .excluded_pr_authors
-            .iter()
-            .any(|a| a == &pr_author_login)
-        {
-            tracing::debug!(
-                owner = %owner,
-                repo = %repo,
-                pr = pr_number,
-                author = %pr_author_login,
-                "Skipping PR status comment for excluded author"
-            );
-            return Ok(());
-        }
-
-        let branch_prefix =
-            release_orchestrator::OrchestratorConfig::DEFAULT_BRANCH_PREFIX.to_string();
-        let version_prefix = repo_config.core.version_prefix.clone();
-        let scoped_github = self.github_operations.scoped_to(installation_id);
-
-        let body = if is_release_pr_branch(&pr_head_branch, &branch_prefix, &version_prefix) {
-            // Release PR path (F.3): extract version from branch name.
-            let release_version = release_automator::extract_version_from_branch(
-                &pr_head_branch,
-                &branch_prefix,
-                &version_prefix,
-            )?;
-            pr_status_commenter::render_release_pr_comment(
-                &release_version,
-                repo_config.versioning.allow_override,
-            )
-        } else {
-            // Feature PR path (F.2): project the next version from commits.
-            let current_version =
-                versioning::resolve_current_version(&scoped_github, owner, repo, false).await?;
-
-            let strategy = match repo_config.versioning.strategy {
-                config::VersioningStrategy::Conventional
-                | config::VersioningStrategy::External { .. } => {
-                    VersioningStrategy::ConventionalCommits {
-                        custom_types: std::collections::HashMap::new(),
-                        include_prerelease: false,
-                    }
-                }
-            };
-
-            let ctx = VersionContext {
-                base_ref: current_version
-                    .as_ref()
-                    .map(|v| format!("{}{v}", repo_config.core.version_prefix)),
-                current_version: current_version.clone(),
-                head_ref: pr_head_sha,
-                owner: owner.to_string(),
-                repo: repo.to_string(),
-                target_branch: pr_head_branch,
-            };
-
-            let scoped_calc = self.version_calculator.scoped_to(installation_id);
-            let calc_result = scoped_calc
-                .calculate_version(ctx, strategy, CalculationOptions::default())
+            let repo_config = self
+                .configuration_provider
+                .get_merged_config(
+                    owner,
+                    repo,
+                    LoadOptions {
+                        installation_id: Some(installation_id),
+                        default_branch: Some(event.repository.default_branch.clone()),
+                        ..Default::default()
+                    },
+                )
                 .await?;
 
-            let base_version = current_version.unwrap_or(versioning::SemanticVersion {
-                major: 0,
-                minor: 0,
-                patch: 0,
-                prerelease: None,
-                build: None,
-            });
-
-            // Check whether a release PR is already open with a higher version.
-            // The trailing * makes this a prefix match so all versioned release
-            // branches are captured (e.g. "is:open head:release/v*").
-            let release_search_query =
-                format!("is:open head:{}/{}*", branch_prefix, version_prefix);
-            let queued_release_version: Option<versioning::SemanticVersion> = scoped_github
-                .search_pull_requests(owner, repo, &release_search_query)
-                .await
-                .unwrap_or_else(|e| {
-                    tracing::debug!(
-                        error = %e,
-                        "Failed to search for open release PRs; assuming none"
-                    );
-                    vec![]
-                })
+            // Skip PRs from excluded authors.
+            if repo_config
+                .versioning
+                .excluded_pr_authors
                 .iter()
-                .filter_map(|pr| {
-                    release_automator::extract_version_from_branch(
-                        &pr.head.ref_name,
-                        &branch_prefix,
-                        &version_prefix,
-                    )
-                    .ok()
-                })
-                .max();
+                .any(|a| a == &pr_author_login)
+            {
+                tracing::debug!(
+                    owner = %owner,
+                    repo = %repo,
+                    pr = pr_number,
+                    author = %pr_author_login,
+                    "Skipping PR status comment for excluded author"
+                );
+                return Ok(());
+            }
 
-            pr_status_commenter::render_feature_pr_comment(
-                &calc_result.next_version,
-                &base_version,
-                queued_release_version.as_ref(),
-                repo_config.versioning.allow_override,
+            let branch_prefix =
+                release_orchestrator::OrchestratorConfig::DEFAULT_BRANCH_PREFIX.to_string();
+            let version_prefix = repo_config.core.version_prefix.clone();
+            let scoped_github = self.github_operations.scoped_to(installation_id);
+
+            let body = if is_release_pr_branch(&pr_head_branch, &branch_prefix, &version_prefix) {
+                // Release PR path (F.3): extract version from branch name.
+                let release_version = release_automator::extract_version_from_branch(
+                    &pr_head_branch,
+                    &branch_prefix,
+                    &version_prefix,
+                )?;
+                pr_status_commenter::render_release_pr_comment(
+                    &release_version,
+                    repo_config.versioning.allow_override,
+                )
+            } else {
+                // Feature PR path (F.2): project the next version from commits.
+                let current_version =
+                    versioning::resolve_current_version(&scoped_github, owner, repo, false).await?;
+
+                let strategy = match repo_config.versioning.strategy {
+                    config::VersioningStrategy::Conventional
+                    | config::VersioningStrategy::External { .. } => {
+                        VersioningStrategy::ConventionalCommits {
+                            custom_types: std::collections::HashMap::new(),
+                            include_prerelease: false,
+                        }
+                    }
+                };
+
+                let ctx = VersionContext {
+                    base_ref: current_version
+                        .as_ref()
+                        .map(|v| format!("{}{v}", repo_config.core.version_prefix)),
+                    current_version: current_version.clone(),
+                    head_ref: pr_head_sha,
+                    owner: owner.to_string(),
+                    repo: repo.to_string(),
+                    target_branch: pr_head_branch,
+                };
+
+                let scoped_calc = self.version_calculator.scoped_to(installation_id);
+                let calc_result = scoped_calc
+                    .calculate_version(ctx, strategy, CalculationOptions::default())
+                    .await?;
+
+                let base_version = current_version.unwrap_or(versioning::SemanticVersion {
+                    major: 0,
+                    minor: 0,
+                    patch: 0,
+                    prerelease: None,
+                    build: None,
+                });
+
+                // Check whether a release PR is already open with a higher version.
+                // The trailing * makes this a prefix match so all versioned release
+                // branches are captured (e.g. "is:open head:release/v*").
+                let release_search_query =
+                    format!("is:open head:{}/{}*", branch_prefix, version_prefix);
+                let queued_release_version: Option<versioning::SemanticVersion> = scoped_github
+                    .search_pull_requests(owner, repo, &release_search_query)
+                    .await
+                    .unwrap_or_else(|e| {
+                        tracing::debug!(
+                            error = %e,
+                            "Failed to search for open release PRs; assuming none"
+                        );
+                        vec![]
+                    })
+                    .iter()
+                    .filter_map(|pr| {
+                        release_automator::extract_version_from_branch(
+                            &pr.head.ref_name,
+                            &branch_prefix,
+                            &version_prefix,
+                        )
+                        .ok()
+                    })
+                    .max();
+
+                pr_status_commenter::render_feature_pr_comment(
+                    &calc_result.next_version,
+                    &base_version,
+                    queued_release_version.as_ref(),
+                    repo_config.versioning.allow_override,
+                )
+            };
+
+            pr_status_commenter::upsert_pr_status_comment(&scoped_github, owner, repo, pr_number, &body)
+                .await
+        }
+        .await;
+
+        if let Err(error) = &result {
+            self.dispatch_processing_error(
+                event,
+                "Release Regent: failed to update PR status comment",
+                error,
             )
-        };
+            .await;
+        }
 
-        pr_status_commenter::upsert_pr_status_comment(&scoped_github, owner, repo, pr_number, &body)
-            .await
+        result
     }
 }
 ///
@@ -828,15 +882,17 @@ struct MergeCalcResult {
 /// # Examples
 /// ```ignore
 /// use release_regent_core::{ReleaseRegentProcessor, config::ReleaseRegentConfig};
-/// use release_regent_testing::{MockGitHubOperations, MockConfigurationProvider, MockVersionCalculator};
+/// use release_regent_testing::{MockGitHubOperations, MockConfigurationProvider,
+///     MockVersionCalculator, MockNotificationSender};
 ///
 /// let github_ops = MockGitHubOperations::new();
 /// let config_provider = MockConfigurationProvider::new();
 /// let version_calc = MockVersionCalculator::new();
+/// let notification_sender = MockNotificationSender::new();
 ///
-/// let processor = ReleaseRegentProcessor::new(github_ops, config_provider, version_calc);
+/// let processor = ReleaseRegentProcessor::new(
+///     github_ops, config_provider, version_calc, notification_sender);
 /// ```
-#[derive(Debug)]
 pub struct ReleaseRegentProcessor<G, C, V>
 where
     G: GitHubOperations,
@@ -846,6 +902,23 @@ where
     github_operations: G,
     configuration_provider: C,
     version_calculator: V,
+    notification_sender: Box<dyn traits::notification_sender::NotificationSender>,
+}
+
+impl<G, C, V> std::fmt::Debug for ReleaseRegentProcessor<G, C, V>
+where
+    G: GitHubOperations + std::fmt::Debug,
+    C: ConfigurationProvider + std::fmt::Debug,
+    V: VersionCalculator + std::fmt::Debug,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReleaseRegentProcessor")
+            .field("github_operations", &self.github_operations)
+            .field("configuration_provider", &self.configuration_provider)
+            .field("version_calculator", &self.version_calculator)
+            .field("notification_sender", &"<dyn NotificationSender>")
+            .finish()
+    }
 }
 
 impl<G, C, V> ReleaseRegentProcessor<G, C, V>
@@ -860,23 +933,35 @@ where
     /// * `github_operations` - GitHub API operations implementation
     /// * `configuration_provider` - Configuration loading implementation
     /// * `version_calculator` - Version calculation implementation
+    /// * `notification_sender` - Notification delivery port (webhook/Slack);
+    ///   stored as a boxed trait object so it does not widen the processor's
+    ///   generic bounds
     ///
     /// # Examples
     /// ```ignore
     /// use release_regent_core::ReleaseRegentProcessor;
-    /// use release_regent_testing::{MockGitHubOperations, MockConfigurationProvider, MockVersionCalculator};
+    /// use release_regent_testing::{MockGitHubOperations, MockConfigurationProvider,
+    ///     MockVersionCalculator, MockNotificationSender};
     ///
     /// let github_ops = MockGitHubOperations::new();
     /// let config_provider = MockConfigurationProvider::new();
     /// let version_calc = MockVersionCalculator::new();
+    /// let notification_sender = MockNotificationSender::new();
     ///
-    /// let processor = ReleaseRegentProcessor::new(github_ops, config_provider, version_calc);
+    /// let processor = ReleaseRegentProcessor::new(
+    ///     github_ops, config_provider, version_calc, notification_sender);
     /// ```
-    pub fn new(github_operations: G, configuration_provider: C, version_calculator: V) -> Self {
+    pub fn new(
+        github_operations: G,
+        configuration_provider: C,
+        version_calculator: V,
+        notification_sender: impl traits::notification_sender::NotificationSender + 'static,
+    ) -> Self {
         Self {
             github_operations,
             configuration_provider,
             version_calculator,
+            notification_sender: Box::new(notification_sender),
         }
     }
 
@@ -903,6 +988,122 @@ where
         self.github_operations
             .get_installation_id_for_repo(owner, repo)
             .await
+    }
+
+    /// Best-effort dispatch of a notification for a processing outcome.
+    ///
+    /// This helper is called from the event-handler trait methods after a
+    /// release is created or a processing error occurs. It is deliberately
+    /// infallible: notification delivery is a side channel and must never
+    /// change the `CoreResult` the primary handler returns, nor panic.
+    ///
+    /// On any failure — installation-id resolution, configuration loading, or
+    /// the dispatch itself — it emits a `warn!` with structured fields and
+    /// returns without propagating. When notifications are disabled or the
+    /// configured strategy is `None`, the dispatcher is a no-op.
+    ///
+    /// `details` must be derived from [`CoreError`]'s `Display` (already
+    /// sanitised), never `Debug`, to avoid leaking paths or secrets.
+    async fn dispatch_notification(
+        &self,
+        owner: &str,
+        repo: &str,
+        correlation_id: &str,
+        event_kind: notifications::NotificationEventKind,
+        summary: &str,
+        details: &str,
+    ) {
+        use traits::configuration_provider::LoadOptions;
+
+        let installation_id = match self.resolve_installation_id(owner, repo).await {
+            Ok(id) => id,
+            Err(error) => {
+                tracing::warn!(
+                    owner = %owner,
+                    repo = %repo,
+                    correlation_id = %correlation_id,
+                    error = %error,
+                    "Skipping notification dispatch: failed to resolve installation id"
+                );
+                return;
+            }
+        };
+
+        let repo_config = match self
+            .configuration_provider
+            .get_merged_config(
+                owner,
+                repo,
+                LoadOptions {
+                    installation_id: Some(installation_id),
+                    ..Default::default()
+                },
+            )
+            .await
+        {
+            Ok(config) => config,
+            Err(error) => {
+                tracing::warn!(
+                    owner = %owner,
+                    repo = %repo,
+                    correlation_id = %correlation_id,
+                    error = %error,
+                    "Skipping notification dispatch: failed to load configuration"
+                );
+                return;
+            }
+        };
+
+        let scoped_github = self.github_operations.scoped_to(installation_id);
+        let dispatcher =
+            notifications::NotificationDispatcher::new(&scoped_github, &self.notification_sender);
+
+        let event = notifications::NotificationEvent {
+            kind: event_kind,
+            owner: owner.to_string(),
+            repo: repo.to_string(),
+            correlation_id: correlation_id.to_string(),
+            summary: summary.to_string(),
+            details: details.to_string(),
+        };
+
+        if let Err(error) = dispatcher
+            .dispatch(&repo_config.notifications, &event)
+            .await
+        {
+            tracing::warn!(
+                owner = %owner,
+                repo = %repo,
+                correlation_id = %correlation_id,
+                error = %error,
+                "Notification dispatch failed; swallowing error"
+            );
+        }
+    }
+
+    /// Best-effort dispatch of a [`NotificationEventKind::ProcessingError`]
+    /// notification for a handler failure.
+    ///
+    /// Thin convenience wrapper over [`Self::dispatch_notification`] that
+    /// derives the owner, repository, and correlation id from `event` and
+    /// renders `error` via its `Display` (never `Debug`). Every event handler
+    /// that reports a failure routes through this helper so the
+    /// processing-error dispatch shape lives in exactly one place.
+    async fn dispatch_processing_error(
+        &self,
+        event: &traits::event_source::ProcessingEvent,
+        summary: &str,
+        error: &CoreError,
+    ) {
+        self.dispatch_notification(
+            &event.repository.owner,
+            &event.repository.name,
+            &event.correlation_id,
+            notifications::NotificationEventKind::ProcessingError,
+            summary,
+            &error.to_string(),
+        )
+        .await;
     }
 
     /// Handle a merged pull request event by orchestrating the creation or
