@@ -1,0 +1,24 @@
+# cargo-audit configuration (read by the "Cargo Audit" CI job in .github/workflows/pr.yml).
+#
+# The CI policy fails the build for any advisory that has a patched version
+# available ("fixable"). `cargo update` was run to pull patched versions of every
+# fixable transitive advisory. The two advisories ignored below DO have a patched
+# version in theory, but it is a MAJOR-version bump that is unreachable from our
+# dependency graph: both are pulled in transitively by `github-bot-sdk` and
+# `jsonwebtoken`, which pin the older major versions. They cannot be resolved from
+# this repository until those upstream crates release updates, so they are
+# acknowledged and ignored here rather than left to block unrelated PRs.
+#
+# Re-evaluate whenever `github-bot-sdk` / `jsonwebtoken` are upgraded — if the
+# newer `rsa` 0.10 / `crypto-bigint` 0.7 become reachable, remove these entries.
+[advisories]
+ignore = [
+    # rsa 0.9.x — Marvin attack (timing sidechannel in RSA decryption). Patched in
+    # rsa 0.10.0. Reached only via github-bot-sdk/jsonwebtoken (RS256 GitHub App JWT
+    # signing, not decryption). No path to 0.10 without upstream bumps.
+    "RUSTSEC-2023-0071",
+    # crypto-bigint 0.5.x — patched in 0.7.6. Reached only via the RustCrypto 0.13-era
+    # signature stack (elliptic-curve/ecdsa/p256/p384) that jsonwebtoken depends on.
+    # No path to 0.7 without upstream bumps.
+    "RUSTSEC-2026-0387",
+]

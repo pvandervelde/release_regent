@@ -1,0 +1,18 @@
+# osv-scanner configuration (auto-loaded by the "OSV Rust Scan" CI job because it
+# sits next to the scanned Cargo.lock — see .github/workflows/pr.yml).
+#
+# The CI policy fails the build for any vulnerability that has an available fix.
+# `cargo update` resolved every fixable transitive advisory except the two below,
+# whose fixes are MAJOR-version bumps unreachable from our dependency graph: both
+# are pulled in transitively by `github-bot-sdk` and `jsonwebtoken`, which pin the
+# older major versions. They are acknowledged here rather than blocking unrelated
+# PRs, and mirror the ignores in .cargo/audit.toml. Re-evaluate when those upstream
+# crates are upgraded.
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2023-0071"
+reason = "rsa 0.9.x Marvin timing attack; patched in 0.10.0. Reached only transitively via github-bot-sdk/jsonwebtoken (RS256 JWT signing). No upgrade path without upstream bumps."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0387"
+reason = "crypto-bigint 0.5.x; patched in 0.7.6. Reached only via the RustCrypto 0.13-era signature stack that jsonwebtoken depends on. No upgrade path without upstream bumps."
