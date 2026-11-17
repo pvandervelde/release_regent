@@ -3791,3 +3791,67 @@ async fn test_handle_merged_pull_request_strategy_none_no_dispatch() {
         "the None strategy must produce no dispatch side effects"
     );
 }
+
+/// A second missing-SHA `PullRequestMerged` event that differs from
+/// [`merged_pr_event_missing_sha`] in every variable field (ids, base branch)
+/// but still fails the same way, used to prove the dispatched summary carries
+/// no event-specific data.
+fn other_merged_pr_event_missing_sha() -> ProcessingEvent {
+    ProcessingEvent {
+        event_id: "evt-bad-2".into(),
+        correlation_id: "corr-bad-2".into(),
+        event_type: EventType::PullRequestMerged,
+        repository: test_repo(),
+        payload: serde_json::json!({ "pull_request": { "base": { "ref": "develop" } } }),
+        received_at: Utc::now(),
+        source: EventSourceKind::Webhook,
+        installation_id: 0,
+    }
+}
+
+/// Marker-stability regression: the notification marker hashes `summary`, so the
+/// processing-error dispatch summaries MUST be static strings with no embedded
+/// variable data. If a summary ever interpolated event-specific data (branch,
+/// correlation id, error text), the same recurring failure would produce a new
+/// marker each time and the idempotency check would create duplicate issues.
+///
+/// This drives the same handler twice with two events that differ in every
+/// variable field but fail identically, and asserts the dispatched webhook
+/// `summary` is byte-for-byte identical and equals the expected fixed literal.
+#[tokio::test]
+async fn test_processing_error_dispatch_summary_is_stable_across_events() {
+    const EXPECTED_SUMMARY: &str = "Release Regent: failed to process merged pull request";
+
+    async fn dispatched_summary(event: &ProcessingEvent) -> String {
+        let github = TestGitHubForLib::new_empty();
+        let config = TestConfigWith::new(config_with_notifications(webhook_notifications(true)));
+        let version_calc = TestVersionCalcForLib::returning("0.2.0");
+        let spy = SpyNotificationSender::new();
+
+        let processor = ReleaseRegentProcessor::new(github, config, version_calc, spy.clone());
+
+        let result = MergedPullRequestHandler::handle_merged_pull_request(&processor, event).await;
+        assert!(result.is_err(), "the event must fail to drive error dispatch");
+
+        let calls = spy.webhook_calls().await;
+        assert_eq!(calls.len(), 1, "exactly one processing-error dispatch expected");
+        calls[0]
+            .2
+            .get("summary")
+            .and_then(serde_json::Value::as_str)
+            .expect("webhook payload must carry a summary field")
+            .to_string()
+    }
+
+    let first = dispatched_summary(&merged_pr_event_missing_sha()).await;
+    let second = dispatched_summary(&other_merged_pr_event_missing_sha()).await;
+
+    assert_eq!(
+        first, EXPECTED_SUMMARY,
+        "the processing-error summary must be the fixed literal"
+    );
+    assert_eq!(
+        first, second,
+        "the summary must not vary with event-specific data (marker stability)"
+    );
+}
