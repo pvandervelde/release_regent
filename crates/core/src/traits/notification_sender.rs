@@ -54,8 +54,12 @@ pub trait NotificationSender: Send + Sync {
     /// # Errors
     /// - `CoreError::Network` - connection or timeout failure
     /// - `CoreError::Webhook` - non-2xx response, `stage == "slack"`
-    async fn send_slack(&self, webhook_url: &str, channel: Option<&str>, text: &str)
-        -> CoreResult<()>;
+    async fn send_slack(
+        &self,
+        webhook_url: &str,
+        channel: Option<&str>,
+        text: &str,
+    ) -> CoreResult<()>;
 }
 
 /// Blanket implementation so a boxed trait object can satisfy the

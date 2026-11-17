@@ -104,9 +104,11 @@ async fn test_create_issue_success_returns_mapped_issue() {
 
     Mock::given(method("POST"))
         .and(path("/repos/owner/repo/issues"))
-        .respond_with(
-            ResponseTemplate::new(201).set_body_json(issue_json(42, "Something broke", "open")),
-        )
+        .respond_with(ResponseTemplate::new(201).set_body_json(issue_json(
+            42,
+            "Something broke",
+            "open",
+        )))
         .mount(&mock_server)
         .await;
 
@@ -162,7 +164,8 @@ async fn test_list_issues_filters_out_pull_requests() {
     let mock_server = MockServer::start().await;
 
     let mut pr_item = issue_json(2, "A pull request", "open");
-    pr_item["pull_request"] = serde_json::json!({ "url": "https://api.github.com/repos/owner/repo/pulls/2" });
+    pr_item["pull_request"] =
+        serde_json::json!({ "url": "https://api.github.com/repos/owner/repo/pulls/2" });
 
     Mock::given(method("GET"))
         .and(path("/repos/owner/repo/issues"))
@@ -200,8 +203,11 @@ async fn test_list_issues_with_labels_sends_labels_query_param() {
         .and(query_param("state", "all"))
         .and(query_param("labels", "bug,urgent"))
         .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(serde_json::json!([issue_json(7, "Labelled issue", "closed")])),
+            ResponseTemplate::new(200).set_body_json(serde_json::json!([issue_json(
+                7,
+                "Labelled issue",
+                "closed"
+            )])),
         )
         .mount(&mock_server)
         .await;

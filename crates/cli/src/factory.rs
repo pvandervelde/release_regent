@@ -61,7 +61,12 @@ pub fn create_mock_processor() -> MockProcessor {
     let config_provider = MockConfigurationProvider::new();
     let version_calc = MockVersionCalculator::new();
     let notification_sender = MockNotificationSender::new();
-    ReleaseRegentProcessor::new(github_ops, config_provider, version_calc, notification_sender)
+    ReleaseRegentProcessor::new(
+        github_ops,
+        config_provider,
+        version_calc,
+        notification_sender,
+    )
 }
 
 /// Create a processor that uses production dependencies sourced from environment variables.

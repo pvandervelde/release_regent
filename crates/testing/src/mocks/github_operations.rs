@@ -11,9 +11,9 @@ use release_regent_core::{
             GetCommitsOptions, GitCommit, GitRepository, GitTag, GitTagType, ListTagsOptions,
         },
         github_operations::{
-            CollaboratorPermission, CreateIssueParams, CreatePullRequestParams, CreateReleaseParams,
-            Issue, IssueComment, IssueState, Label, ListIssuesOptions, PullRequest,
-            PullRequestBranch, Release, Repository, Tag, UpdateReleaseParams,
+            CollaboratorPermission, CreateIssueParams, CreatePullRequestParams,
+            CreateReleaseParams, Issue, IssueComment, IssueState, Label, ListIssuesOptions,
+            PullRequest, PullRequestBranch, Release, Repository, Tag, UpdateReleaseParams,
         },
     },
     CoreError, CoreResult, GitHubOperations, GitOperations,
@@ -237,7 +237,12 @@ impl MockGitHubOperations {
     /// findable by `create_issue`'s idempotency callers.
     pub async fn with_issue(&self, owner: &str, repo: &str, issue: Issue) {
         let key = format!("{owner}/{repo}");
-        self.issues.write().await.entry(key).or_default().push(issue);
+        self.issues
+            .write()
+            .await
+            .entry(key)
+            .or_default()
+            .push(issue);
     }
 
     /// Return all recorded `create_issue` calls: `(owner, repo, params)`.
@@ -1314,11 +1319,10 @@ impl GitHubOperations for MockGitHubOperations {
             .or_default()
             .push(issue.clone());
 
-        self.create_issue_calls.write().await.push((
-            owner.to_string(),
-            repo.to_string(),
-            params,
-        ));
+        self.create_issue_calls
+            .write()
+            .await
+            .push((owner.to_string(), repo.to_string(), params));
 
         self.record_call(method, &params_str, CallResult::Success)
             .await;
@@ -1565,7 +1569,13 @@ impl GitHubOperations for MockGitHubOperations {
         }
 
         let key = format!("{owner}/{repo}");
-        let issues = self.issues.read().await.get(&key).cloned().unwrap_or_default();
+        let issues = self
+            .issues
+            .read()
+            .await
+            .get(&key)
+            .cloned()
+            .unwrap_or_default();
 
         let filtered: Vec<Issue> = issues
             .into_iter()
@@ -1583,11 +1593,10 @@ impl GitHubOperations for MockGitHubOperations {
             })
             .collect();
 
-        self.list_issues_calls.write().await.push((
-            owner.to_string(),
-            repo.to_string(),
-            options,
-        ));
+        self.list_issues_calls
+            .write()
+            .await
+            .push((owner.to_string(), repo.to_string(), options));
         self.record_call(method, &params_str, CallResult::Success)
             .await;
         Ok(filtered)

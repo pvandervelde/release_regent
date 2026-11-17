@@ -99,7 +99,11 @@ async fn test_send_webhook_non_2xx_returns_webhook_error() {
     let payload = serde_json::json!({ "event": "processing_error" });
 
     let result = sender
-        .send_webhook(&format!("{}/hook", mock_server.uri()), &HashMap::new(), &payload)
+        .send_webhook(
+            &format!("{}/hook", mock_server.uri()),
+            &HashMap::new(),
+            &payload,
+        )
         .await;
 
     assert!(matches!(
@@ -135,9 +139,7 @@ async fn test_send_webhook_network_error_does_not_leak_url_secret() {
     let secret_path = "T00000000/B11111111/super-secret-token-value";
     let url = format!("http://127.0.0.1:0/{secret_path}?token=another-secret");
 
-    let result = sender
-        .send_webhook(&url, &HashMap::new(), &payload)
-        .await;
+    let result = sender.send_webhook(&url, &HashMap::new(), &payload).await;
 
     let err = result.expect_err("connection to port 0 must fail");
     let message = err.to_string();
@@ -166,7 +168,9 @@ async fn test_send_slack_without_channel_omits_channel_field() {
 
     Mock::given(method("POST"))
         .and(path("/slack"))
-        .and(body_json(serde_json::json!({ "text": "*Release created*\nv1.2.3" })))
+        .and(body_json(
+            serde_json::json!({ "text": "*Release created*\nv1.2.3" }),
+        ))
         .respond_with(ResponseTemplate::new(200))
         .mount(&mock_server)
         .await;
@@ -242,7 +246,8 @@ async fn test_send_slack_escapes_mrkdwn_significant_characters() {
     // Simulates the dispatcher's `*{summary}*\n{details}` text where summary and
     // details carry injection attempts.
     let hostile = "*<!channel> & <https://evil|click>*\nTom & Jerry <tag>";
-    let expected = "*&lt;!channel&gt; &amp; &lt;https://evil|click&gt;*\nTom &amp; Jerry &lt;tag&gt;";
+    let expected =
+        "*&lt;!channel&gt; &amp; &lt;https://evil|click&gt;*\nTom &amp; Jerry &lt;tag&gt;";
 
     Mock::given(method("POST"))
         .and(path("/slack"))

@@ -1628,7 +1628,12 @@ async fn test_handle_merged_pr_creates_release_pr_when_none_exists() {
     let config = TestConfigForLib;
     let version_calc = TestVersionCalcForLib::returning("0.2.0");
 
-    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc, SpyNotificationSender::new());
+    let processor = ReleaseRegentProcessor::new(
+        github.clone(),
+        config,
+        version_calc,
+        SpyNotificationSender::new(),
+    );
 
     let event = ProcessingEvent {
         event_id: "evt-1".into(),
@@ -1680,7 +1685,8 @@ async fn test_handle_merged_pr_returns_invalid_input_when_sha_missing() {
     let config = TestConfigForLib;
     let version_calc = TestVersionCalcForLib::returning("0.2.0");
 
-    let processor = ReleaseRegentProcessor::new(github, config, version_calc, SpyNotificationSender::new());
+    let processor =
+        ReleaseRegentProcessor::new(github, config, version_calc, SpyNotificationSender::new());
 
     let event = ProcessingEvent {
         event_id: "evt-2".into(),
@@ -1716,7 +1722,12 @@ async fn test_handle_merged_pr_uses_default_branch_when_base_ref_absent() {
     let config = TestConfigForLib;
     let version_calc = TestVersionCalcForLib::returning("1.0.0");
 
-    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc, SpyNotificationSender::new());
+    let processor = ReleaseRegentProcessor::new(
+        github.clone(),
+        config,
+        version_calc,
+        SpyNotificationSender::new(),
+    );
 
     let event = ProcessingEvent {
         event_id: "evt-3".into(),
@@ -1776,7 +1787,12 @@ async fn test_handle_merged_pr_includes_changelog_entries_in_pr_body() {
         },
     ]);
 
-    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc, SpyNotificationSender::new());
+    let processor = ReleaseRegentProcessor::new(
+        github.clone(),
+        config,
+        version_calc,
+        SpyNotificationSender::new(),
+    );
 
     let event = ProcessingEvent {
         event_id: "evt-4".into(),
@@ -1863,7 +1879,12 @@ async fn test_handle_merged_feature_pr_with_override_major_label_applies_floor()
     let config = TestConfigForLib;
     let version_calc = TestVersionCalcForLib::returning("1.1.0");
 
-    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc, SpyNotificationSender::new());
+    let processor = ReleaseRegentProcessor::new(
+        github.clone(),
+        config,
+        version_calc,
+        SpyNotificationSender::new(),
+    );
 
     let event = ProcessingEvent {
         event_id: "evt-floor-1".into(),
@@ -1955,7 +1976,12 @@ async fn test_handle_merged_feature_pr_without_override_label_uses_calculated_ve
     let config = TestConfigForLib;
     let version_calc = TestVersionCalcForLib::returning("1.1.0");
 
-    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc, SpyNotificationSender::new());
+    let processor = ReleaseRegentProcessor::new(
+        github.clone(),
+        config,
+        version_calc,
+        SpyNotificationSender::new(),
+    );
 
     let event = ProcessingEvent {
         event_id: "evt-floor-2".into(),
@@ -2026,7 +2052,12 @@ async fn test_handle_merged_release_pr_clears_stale_override_labels_from_open_pr
     let config = TestConfigForLib;
     let version_calc = TestVersionCalcForLib::returning("1.1.0");
 
-    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc, SpyNotificationSender::new());
+    let processor = ReleaseRegentProcessor::new(
+        github.clone(),
+        config,
+        version_calc,
+        SpyNotificationSender::new(),
+    );
 
     let event = ProcessingEvent {
         event_id: "evt-floor-3".into(),
@@ -2103,7 +2134,12 @@ async fn test_merged_release_pr_creates_tag_not_new_release_branch() {
     let config = TestConfigForLib;
     let version_calc = TestVersionCalcForLib::returning("1.0.0");
 
-    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc, SpyNotificationSender::new());
+    let processor = ReleaseRegentProcessor::new(
+        github.clone(),
+        config,
+        version_calc,
+        SpyNotificationSender::new(),
+    );
 
     let event = ProcessingEvent {
         event_id: "evt-release-pr".into(),
@@ -2170,7 +2206,12 @@ async fn test_clear_stale_labels_skips_prs_without_override_labels() {
 
     let config = TestConfigForLib;
     let version_calc = TestVersionCalcForLib::returning("2.0.0");
-    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc, SpyNotificationSender::new());
+    let processor = ReleaseRegentProcessor::new(
+        github.clone(),
+        config,
+        version_calc,
+        SpyNotificationSender::new(),
+    );
 
     let event = ProcessingEvent {
         event_id: "evt-no-labels".into(),
@@ -2243,7 +2284,12 @@ async fn test_clear_stale_labels_posts_one_comment_per_pr_regardless_of_label_co
 
     let config = TestConfigForLib;
     let version_calc = TestVersionCalcForLib::returning("3.0.0");
-    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc, SpyNotificationSender::new());
+    let processor = ReleaseRegentProcessor::new(
+        github.clone(),
+        config,
+        version_calc,
+        SpyNotificationSender::new(),
+    );
 
     let event = ProcessingEvent {
         event_id: "evt-multi-label".into(),
@@ -2329,7 +2375,12 @@ async fn test_handle_merged_feature_pr_with_override_minor_label_applies_floor()
     let config = TestConfigForLib;
     let version_calc = TestVersionCalcForLib::returning("1.2.4");
 
-    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc, SpyNotificationSender::new());
+    let processor = ReleaseRegentProcessor::new(
+        github.clone(),
+        config,
+        version_calc,
+        SpyNotificationSender::new(),
+    );
 
     let event = ProcessingEvent {
         event_id: "evt-minor-floor".into(),
@@ -2406,7 +2457,12 @@ async fn test_handle_merged_feature_pr_with_patch_floor_no_effect_when_calculate
     let config = TestConfigForLib;
     let version_calc = TestVersionCalcForLib::returning("1.3.0");
 
-    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc, SpyNotificationSender::new());
+    let processor = ReleaseRegentProcessor::new(
+        github.clone(),
+        config,
+        version_calc,
+        SpyNotificationSender::new(),
+    );
 
     let event = ProcessingEvent {
         event_id: "evt-patch-floor".into(),
@@ -2486,7 +2542,12 @@ async fn test_handle_merged_release_pr_list_labels_failure_for_one_pr_continues(
 
     let config = TestConfigForLib;
     let version_calc = TestVersionCalcForLib::returning("1.1.0");
-    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc, SpyNotificationSender::new());
+    let processor = ReleaseRegentProcessor::new(
+        github.clone(),
+        config,
+        version_calc,
+        SpyNotificationSender::new(),
+    );
 
     let event = ProcessingEvent {
         event_id: "evt-label-list-fail".into(),
@@ -2549,7 +2610,12 @@ async fn test_handle_merged_release_pr_remove_label_failure_still_posts_cleanup_
 
     let config = TestConfigForLib;
     let version_calc = TestVersionCalcForLib::returning("1.1.0");
-    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc, SpyNotificationSender::new());
+    let processor = ReleaseRegentProcessor::new(
+        github.clone(),
+        config,
+        version_calc,
+        SpyNotificationSender::new(),
+    );
 
     let event = ProcessingEvent {
         event_id: "evt-remove-fail".into(),
@@ -2612,7 +2678,12 @@ async fn test_handle_merged_release_pr_cleanup_comment_failure_event_still_succe
 
     let config = TestConfigForLib;
     let version_calc = TestVersionCalcForLib::returning("1.1.0");
-    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc, SpyNotificationSender::new());
+    let processor = ReleaseRegentProcessor::new(
+        github.clone(),
+        config,
+        version_calc,
+        SpyNotificationSender::new(),
+    );
 
     let event = ProcessingEvent {
         event_id: "evt-comment-fail".into(),
@@ -2686,7 +2757,12 @@ async fn test_handle_merged_feature_pr_audit_comment_failure_returns_ok() {
 
     let config = TestConfigForLib;
     let version_calc = TestVersionCalcForLib::returning("1.1.0");
-    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc, SpyNotificationSender::new());
+    let processor = ReleaseRegentProcessor::new(
+        github.clone(),
+        config,
+        version_calc,
+        SpyNotificationSender::new(),
+    );
 
     let event = ProcessingEvent {
         event_id: "evt-audit-fail".into(),
@@ -2767,7 +2843,12 @@ async fn test_handle_merged_non_bumping_feature_pr_after_release_does_not_recrea
         TestVersionCalcForLib::returning("0.3.0").with_version_bump(VersionBump::None);
     let github = TestGitHubForLib::new_empty().with_tags(vec![tag]);
     let config = TestConfigForLib;
-    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc, SpyNotificationSender::new());
+    let processor = ReleaseRegentProcessor::new(
+        github.clone(),
+        config,
+        version_calc,
+        SpyNotificationSender::new(),
+    );
 
     let event = ProcessingEvent {
         event_id: "evt-chore-after-release".into(),
@@ -2850,7 +2931,12 @@ async fn test_handle_merged_non_bumping_pr_with_patch_floor_creates_next_patch_r
         .with_tags(vec![tag])
         .with_pr_labels(99, vec![override_label]);
     let config = TestConfigForLib;
-    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc, SpyNotificationSender::new());
+    let processor = ReleaseRegentProcessor::new(
+        github.clone(),
+        config,
+        version_calc,
+        SpyNotificationSender::new(),
+    );
 
     let event = ProcessingEvent {
         event_id: "evt-patch-floor-after-release".into(),
@@ -2950,7 +3036,12 @@ async fn test_feature_pr_opened_creates_status_comment_with_projected_version() 
     let github = TestGitHubForLib::new_empty();
     let config = TestConfigForLib;
     let version_calc = TestVersionCalcForLib::returning("1.2.0");
-    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc, SpyNotificationSender::new());
+    let processor = ReleaseRegentProcessor::new(
+        github.clone(),
+        config,
+        version_calc,
+        SpyNotificationSender::new(),
+    );
 
     let event = ProcessingEvent {
         event_id: "f4-a".into(),
@@ -3003,7 +3094,12 @@ async fn test_feature_pr_updated_updates_existing_status_comment_in_place() {
         TestGitHubForLib::new_empty().with_stored_issue_comments(42, vec![existing_comment]);
     let config = TestConfigForLib;
     let version_calc = TestVersionCalcForLib::returning("1.2.0");
-    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc, SpyNotificationSender::new());
+    let processor = ReleaseRegentProcessor::new(
+        github.clone(),
+        config,
+        version_calc,
+        SpyNotificationSender::new(),
+    );
 
     let event = ProcessingEvent {
         event_id: "f4-b".into(),
@@ -3056,7 +3152,12 @@ async fn test_merged_feature_pr_refreshes_open_prs_with_existing_marker() {
         .with_stored_issue_comments(11, vec![marker_comment]);
     let config = TestConfigForLib;
     let version_calc = TestVersionCalcForLib::returning("0.2.0");
-    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc, SpyNotificationSender::new());
+    let processor = ReleaseRegentProcessor::new(
+        github.clone(),
+        config,
+        version_calc,
+        SpyNotificationSender::new(),
+    );
 
     // Build a merged-PR event
     let event = ProcessingEvent {
@@ -3098,7 +3199,12 @@ async fn test_release_pr_opened_creates_status_comment_with_release_version() {
     let github = TestGitHubForLib::new_empty();
     let config = TestConfigForLib;
     let version_calc = TestVersionCalcForLib::returning("2.0.0"); // should NOT be used
-    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc, SpyNotificationSender::new());
+    let processor = ReleaseRegentProcessor::new(
+        github.clone(),
+        config,
+        version_calc,
+        SpyNotificationSender::new(),
+    );
 
     let event = ProcessingEvent {
         event_id: "f4-d".into(),
@@ -3140,7 +3246,12 @@ async fn test_pr_status_comment_omits_commands_when_allow_override_is_false() {
     let github = TestGitHubForLib::new_empty();
     let config = TestConfigWith::new(cfg);
     let version_calc = TestVersionCalcForLib::returning("1.1.0");
-    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc, SpyNotificationSender::new());
+    let processor = ReleaseRegentProcessor::new(
+        github.clone(),
+        config,
+        version_calc,
+        SpyNotificationSender::new(),
+    );
 
     // Feature PR
     let feature_event = ProcessingEvent {
@@ -3198,7 +3309,12 @@ async fn test_feature_pr_from_excluded_author_skips_status_comment() {
     let github = TestGitHubForLib::new_empty();
     let config = TestConfigWith::new(cfg);
     let version_calc = TestVersionCalcForLib::returning("1.0.1");
-    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc, SpyNotificationSender::new());
+    let processor = ReleaseRegentProcessor::new(
+        github.clone(),
+        config,
+        version_calc,
+        SpyNotificationSender::new(),
+    );
 
     let event = ProcessingEvent {
         event_id: "f4-f".into(),
@@ -3252,7 +3368,12 @@ async fn test_batch_refresh_skips_excluded_author_and_refreshes_normal_pr() {
         .with_stored_issue_comments(31, vec![marker_comment]);
     let config = TestConfigWith::new(cfg);
     let version_calc = TestVersionCalcForLib::returning("0.2.0");
-    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc, SpyNotificationSender::new());
+    let processor = ReleaseRegentProcessor::new(
+        github.clone(),
+        config,
+        version_calc,
+        SpyNotificationSender::new(),
+    );
 
     let event = ProcessingEvent {
         event_id: "f4-g".into(),
@@ -3298,7 +3419,12 @@ async fn test_feature_pr_opened_with_queued_release_includes_annotation() {
     let config = TestConfigForLib;
     // version_calc returns 1.3.0 — same as already-queued release
     let version_calc = TestVersionCalcForLib::returning("1.3.0");
-    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc, SpyNotificationSender::new());
+    let processor = ReleaseRegentProcessor::new(
+        github.clone(),
+        config,
+        version_calc,
+        SpyNotificationSender::new(),
+    );
 
     let event = ProcessingEvent {
         event_id: "f4-h".into(),
@@ -3358,7 +3484,12 @@ async fn test_feature_pr_opened_uses_version_prefix_for_base_ref_when_prefix_is_
     let github = TestGitHubForLib::new_empty().with_tags(vec![tag]);
     let config = TestConfigWith::new(cfg);
     let version_calc = TestVersionCalcForLib::returning("0.6.0");
-    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc.clone(), SpyNotificationSender::new());
+    let processor = ReleaseRegentProcessor::new(
+        github.clone(),
+        config,
+        version_calc.clone(),
+        SpyNotificationSender::new(),
+    );
 
     let event = ProcessingEvent {
         event_id: "prefix-empty-1".into(),
@@ -3409,7 +3540,12 @@ async fn test_feature_pr_opened_uses_version_prefix_for_base_ref_when_prefix_is_
     let github = TestGitHubForLib::new_empty().with_tags(vec![tag]);
     let config = TestConfigWith::new(cfg);
     let version_calc = TestVersionCalcForLib::returning("0.6.0");
-    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc.clone(), SpyNotificationSender::new());
+    let processor = ReleaseRegentProcessor::new(
+        github.clone(),
+        config,
+        version_calc.clone(),
+        SpyNotificationSender::new(),
+    );
 
     let event = ProcessingEvent {
         event_id: "prefix-v-1".into(),
@@ -3463,7 +3599,12 @@ async fn test_merged_pr_uses_version_prefix_for_base_ref_when_prefix_is_empty() 
     let github = TestGitHubForLib::new_empty().with_tags(vec![tag]);
     let config = TestConfigWith::new(cfg);
     let version_calc = TestVersionCalcForLib::returning("0.6.0");
-    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc.clone(), SpyNotificationSender::new());
+    let processor = ReleaseRegentProcessor::new(
+        github.clone(),
+        config,
+        version_calc.clone(),
+        SpyNotificationSender::new(),
+    );
 
     // Fire a feature-PR merged event.  Using the pub async fn directly avoids
     // the refresh path so only the merge-calculation context is captured.
@@ -3541,7 +3682,12 @@ async fn test_pr_refresh_scan_uses_version_prefix_for_base_ref_when_prefix_is_em
         .with_stored_issue_comments(20, vec![marker_comment]);
     let config = TestConfigWith::new(cfg);
     let version_calc = TestVersionCalcForLib::returning("0.6.0");
-    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc.clone(), SpyNotificationSender::new());
+    let processor = ReleaseRegentProcessor::new(
+        github.clone(),
+        config,
+        version_calc.clone(),
+        SpyNotificationSender::new(),
+    );
 
     // Invoke via the trait impl so that try_refresh_feature_pr_status_comments
     // is called after orchestration.  After this, last_context() holds the
@@ -3668,7 +3814,11 @@ async fn test_handle_release_pr_merged_success_dispatches_release_created() {
         .expect("release automation should succeed");
 
     let calls = spy.webhook_calls().await;
-    assert_eq!(calls.len(), 1, "exactly one notification should be dispatched");
+    assert_eq!(
+        calls.len(),
+        1,
+        "exactly one notification should be dispatched"
+    );
     assert_eq!(
         calls[0].2.get("event").and_then(serde_json::Value::as_str),
         Some("release_created"),
@@ -3831,10 +3981,17 @@ async fn test_processing_error_dispatch_summary_is_stable_across_events() {
         let processor = ReleaseRegentProcessor::new(github, config, version_calc, spy.clone());
 
         let result = MergedPullRequestHandler::handle_merged_pull_request(&processor, event).await;
-        assert!(result.is_err(), "the event must fail to drive error dispatch");
+        assert!(
+            result.is_err(),
+            "the event must fail to drive error dispatch"
+        );
 
         let calls = spy.webhook_calls().await;
-        assert_eq!(calls.len(), 1, "exactly one processing-error dispatch expected");
+        assert_eq!(
+            calls.len(),
+            1,
+            "exactly one processing-error dispatch expected"
+        );
         calls[0]
             .2
             .get("summary")

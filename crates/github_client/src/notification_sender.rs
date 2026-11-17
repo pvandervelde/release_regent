@@ -118,7 +118,9 @@ impl HttpNotificationSender {
             // query), which for webhook/Slack endpoints is itself the secret.
             // Strip it with `without_url` before the error is formatted and
             // later logged by the dispatcher.
-            .map_err(|e| CoreError::network(format!("{stage} request failed: {}", e.without_url())))?;
+            .map_err(|e| {
+                CoreError::network(format!("{stage} request failed: {}", e.without_url()))
+            })?;
 
         let status = response.status();
         if !status.is_success() {
@@ -170,4 +172,3 @@ impl NotificationSender for HttpNotificationSender {
 #[cfg(test)]
 #[path = "notification_sender_tests.rs"]
 mod notification_sender_tests;
-

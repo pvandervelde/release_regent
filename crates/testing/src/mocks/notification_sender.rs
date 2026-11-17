@@ -118,10 +118,11 @@ impl NotificationSender for MockNotificationSender {
             return Err(CoreError::webhook("webhook", message.clone()));
         }
 
-        self.send_webhook_calls
-            .write()
-            .await
-            .push((url.to_string(), headers.clone(), payload.clone()));
+        self.send_webhook_calls.write().await.push((
+            url.to_string(),
+            headers.clone(),
+            payload.clone(),
+        ));
         Ok(())
     }
 

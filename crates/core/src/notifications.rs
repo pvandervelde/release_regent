@@ -137,9 +137,12 @@ impl<'a, G: GitHubOperations, N: NotificationSender> NotificationDispatcher<'a, 
             )
             .await?;
 
-        let matching_issue = existing
-            .into_iter()
-            .find(|issue| issue.body.as_deref().is_some_and(|body| body.contains(&marker)));
+        let matching_issue = existing.into_iter().find(|issue| {
+            issue
+                .body
+                .as_deref()
+                .is_some_and(|body| body.contains(&marker))
+        });
 
         if let Some(issue) = matching_issue {
             self.github_operations
@@ -169,14 +172,11 @@ impl<'a, G: GitHubOperations, N: NotificationSender> NotificationDispatcher<'a, 
         config: &NotificationConfig,
         event: &NotificationEvent,
     ) -> CoreResult<()> {
-        let webhook = config
-            .webhook
-            .as_ref()
-            .ok_or_else(|| {
-                CoreError::config(
-                    "notifications.webhook is required when notifications.strategy is \"webhook\"",
-                )
-            })?;
+        let webhook = config.webhook.as_ref().ok_or_else(|| {
+            CoreError::config(
+                "notifications.webhook is required when notifications.strategy is \"webhook\"",
+            )
+        })?;
 
         let payload = serde_json::json!({
             "event": event_kind_as_str(event.kind),
@@ -199,14 +199,11 @@ impl<'a, G: GitHubOperations, N: NotificationSender> NotificationDispatcher<'a, 
         config: &NotificationConfig,
         event: &NotificationEvent,
     ) -> CoreResult<()> {
-        let slack = config
-            .slack
-            .as_ref()
-            .ok_or_else(|| {
-                CoreError::config(
-                    "notifications.slack is required when notifications.strategy is \"slack\"",
-                )
-            })?;
+        let slack = config.slack.as_ref().ok_or_else(|| {
+            CoreError::config(
+                "notifications.slack is required when notifications.strategy is \"slack\"",
+            )
+        })?;
 
         let text = format!("*{}*\n{}", event.summary, event.details);
 
@@ -229,7 +226,10 @@ fn notification_marker(
 ) -> String {
     let input = format!("{owner}/{repo}/{kind:?}/{summary}");
     let digest = Sha256::digest(input.as_bytes());
-    let hex = digest.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    let hex = digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
     format!("<!-- release-regent:notification:{hex} -->")
 }
 

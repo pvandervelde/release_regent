@@ -479,7 +479,9 @@ where
         let result: CoreResult<()> = async {
             use release_automator::is_release_pr_branch;
             use traits::configuration_provider::LoadOptions;
-            use traits::version_calculator::{CalculationOptions, VersionContext, VersioningStrategy};
+            use traits::version_calculator::{
+                CalculationOptions, VersionContext, VersioningStrategy,
+            };
 
             let owner = &event.repository.owner;
             let repo = &event.repository.name;
@@ -648,8 +650,14 @@ where
                 )
             };
 
-            pr_status_commenter::upsert_pr_status_comment(&scoped_github, owner, repo, pr_number, &body)
-                .await
+            pr_status_commenter::upsert_pr_status_comment(
+                &scoped_github,
+                owner,
+                repo,
+                pr_number,
+                &body,
+            )
+            .await
         }
         .await;
 

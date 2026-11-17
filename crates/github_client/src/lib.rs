@@ -1538,7 +1538,12 @@ impl GitHubOperations for GitHubClient {
     }
 
     #[instrument(skip(self, params))]
-    async fn create_issue(&self, owner: &str, repo: &str, params: CreateIssueParams) -> CoreResult<Issue> {
+    async fn create_issue(
+        &self,
+        owner: &str,
+        repo: &str,
+        params: CreateIssueParams,
+    ) -> CoreResult<Issue> {
         if params.title.trim().is_empty() {
             return Err(CoreError::invalid_input("title", "title must not be empty"));
         }
@@ -1606,8 +1611,7 @@ impl GitHubOperations for GitHubClient {
             );
 
             let response = installation.get(&path).await.map_err(map_sdk_error)?;
-            let raw: Vec<serde_json::Value> =
-                response.json().await.map_err(CoreError::github)?;
+            let raw: Vec<serde_json::Value> = response.json().await.map_err(CoreError::github)?;
 
             let page_len = raw.len();
 

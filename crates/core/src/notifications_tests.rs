@@ -179,11 +179,7 @@ impl GitOperations for TestGitHubOps {
         Err(CoreError::not_found("stub"))
     }
 
-    async fn get_repository_info(
-        &self,
-        _owner: &str,
-        _repo: &str,
-    ) -> CoreResult<GitRepository> {
+    async fn get_repository_info(&self, _owner: &str, _repo: &str) -> CoreResult<GitRepository> {
         Err(CoreError::not_found("stub"))
     }
 }
@@ -366,7 +362,12 @@ impl GitHubOperations for TestGitHubOps {
         Err(CoreError::not_found("stub"))
     }
 
-    async fn get_release_by_tag(&self, _owner: &str, _repo: &str, _tag: &str) -> CoreResult<Release> {
+    async fn get_release_by_tag(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _tag: &str,
+    ) -> CoreResult<Release> {
         Err(CoreError::not_found("stub"))
     }
 
@@ -604,9 +605,11 @@ impl NotificationSender for TestNotificationSender {
         if let Some(msg) = state.slack_error.clone() {
             return Err(CoreError::webhook("slack", msg));
         }
-        state
-            .slack_calls
-            .push((webhook_url.to_string(), channel.map(str::to_string), text.to_string()));
+        state.slack_calls.push((
+            webhook_url.to_string(),
+            channel.map(str::to_string),
+            text.to_string(),
+        ));
         Ok(())
     }
 }
@@ -982,7 +985,10 @@ async fn test_dispatch_webhook_sends_to_configured_url_and_headers() {
     let sender = TestNotificationSender::new();
     let dispatcher = NotificationDispatcher::new(&github, &sender);
     let config = webhook_config(true, true);
-    let event = sample_event(NotificationEventKind::ReleaseCreated, "Release v1.2.3 created");
+    let event = sample_event(
+        NotificationEventKind::ReleaseCreated,
+        "Release v1.2.3 created",
+    );
 
     dispatcher
         .dispatch(&config, &event)
@@ -1002,7 +1008,10 @@ async fn test_dispatch_webhook_payload_contains_expected_json_fields() {
     let sender = TestNotificationSender::new();
     let dispatcher = NotificationDispatcher::new(&github, &sender);
     let config = webhook_config(true, true);
-    let event = sample_event(NotificationEventKind::ReleaseCreated, "Release v1.2.3 created");
+    let event = sample_event(
+        NotificationEventKind::ReleaseCreated,
+        "Release v1.2.3 created",
+    );
 
     dispatcher
         .dispatch(&config, &event)
@@ -1011,16 +1020,33 @@ async fn test_dispatch_webhook_payload_contains_expected_json_fields() {
 
     let calls = sender.webhook_calls().await;
     let payload = &calls[0].2;
-    let obj = payload.as_object().expect("payload should be a JSON object");
-    assert_eq!(obj.get("owner").and_then(|v| v.as_str()), Some(event.owner.as_str()));
-    assert_eq!(obj.get("repo").and_then(|v| v.as_str()), Some(event.repo.as_str()));
+    let obj = payload
+        .as_object()
+        .expect("payload should be a JSON object");
+    assert_eq!(
+        obj.get("owner").and_then(|v| v.as_str()),
+        Some(event.owner.as_str())
+    );
+    assert_eq!(
+        obj.get("repo").and_then(|v| v.as_str()),
+        Some(event.repo.as_str())
+    );
     assert_eq!(
         obj.get("correlation_id").and_then(|v| v.as_str()),
         Some(event.correlation_id.as_str())
     );
-    assert_eq!(obj.get("summary").and_then(|v| v.as_str()), Some(event.summary.as_str()));
-    assert_eq!(obj.get("details").and_then(|v| v.as_str()), Some(event.details.as_str()));
-    assert!(obj.contains_key("event"), "payload should contain an 'event' field");
+    assert_eq!(
+        obj.get("summary").and_then(|v| v.as_str()),
+        Some(event.summary.as_str())
+    );
+    assert_eq!(
+        obj.get("details").and_then(|v| v.as_str()),
+        Some(event.details.as_str())
+    );
+    assert!(
+        obj.contains_key("event"),
+        "payload should contain an 'event' field"
+    );
     let timestamp = obj
         .get("timestamp")
         .and_then(|v| v.as_str())
@@ -1091,7 +1117,10 @@ async fn test_dispatch_slack_sends_formatted_text_to_configured_webhook() {
     let expected = config.slack.as_ref().unwrap();
     assert_eq!(calls[0].0, expected.webhook_url);
     assert_eq!(calls[0].1.as_deref(), expected.channel.as_deref());
-    assert_eq!(calls[0].2, format!("*{}*\n{}", event.summary, event.details));
+    assert_eq!(
+        calls[0].2,
+        format!("*{}*\n{}", event.summary, event.details)
+    );
 }
 
 #[tokio::test]
