@@ -222,3 +222,99 @@ async fn test_list_issues_with_labels_sends_labels_query_param() {
     assert_eq!(issues.len(), 1);
     assert_eq!(issues[0].number, 7);
 }
+
+/// Regression for notification idempotency: GitHub's default page size is 30,
+/// so `list_issues` MUST request `per_page=100` and keep paging until a short
+/// page is returned, otherwise the open-issue marker scan could miss a marker
+/// beyond the first page and create a duplicate issue. This drives a full
+/// 100-item first page followed by a short second page and asserts both pages
+/// are accumulated.
+#[tokio::test]
+async fn test_list_issues_accumulates_across_multiple_pages() {
+    let mock_server = MockServer::start().await;
+
+    // First page: a full 100 items (numbers 1..=100) signals "more may follow".
+    let page_one: Vec<serde_json::Value> = (1..=100)
+        .map(|n| issue_json(n, "paged issue", "open"))
+        .collect();
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/repo/issues"))
+        .and(query_param("state", "open"))
+        .and(query_param("per_page", "100"))
+        .and(query_param("page", "1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(page_one))
+        .mount(&mock_server)
+        .await;
+
+    // Second page: a short page (50 items, numbers 101..=150) terminates paging.
+    let page_two: Vec<serde_json::Value> = (101..=150)
+        .map(|n| issue_json(n, "paged issue", "open"))
+        .collect();
+    Mock::given(method("GET"))
+        .and(path("/repos/owner/repo/issues"))
+        .and(query_param("state", "open"))
+        .and(query_param("per_page", "100"))
+        .and(query_param("page", "2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(page_two))
+        .mount(&mock_server)
+        .await;
+
+    let client = make_client(&mock_server, "test-token");
+    let issues = client
+        .list_issues(
+            "owner",
+            "repo",
+            ListIssuesOptions {
+                state: IssueState::Open,
+                labels: vec![],
+            },
+        )
+        .await
+        .expect("list_issues should accumulate across pages");
+
+    assert_eq!(issues.len(), 150, "both pages must be accumulated");
+    assert_eq!(issues.first().map(|i| i.number), Some(1));
+    assert_eq!(issues.last().map(|i| i.number), Some(150));
+}
+
+/// A malformed issue response missing the numeric `number` field must surface
+/// an error rather than silently yielding issue `#0` — otherwise the
+/// idempotency path could post a comment to issue `#0`.
+#[tokio::test]
+async fn test_create_issue_missing_number_field_returns_error() {
+    let mock_server = MockServer::start().await;
+
+    // Response object deliberately omits `number`.
+    let malformed = serde_json::json!({
+        "title": "Something broke",
+        "body": "issue body",
+        "state": "open",
+        "labels": [],
+        "html_url": "https://github.com/owner/repo/issues/1"
+    });
+
+    Mock::given(method("POST"))
+        .and(path("/repos/owner/repo/issues"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(malformed))
+        .mount(&mock_server)
+        .await;
+
+    let client = make_client(&mock_server, "test-token");
+    let params = CreateIssueParams {
+        title: "Something broke".to_string(),
+        body: Some("issue body".to_string()),
+        labels: vec![],
+        assignees: vec![],
+    };
+
+    let result = client.create_issue("owner", "repo", params).await;
+
+    assert!(
+        matches!(
+            result,
+            Err(release_regent_core::CoreError::InvalidInput { ref field, .. })
+                if field == "number"
+        ),
+        "missing `number` must yield an InvalidInput error, got: {result:?}"
+    );
+}

@@ -1560,10 +1560,14 @@ impl GitHubOperations for GitHubClient {
             .map_err(map_sdk_error)?;
         let raw: serde_json::Value = response.json().await.map_err(CoreError::github)?;
 
-        Ok(json_to_issue(&raw))
+        json_to_issue(&raw)
     }
 
     #[instrument(skip(self))]
+    // The `json_to_issue` mapping closure returns `CoreResult<Issue>`, whose
+    // large `Err` variant trips `clippy::result_large_err`; allow it here per
+    // the crate-wide convention rather than boxing.
+    #[allow(clippy::result_large_err)]
     async fn list_issues(
         &self,
         owner: &str,
@@ -1579,24 +1583,52 @@ impl GitHubOperations for GitHubClient {
         info!(owner, repo, state = state_str, "Listing issues");
 
         let installation = self.installation().await?;
-        let mut path = format!("/repos/{owner}/{repo}/issues?state={state_str}");
-        if !options.labels.is_empty() {
+
+        // Build the shared label query fragment once.
+        let labels_fragment = if options.labels.is_empty() {
+            String::new()
+        } else {
             let labels_param = urlencoding_encode_query_value(&options.labels.join(","));
-            path.push_str(&format!("&labels={labels_param}"));
+            format!("&labels={labels_param}")
+        };
+
+        // Paginate with per_page=100 and accumulate across pages. The default
+        // page size is 30, so a single request would silently truncate large
+        // result sets — this breaks the notification idempotency check, which
+        // scans open-issue bodies for a hidden marker and would otherwise miss
+        // a marker beyond the first page and create a DUPLICATE issue.
+        let mut all_issues: Vec<Issue> = Vec::new();
+        let mut page: u32 = 1;
+
+        loop {
+            let path = format!(
+                "/repos/{owner}/{repo}/issues?state={state_str}{labels_fragment}&per_page=100&page={page}"
+            );
+
+            let response = installation.get(&path).await.map_err(map_sdk_error)?;
+            let raw: Vec<serde_json::Value> =
+                response.json().await.map_err(CoreError::github)?;
+
+            let page_len = raw.len();
+
+            let page_issues = raw
+                .into_iter()
+                // GitHub's /issues endpoint also returns pull requests; PRs carry a
+                // "pull_request" key that plain issues never have.
+                .filter(|v| v.get("pull_request").is_none())
+                .map(|v| json_to_issue(&v))
+                .collect::<CoreResult<Vec<Issue>>>()?;
+
+            all_issues.extend(page_issues);
+
+            // A short page (fewer than the requested per_page) is the last page.
+            if page_len < 100 {
+                break;
+            }
+            page += 1;
         }
 
-        let response = installation.get(&path).await.map_err(map_sdk_error)?;
-        let raw: Vec<serde_json::Value> = response.json().await.map_err(CoreError::github)?;
-
-        let issues = raw
-            .into_iter()
-            // GitHub's /issues endpoint also returns pull requests; PRs carry a
-            // "pull_request" key that plain issues never have.
-            .filter(|v| v.get("pull_request").is_none())
-            .map(|v| json_to_issue(&v))
-            .collect();
-
-        Ok(issues)
+        Ok(all_issues)
     }
 
     #[instrument(skip(self))]
@@ -1806,7 +1838,23 @@ struct ListPrUser {
 ///
 /// Shared by [`GitHubClient::create_issue`] (single-object response) and
 /// [`GitHubClient::list_issues`] (array response, mapped element-wise).
-fn json_to_issue(v: &serde_json::Value) -> Issue {
+// `CoreError` is a large enum; returning it in the `Err` variant trips
+// `clippy::result_large_err`. This matches the crate-wide convention (see
+// `HttpNotificationSender::new`) of allowing it rather than boxing every
+// `CoreResult`.
+#[allow(clippy::result_large_err)]
+fn json_to_issue(v: &serde_json::Value) -> CoreResult<Issue> {
+    // `number` is correctness-critical: the idempotency path feeds it to
+    // `create_issue_comment`. A missing/non-integer `number` must be a hard
+    // error rather than silently defaulting to `#0` (which would comment on the
+    // wrong — or a non-existent — issue).
+    let number = v["number"].as_u64().ok_or_else(|| {
+        CoreError::invalid_input(
+            "number",
+            "GitHub issue response missing numeric `number` field",
+        )
+    })?;
+
     let labels = v["labels"]
         .as_array()
         .cloned()
@@ -1820,14 +1868,14 @@ fn json_to_issue(v: &serde_json::Value) -> Issue {
         })
         .collect();
 
-    Issue {
-        number: v["number"].as_u64().unwrap_or(0),
+    Ok(Issue {
+        number,
         title: v["title"].as_str().unwrap_or("").to_string(),
         body: v["body"].as_str().map(str::to_string),
         state: v["state"].as_str().unwrap_or("").to_string(),
         labels,
         html_url: v["html_url"].as_str().unwrap_or("").to_string(),
-    }
+    })
 }
 
 /// Percent-encode a file path for use in a GitHub Contents API URL.
