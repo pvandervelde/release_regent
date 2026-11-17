@@ -385,11 +385,6 @@ These fields must be correct or the application will fail to start:
 - **Format**: HTTPS is strongly recommended but not enforced at config-load time. A
   non-HTTPS endpoint is accepted (to support on-prem receivers) but logs a warning
   (scheme and host only) on every delivery attempt.
-  <!-- TODO(spec-owner): this section previously documented a strict
-  `^https://...` regex with a hard validation error for non-HTTPS URLs. The
-  implemented behavior (see crates/github_client/src/notification_sender.rs) is
-  warn-and-continue, not reject. Confirm which behavior is intended and reconcile;
-  this doc has been updated to match current implementation. -->
 
 ### Optional Field Validation (Defaults)
 

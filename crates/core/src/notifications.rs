@@ -35,7 +35,6 @@ use crate::traits::{
 use crate::{CoreError, CoreResult};
 use sha2::{Digest, Sha256};
 
-
 /// The kind of event being reported to [`NotificationDispatcher::dispatch`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NotificationEventKind {
@@ -173,9 +172,11 @@ impl<'a, G: GitHubOperations, N: NotificationSender> NotificationDispatcher<'a, 
         let webhook = config
             .webhook
             .as_ref()
-            .ok_or_else(|| CoreError::config(
-                "notifications.webhook is required when notifications.strategy is \"webhook\"",
-            ))?;
+            .ok_or_else(|| {
+                CoreError::config(
+                    "notifications.webhook is required when notifications.strategy is \"webhook\"",
+                )
+            })?;
 
         let payload = serde_json::json!({
             "event": event_kind_as_str(event.kind),
@@ -201,9 +202,11 @@ impl<'a, G: GitHubOperations, N: NotificationSender> NotificationDispatcher<'a, 
         let slack = config
             .slack
             .as_ref()
-            .ok_or_else(|| CoreError::config(
-                "notifications.slack is required when notifications.strategy is \"slack\"",
-            ))?;
+            .ok_or_else(|| {
+                CoreError::config(
+                    "notifications.slack is required when notifications.strategy is \"slack\"",
+                )
+            })?;
 
         let text = format!("*{}*\n{}", event.summary, event.details);
 
