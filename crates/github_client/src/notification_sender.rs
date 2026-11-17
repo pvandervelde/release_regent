@@ -18,6 +18,21 @@ use tracing::{instrument, warn};
 /// Timeout applied to every webhook/Slack HTTP request.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Escape the three characters Slack treats as special in `mrkdwn` text.
+///
+/// Slack interprets `<...>` sequences as special entities — e.g. `<!channel>`
+/// broadcast mentions or `<url|text>` links — and `&` as the start of an HTML
+/// entity. Notification text embeds attacker-influenceable strings (branch,
+/// tag and PR names), so these characters must be escaped before the payload
+/// is built to prevent mrkdwn injection. Per Slack's rules only `&`, `<` and
+/// `>` are escaped, and `&` MUST be replaced first so the `&amp;` it produces
+/// is not re-escaped.
+fn escape_slack_mrkdwn(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
 /// Production [`NotificationSender`] implementation that delivers webhook and
 /// Slack notifications over HTTP using `reqwest`.
 ///
@@ -85,6 +100,13 @@ impl HttpNotificationSender {
             .post(url)
             .header(reqwest::header::CONTENT_TYPE, "application/json");
         for (name, value) in headers {
+            // `RequestBuilder::header` APPENDS rather than replaces, so a
+            // caller-supplied `Content-Type` would duplicate/override the
+            // `application/json` this sender owns. Skip any such header (case
+            // insensitively) to guarantee the owned content type wins.
+            if name.eq_ignore_ascii_case("content-type") {
+                continue;
+            }
             request = request.header(name, value);
         }
 
@@ -129,6 +151,12 @@ impl NotificationSender for HttpNotificationSender {
         channel: Option<&str>,
         text: &str,
     ) -> CoreResult<()> {
+        // The caller composes `text` from user-derived parts (summary/details);
+        // escape mrkdwn-significant characters so attacker-controlled branch/tag
+        // /PR names cannot inject Slack entities such as `<!channel>` mentions or
+        // `<url|text>` links. The literal `*` bold markers the caller adds are
+        // unaffected (they are not among the escaped characters).
+        let text = escape_slack_mrkdwn(text);
         let mut payload = serde_json::json!({ "text": text });
         if let Some(channel) = channel {
             payload["channel"] = serde_json::Value::String(channel.to_string());

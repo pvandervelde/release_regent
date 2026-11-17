@@ -39,6 +39,52 @@ async fn test_send_webhook_success_returns_ok() {
     assert!(result.is_ok());
 }
 
+/// A caller-supplied `content-type` header must NOT displace the
+/// `application/json` the sender owns. `RequestBuilder::header` appends, so the
+/// sender must skip any config header named `content-type` (case-insensitively)
+/// to keep exactly one JSON content type on the wire. This inspects the actual
+/// received request so a leftover `text/plain` header would fail the assertion.
+#[tokio::test]
+async fn test_send_webhook_config_content_type_does_not_override_json() {
+    let mock_server = MockServer::start().await;
+    let payload = serde_json::json!({ "event": "release_created" });
+
+    Mock::given(method("POST"))
+        .and(path("/hook"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&mock_server)
+        .await;
+
+    let sender = HttpNotificationSender::new().expect("sender construction should not fail");
+    let mut headers = HashMap::new();
+    // The caller tries to override the content type with a hostile value.
+    headers.insert("content-type".to_string(), "text/plain".to_string());
+
+    let result = sender
+        .send_webhook(&format!("{}/hook", mock_server.uri()), &headers, &payload)
+        .await;
+    assert!(result.is_ok(), "send should succeed: {result:?}");
+
+    let requests = mock_server
+        .received_requests()
+        .await
+        .expect("received requests should be recorded");
+    let request = requests.first().expect("exactly one request expected");
+
+    let content_types: Vec<&str> = request
+        .headers
+        .get_all("content-type")
+        .iter()
+        .map(|v| v.to_str().expect("content-type is valid ascii"))
+        .collect();
+
+    assert_eq!(
+        content_types,
+        vec!["application/json"],
+        "config content-type must be skipped, leaving exactly the owned JSON type"
+    );
+}
+
 #[tokio::test]
 async fn test_send_webhook_non_2xx_returns_webhook_error() {
     let mock_server = MockServer::start().await;
@@ -181,4 +227,37 @@ async fn test_send_slack_non_2xx_returns_webhook_error_with_slack_stage() {
         result,
         Err(CoreError::Webhook { ref stage, .. }) if stage == "slack"
     ));
+}
+
+/// Slack `mrkdwn` interprets `<...>` entities (e.g. `<!channel>` broadcast
+/// mentions, `<url|text>` links) and `&`. Notification text embeds
+/// attacker-influenceable branch/tag/PR names, so these characters must be
+/// escaped (`&`→`&amp;`, `<`→`&lt;`, `>`→`&gt;`, `&` first) before the payload
+/// is built. This asserts a hostile `<!channel>`/`&` payload is escaped in the
+/// sent `text` field.
+#[tokio::test]
+async fn test_send_slack_escapes_mrkdwn_significant_characters() {
+    let mock_server = MockServer::start().await;
+
+    // Simulates the dispatcher's `*{summary}*\n{details}` text where summary and
+    // details carry injection attempts.
+    let hostile = "*<!channel> & <https://evil|click>*\nTom & Jerry <tag>";
+    let expected = "*&lt;!channel&gt; &amp; &lt;https://evil|click&gt;*\nTom &amp; Jerry &lt;tag&gt;";
+
+    Mock::given(method("POST"))
+        .and(path("/slack"))
+        .and(body_json(serde_json::json!({ "text": expected })))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&mock_server)
+        .await;
+
+    let sender = HttpNotificationSender::new().expect("sender construction should not fail");
+    let result = sender
+        .send_slack(&format!("{}/slack", mock_server.uri()), None, hostile)
+        .await;
+
+    assert!(
+        result.is_ok(),
+        "escaped payload must match the mock body: {result:?}"
+    );
 }
