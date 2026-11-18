@@ -242,6 +242,12 @@ jobs:
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
+      - name: Clean stale coverage artifacts
+        # The restored rust-cache can contain a `llvm-cov-target` dir from an
+        # earlier run; cargo then treats the instrumented objects as up-to-date
+        # and skips rebuilding them, so `llvm-cov export` fails with
+        # "not found object files". Force a fresh instrumented build.
+        run: cargo llvm-cov clean --workspace
       - name: Generate code coverage
         run: cargo llvm-cov --all-features --workspace --codecov --output-path
           codecov.json
