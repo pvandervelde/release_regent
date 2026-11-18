@@ -13,3 +13,4 @@ GitHub API client — App authentication (JWT, token exchange), webhook secret p
 | `EnvSecretProvider` | struct | `crates/github_client/src/auth.rs:43` | Retrieves authentication secrets from environment variables. | auth, github |
 | `Error` | enum | `crates/github_client/src/errors.rs:10` | Enumerates GitHub API communication errors. | auth, github |
 | `GitHubClient` | struct | `crates/github_client/src/lib.rs:58` | Executes API calls to GitHub for repository and release operations. | auth, github |
+| `HttpNotificationSender` | struct | `crates/github_client/src/notification_sender.rs:27` | Production `NotificationSender` adapter delivering webhook and Slack notifications over HTTP via a shared, timeout-bound `reqwest` client. | github, notifications |

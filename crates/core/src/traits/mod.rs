@@ -29,12 +29,14 @@ pub mod configuration_provider;
 pub mod event_source;
 pub mod git_operations;
 pub mod github_operations;
+pub mod notification_sender;
 pub mod version_calculator;
 
 pub use configuration_provider::ConfigurationProvider;
 pub use event_source::{EventSource, EventSourceKind, EventType, ProcessingEvent, RepositoryInfo};
 pub use git_operations::GitOperations;
 pub use github_operations::GitHubOperations;
+pub use notification_sender::NotificationSender;
 pub use version_calculator::VersionCalculator;
 
 #[cfg(test)]

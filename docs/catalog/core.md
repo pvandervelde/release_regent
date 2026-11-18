@@ -25,6 +25,7 @@ Core release automation — orchestration, changelog generation, versioning, man
 | `ConventionalCommit` | struct | `crates/core/src/versioning.rs:166` | Parses commit messages following conventional commit specification format. | core |
 | `CoreConfig` | struct | `crates/core/src/config.rs:34` | Root configuration object containing all system settings and subsystem configs. | core |
 | `CoreError` | enum | `crates/core/src/errors.rs:45` | Represents errors that occur during core operations. | core |
+| `CreateIssueParams` | struct | `crates/core/src/traits/github_operations.rs:890` | Configures GitHub issue creation parameters including title, body, labels, and assignees. | core |
 | `CreatePullRequestParams` | struct | `crates/core/src/traits/github_operations.rs:679` | Configures pull request creation parameters and content. | core |
 | `CreateReleaseParams` | struct | `crates/core/src/traits/github_operations.rs:696` | Configures release creation parameters and metadata. | core |
 | `DefaultVersionCalculator` | struct | `crates/core/src/default_version_calculator.rs:53` | Calculates versions using standard semantic versioning increment rules. | core |
@@ -44,14 +45,21 @@ Core release automation — orchestration, changelog generation, versioning, man
 | `GitTag` | struct | `crates/core/src/traits/git_operations.rs:279` | Represents a git tag with associated commit information. | core |
 | `GitTagType` | enum | `crates/core/src/traits/git_operations.rs:296` | Enumerates Git tag classification types. | core |
 | `GitUser` | struct | `crates/core/src/traits/git_operations.rs:305` | Represents a git user with name and email. | core |
+| `Issue` | struct | `crates/core/src/traits/github_operations.rs:928` | Represents a GitHub issue with number, title, body, state, labels, and HTML URL. | core |
 | `IssueComment` | struct | `crates/core/src/traits/github_operations.rs:775` | Represents a GitHub issue comment with metadata for API operations. | core |
+| `IssueState` | enum | `crates/core/src/traits/github_operations.rs:914` | Enumerates issue state filters (open, closed, all) used when listing issues. | core |
 | `Label` | struct | `crates/core/src/traits/github_operations.rs:726` | Represents a GitHub issue or PR label with name and metadata. | core |
+| `ListIssuesOptions` | struct | `crates/core/src/traits/github_operations.rs:903` | Configures issue listing filters by state and labels. | core |
 | `ListTagsOptions` | struct | `crates/core/src/traits/git_operations.rs:218` | Configures parameters for listing repository tags. | core |
 | `LoadOptions` | struct | `crates/core/src/traits/configuration_provider.rs:47` | Specifies configuration loading behavior: caching, merging, fallback strategies. | core |
 | `ManifestFileConfig` | struct | `crates/core/src/manifest.rs:82` | Stores manifest file generation settings including format and output location. | core |
 | `ManifestFormat` | enum | `crates/core/src/manifest.rs:54` | Enumerates supported manifest file formats. | core |
 | `MergedPullRequestHandler` | trait | `crates/core/src/lib.rs:239` | Handles merged pull request events with thread-safe concurrent execution support. | core, trait |
 | `NotificationConfig` | struct | `crates/core/src/config.rs:110` | Stores notification preferences including channels and trigger conditions. | core |
+| `NotificationDispatcher` | struct | `crates/core/src/notifications.rs:73` | Routes a notification event to the configured GitHub-issue, webhook, or Slack strategy; use to deliver processing-outcome notifications. | core, notifications |
+| `NotificationEvent` | struct | `crates/core/src/notifications.rs:51` | Describes a processing outcome (owner, repo, correlation id, summary, details) to be delivered as a notification. | core, notifications |
+| `NotificationEventKind` | enum | `crates/core/src/notifications.rs:41` | Enumerates the processing outcomes reported to the dispatcher (processing error, release created). | core, notifications |
+| `NotificationSender` | trait | `crates/core/src/traits/notification_sender.rs:29` | Port for delivering webhook and Slack notifications; implemented outside core (see `HttpNotificationSender`) to preserve the hexagonal boundary. | core, trait, notifications |
 | `NotificationStrategy` | enum | `crates/core/src/config.rs:297` | Enumerates notification delivery methods and behaviors. | core |
 | `OrchestratorConfig` | struct | `crates/core/src/release_orchestrator.rs:65` | Configures release automation workflow parameters and behavior. | core |
 | `OrchestratorResult` | enum | `crates/core/src/release_orchestrator.rs:121` | Enumerates release orchestration operation outcomes. | core |

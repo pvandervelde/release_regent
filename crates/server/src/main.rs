@@ -469,10 +469,13 @@ async fn build_server_processor(
     let version_calculator: Arc<dyn VersionCalculator + Send + Sync> =
         Arc::new(GitHubVersionCalculator::new(github_client.clone()));
 
+    let notification_sender = release_regent_github_client::HttpNotificationSender::new()?;
+
     Ok(release_regent_core::ReleaseRegentProcessor::new(
         github_client,
         config_provider,
         version_calculator,
+        notification_sender,
     ))
 }
 

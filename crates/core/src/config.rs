@@ -102,6 +102,15 @@ fn default_github_issue_labels() -> Vec<String> {
     vec!["release-regent".to_string(), "bug".to_string()]
 }
 
+impl Default for GitHubIssueConfig {
+    fn default() -> Self {
+        Self {
+            labels: default_github_issue_labels(),
+            assignees: Vec::new(),
+        }
+    }
+}
+
 /// Notification configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NotificationConfig {

@@ -22,9 +22,10 @@ use release_regent_core::{
             GitUser as GitOpsUser, ListTagsOptions, TagSortOrder,
         },
         github_operations::{
-            CollaboratorPermission, CreatePullRequestParams, CreateReleaseParams, FileUpdate,
-            GitHubOperations, GitUser as GitHubUser, IssueComment, Label, PullRequest,
-            PullRequestBranch, Release, Repository, Tag, UpdateReleaseParams,
+            CollaboratorPermission, CreateIssueParams, CreatePullRequestParams,
+            CreateReleaseParams, FileUpdate, GitHubOperations, GitUser as GitHubUser, Issue,
+            IssueComment, IssueState, Label, ListIssuesOptions, PullRequest, PullRequestBranch,
+            Release, Repository, Tag, UpdateReleaseParams,
         },
     },
     CoreError, CoreResult,
@@ -49,6 +50,9 @@ const SECONDARY_RATE_LIMIT_RETRY_SECS: u64 = 60;
 
 pub mod auth;
 pub use auth::{AuthConfig, EnvSecretProvider};
+
+pub mod notification_sender;
+pub use notification_sender::HttpNotificationSender;
 
 // Re-export SDK types for convenience
 pub use github_bot_sdk::auth::{GitHubAppId, InstallationId as SdkInstallationId, PrivateKey};
@@ -1533,6 +1537,104 @@ impl GitHubOperations for GitHubClient {
         Ok(())
     }
 
+    #[instrument(skip(self, params))]
+    async fn create_issue(
+        &self,
+        owner: &str,
+        repo: &str,
+        params: CreateIssueParams,
+    ) -> CoreResult<Issue> {
+        if params.title.trim().is_empty() {
+            return Err(CoreError::invalid_input("title", "title must not be empty"));
+        }
+
+        info!(owner, repo, title = %params.title, "Creating issue");
+
+        let installation = self.installation().await?;
+        let path = format!("/repos/{owner}/{repo}/issues");
+        let body = serde_json::json!({
+            "title": params.title,
+            "body": params.body,
+            "labels": params.labels,
+            "assignees": params.assignees,
+        });
+
+        let response = installation
+            .post(&path, &body)
+            .await
+            .map_err(map_sdk_error)?;
+        let raw: serde_json::Value = response.json().await.map_err(CoreError::github)?;
+
+        json_to_issue(&raw)
+    }
+
+    #[instrument(skip(self))]
+    // The `json_to_issue` mapping closure returns `CoreResult<Issue>`, whose
+    // large `Err` variant trips `clippy::result_large_err`; allow it here per
+    // the crate-wide convention rather than boxing.
+    #[allow(clippy::result_large_err)]
+    async fn list_issues(
+        &self,
+        owner: &str,
+        repo: &str,
+        options: ListIssuesOptions,
+    ) -> CoreResult<Vec<Issue>> {
+        let state_str = match options.state {
+            IssueState::Open => "open",
+            IssueState::Closed => "closed",
+            IssueState::All => "all",
+        };
+
+        info!(owner, repo, state = state_str, "Listing issues");
+
+        let installation = self.installation().await?;
+
+        // Build the shared label query fragment once.
+        let labels_fragment = if options.labels.is_empty() {
+            String::new()
+        } else {
+            let labels_param = urlencoding_encode_query_value(&options.labels.join(","));
+            format!("&labels={labels_param}")
+        };
+
+        // Paginate with per_page=100 and accumulate across pages. The default
+        // page size is 30, so a single request would silently truncate large
+        // result sets — this breaks the notification idempotency check, which
+        // scans open-issue bodies for a hidden marker and would otherwise miss
+        // a marker beyond the first page and create a DUPLICATE issue.
+        let mut all_issues: Vec<Issue> = Vec::new();
+        let mut page: u32 = 1;
+
+        loop {
+            let path = format!(
+                "/repos/{owner}/{repo}/issues?state={state_str}{labels_fragment}&per_page=100&page={page}"
+            );
+
+            let response = installation.get(&path).await.map_err(map_sdk_error)?;
+            let raw: Vec<serde_json::Value> = response.json().await.map_err(CoreError::github)?;
+
+            let page_len = raw.len();
+
+            let page_issues = raw
+                .into_iter()
+                // GitHub's /issues endpoint also returns pull requests; PRs carry a
+                // "pull_request" key that plain issues never have.
+                .filter(|v| v.get("pull_request").is_none())
+                .map(|v| json_to_issue(&v))
+                .collect::<CoreResult<Vec<Issue>>>()?;
+
+            all_issues.extend(page_issues);
+
+            // A short page (fewer than the requested per_page) is the last page.
+            if page_len < 100 {
+                break;
+            }
+            page += 1;
+        }
+
+        Ok(all_issues)
+    }
+
     #[instrument(skip(self))]
     async fn get_installation_id_for_repo(&self, owner: &str, repo: &str) -> CoreResult<u64> {
         info!(owner, repo, "Looking up installation ID for repository");
@@ -1734,6 +1836,50 @@ struct ListPrBranchRepo {
 #[derive(serde::Deserialize)]
 struct ListPrUser {
     login: String,
+}
+
+/// Convert a raw GitHub issue API JSON object into the core [`Issue`] type.
+///
+/// Shared by [`GitHubClient::create_issue`] (single-object response) and
+/// [`GitHubClient::list_issues`] (array response, mapped element-wise).
+// `CoreError` is a large enum; returning it in the `Err` variant trips
+// `clippy::result_large_err`. This matches the crate-wide convention (see
+// `HttpNotificationSender::new`) of allowing it rather than boxing every
+// `CoreResult`.
+#[allow(clippy::result_large_err)]
+fn json_to_issue(v: &serde_json::Value) -> CoreResult<Issue> {
+    // `number` is correctness-critical: the idempotency path feeds it to
+    // `create_issue_comment`. A missing/non-integer `number` must be a hard
+    // error rather than silently defaulting to `#0` (which would comment on the
+    // wrong — or a non-existent — issue).
+    let number = v["number"].as_u64().ok_or_else(|| {
+        CoreError::invalid_input(
+            "number",
+            "GitHub issue response missing numeric `number` field",
+        )
+    })?;
+
+    let labels = v["labels"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|l| Label {
+            id: l["id"].as_u64().unwrap_or(0),
+            name: l["name"].as_str().unwrap_or("").to_string(),
+            color: l["color"].as_str().unwrap_or("").to_string(),
+            description: l["description"].as_str().map(str::to_string),
+        })
+        .collect();
+
+    Ok(Issue {
+        number,
+        title: v["title"].as_str().unwrap_or("").to_string(),
+        body: v["body"].as_str().map(str::to_string),
+        state: v["state"].as_str().unwrap_or("").to_string(),
+        labels,
+        html_url: v["html_url"].as_str().unwrap_or("").to_string(),
+    })
 }
 
 /// Percent-encode a file path for use in a GitHub Contents API URL.
@@ -2173,3 +2319,7 @@ mod release_tests;
 #[cfg(test)]
 #[path = "pr_management_tests.rs"]
 mod pr_management_tests;
+
+#[cfg(test)]
+#[path = "issue_management_tests.rs"]
+mod issue_management_tests;
