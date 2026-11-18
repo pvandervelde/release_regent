@@ -238,14 +238,10 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@92f69c195229fe62d58b4d697ab4bc75def98e76 # v2
         with:
-          tool: cargo-llvm-cov@0.6.15
+          tool: cargo-llvm-cov@0.9.1
 
-      # NOTE: intentionally no Swatinem/rust-cache here. A restored cache makes
-      # cargo treat dependency crates as already-built and skip recompiling them
-      # with coverage instrumentation, so the instrumented object files are
-      # missing at report time and `llvm-cov export` fails with
-      # "not found object files" / "No filenames specified!". A fresh,
-      # fully-instrumented build (as in a clean local run) avoids this.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
       - name: Generate code coverage
         run: cargo llvm-cov --all-features --workspace --codecov --output-path
           codecov.json
