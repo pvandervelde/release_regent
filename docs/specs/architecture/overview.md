@@ -394,7 +394,7 @@ sequenceDiagram
 #### Data Sharing
 
 **Configuration**: Shared configuration context across components
-**State**: Stateless design with all context passed explicitly
+**State**: Workflow context is passed explicitly; webhook queueing is process-local
 **Caching**: In-memory caching for GitHub tokens and repository metadata
 **Persistence**: No persistent storage required
 
@@ -411,7 +411,6 @@ graph TB
     subgraph "Container Platform (Kubernetes / ACA / ECS)"
         subgraph "Compute"
             C[rr-server container]
-            RS[Replica set / horizontal pod autoscaler]
         end
 
         subgraph "Security"
@@ -434,7 +433,6 @@ graph TB
     C --> KV
     C --> L
     C --> M
-    RS --> C
     ING --> C
     DNS --> ING
     IAM --> C
@@ -449,9 +447,11 @@ graph TB
 **Container image**: Built with a multi-stage Dockerfile; final image is a minimal
 `debian:bookworm-slim` or `distroless` image containing only the `rr-server` binary.
 
-**Scaling**: Horizontal pod / task scaling driven by CPU or request-rate metrics.
-A minimum of one replica is required; the application is stateless so any number of
-replicas can run behind a load balancer.
+**Scaling**: Run exactly one server instance. Webhook events are queued in process memory;
+there is no shared queue, datastore, or distributed lock to coordinate replicas. Running
+multiple instances can process events concurrently and create duplicate release PRs or branches,
+conflicting updates, or conflicting tags. Horizontal scaling is not safe until shared
+concurrency coordination is implemented.
 
 **Health probes**:
 

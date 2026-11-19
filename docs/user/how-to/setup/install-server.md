@@ -186,11 +186,16 @@ spec:
 Expose the service externally (for example via an ingress) so that GitHub can reach
 `/webhook`. Update the webhook URL in your GitHub App settings to match.
 
-!!! warning "Run only one replica"
-    Release Regent processes webhook events from a single in-memory channel. Running more than
-    one replica will cause duplicate release PRs. If you need high availability, use a load
-    balancer with sticky sessions or implement an external queue (see
-    [architecture](../../explanation/architecture.md)).
+!!! danger "Run exactly one server instance"
+    Run exactly one `rr-server` process for the entire deployment. This is a correctness
+    requirement, not a capacity choice: webhook events are queued only in process memory, and
+    there is no shared queue, datastore, or distributed lock to coordinate multiple instances.
+    If more than one instance receives events, they can process the same repository's events
+    concurrently and create duplicate release PRs or branches, overwrite conflicting updates,
+    or race while creating tags and releases. Do not increase the replica count or enable
+    autoscaling; a load balancer or sticky sessions do not make multiple instances safe.
+    High availability through multiple instances requires concurrency coordination that is
+    not currently implemented.
 
 ## Passing the private key securely
 
