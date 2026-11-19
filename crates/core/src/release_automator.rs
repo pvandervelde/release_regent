@@ -99,6 +99,16 @@ pub struct AutomatorConfig {
     /// Defaults to `false`.
     pub generate_release_notes: bool,
 
+    /// Whether the GitHub release should be created as a draft.
+    ///
+    /// When `true` the `draft` flag in the GitHub API request is set,
+    /// causing GitHub to create the release as a draft instead of
+    /// publishing it immediately. When `false` (the default) the release
+    /// is published right away.
+    ///
+    /// Defaults to `false`.
+    pub draft: bool,
+
     /// Retry policy applied to transient GitHub API failures encountered
     /// while automating a GitHub release.
     ///
@@ -113,6 +123,7 @@ impl Default for AutomatorConfig {
             changelog_header: "## Changelog".to_string(),
             version_prefix: "v".to_string(),
             generate_release_notes: false,
+            draft: false,
             error_handling: ErrorHandlingConfig::default(),
         }
     }
@@ -260,7 +271,7 @@ impl<'a, G: GitHubOperations + Send + Sync> ReleaseAutomator<'a, G> {
                         tag_name: tag_name.clone(),
                         name: Some(tag_name.clone()),
                         body: Some(changelog.clone()),
-                        draft: false,
+                        draft: self.config.draft,
                         prerelease: is_prerelease,
                         generate_release_notes: self.config.generate_release_notes,
                         target_commitish: Some(merge_sha.clone()),
