@@ -918,6 +918,10 @@ async fn test_automate_happy_path_creates_tag_release_and_deletes_branch() {
     assert_eq!(releases.len(), 1);
     assert_eq!(releases[0].tag_name, "v1.2.3");
     assert!(!releases[0].prerelease);
+    assert!(
+        !releases[0].draft,
+        "AutomatorConfig::default() must default draft to false"
+    );
 
     let branches = github.deleted_branches().await;
     assert_eq!(branches, vec!["release/v1.2.3"]);

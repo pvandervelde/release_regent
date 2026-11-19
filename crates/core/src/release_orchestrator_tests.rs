@@ -692,6 +692,10 @@ async fn test_orchestrate_no_existing_pr_creates_branch_and_pr() {
         .as_deref()
         .unwrap_or("")
         .contains("## Changelog"));
+    assert!(
+        !prs[0].draft,
+        "OrchestratorConfig::default() must default draft to false"
+    );
 
     // `create_release_branch_and_pr` uses `batch_commit_files_rebased` to avoid
     // the race where setting branch tip == base_sha first would auto-close the PR.
