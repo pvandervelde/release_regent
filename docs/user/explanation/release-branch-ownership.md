@@ -50,10 +50,20 @@ Regent will pick it up and update the release PR.
 
 ## Branch protection settings
 
-If your repository uses branch protection rules, you do not need to protect `release/v*`
-branches specifically — Release Regent manages their lifecycle automatically. However, if you
-have a rule that protects all branches (e.g., "require pull request before merging"), ensure
-that the GitHub App has the bypass permission, or that the `release/v*` branches are exempt.
+Release Regent does not need write access to the default branch. It updates its release PR by
+writing to `release/v*` branches; it does not merge PRs or write to the default branch.
+
+If your repository protects all branches, prefer exempting `release/v*` from the broad rule
+and protecting those branches with a separate ruleset. Target the `release/v*` pattern, enable
+the creation and update restrictions, and add only the Release Regent GitHub App identity to
+that ruleset's bypass list. This lets the App manage release branches without granting it
+authority over the default branch.
+
+Granting the App bypass permission on a rule that covers all branches should be a last resort.
+GitHub applies that bypass to every branch in the rule's scope; it cannot be limited to a
+branch pattern within that rule. The App could therefore push directly to the default branch
+and bypass review in every repository where that broad grant applies, an authority Release
+Regent does not need.
 
 ## What happens to the branch after the release
 
