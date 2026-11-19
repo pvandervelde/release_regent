@@ -24,7 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
       - name: Relative diff
@@ -32,7 +32,7 @@ jobs:
           git branch -av
           git diff origin/${{ github.base_ref }}.. | tee git.diff
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-      - uses: taiki-e/install-action@92f69c195229fe62d58b4d697ab4bc75def98e76 # v2
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2
         name: Install cargo-mutants using install-action
         with:
           tool: cargo-mutants
@@ -40,7 +40,7 @@ jobs:
         run: |
           cargo mutants --no-shuffle -vV --in-diff git.diff
       - name: Archive mutants.out
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: always()
         with:
           name: mutants-incremental.out
