@@ -18,14 +18,13 @@ read this page.
 - A GitHub organisation (or personal account) with at least one repository already using
   Release Regent.
 - Admin access to the organisation to install GitHub Apps.
-- The Release Regent GitHub App installed at the organisation level (see
-  [Set up the GitHub App](github-app-setup.md)).
+- The Release Regent GitHub App installed with access to the repositories you want to manage
+  and the metadata repository (see [Set up the GitHub App](github-app-setup.md)).
 
-!!! important "Organisation-level App installation required"
-    The GitHub App must be installed at the **organisation level** — not scoped to individual
-    repositories. A repository-scoped installation cannot read the metadata repository from
-    the context of other repositories' events and will cause `403` errors when fetching policy
-    files.
+!!! important "Metadata repository access required"
+    The App installation used to read policy files must include the `.release-regent`
+    repository. An installation that excludes it cannot fetch the policy files; those
+    requests can return `403`, and global and group policy will not be loaded.
 
 ---
 
@@ -41,16 +40,17 @@ Create a new GitHub repository named exactly `.release-regent` in your organisat
 
 ---
 
-## Step 2 — Install the GitHub App on the metadata repository
+## Step 2 — Include the metadata repository in the App installation
 
 1. Go to **GitHub → Settings → Installations → \<your app\> → Configure**.
-2. Under **Repository access**, ensure **All repositories** is selected.
+2. Under **Repository access**, select **Only select repositories** and include
+   `.release-regent` alongside the target repositories managed by this installation.
 3. Click **Save**.
 
-!!! warning "Do not use a repository-scoped installation"
-    Do not restrict the installation to only the `.release-regent` repository. Release Regent
-    uses the metadata-repo installation to fetch dotfiles from *other* repositories in the
-    org. A repository-scoped installation will return `403` for those fetches.
+!!! tip "Choose the narrowest access you need"
+    A selected-repositories installation that includes `.release-regent` and the target
+    repositories is recommended. Selecting **All repositories** also works, but is not
+    required.
 
 Release Regent discovers the App installation automatically when it processes the first event
 for a repository in your organisation.
@@ -145,8 +145,8 @@ INFO  release_regent::config: loaded global policy from myorg/.release-regent/gl
 INFO  release_regent::config: loaded group policy from myorg/.release-regent/groups/backend.toml
 ```
 
-If the metadata repository is unreachable or the App is not installed correctly, you will see
-a `WARN` entry and the global and group levels will be skipped.
+If the metadata repository is unreachable or is not included in an App installation that can
+read it, you will see a `WARN` entry and the global and group levels will be skipped.
 
 ---
 

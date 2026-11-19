@@ -94,9 +94,11 @@ Release Regent uses the GitHub App installation API to discover whether the App 
 on `{org}/.release-regent`. The installation ID is cached permanently for the lifetime of the
 process (installation IDs are stable for the lifetime of a GitHub App installation).
 
-The GitHub App must be installed **at the organisation level** (not scoped to individual
-repositories) so that the installation can read any repository within the org. If the
-installation is repository-scoped, policy file fetches will fail with `403`.
+The App installation used to read policy files must include `{org}/.release-regent`.
+A selected-repositories installation that includes the metadata repository can read the
+policy files; it does not need access to every repository in the organisation. If the
+metadata repository is excluded from the installation, policy-file fetches can fail with
+`403`.
 
 ### Fallback when the metadata repository is absent
 
