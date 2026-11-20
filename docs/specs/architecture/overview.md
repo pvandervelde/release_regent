@@ -597,7 +597,13 @@ graph LR
 
 ## Scalability Architecture
 
-### Horizontal Scaling
+### Future Horizontal Scaling
+
+> **Not supported by the current deployment.** The current `rr-server` container must run as exactly
+> one instance. The architecture below describes a future design that requires shared
+> per-repository concurrency coordination and distributed locking or queueing.
+> See [ADR-002](../../adr/ADR-002-long-running-server-deployment-model.md) and
+> [issue #267](https://github.com/pvandervelde/release_regent/issues/267).
 
 ```mermaid
 graph TB
@@ -630,7 +636,7 @@ graph TB
     AS --> CONN
 ```
 
-### Scaling Strategies
+### Future Scaling Strategies
 
 #### Function Scaling
 

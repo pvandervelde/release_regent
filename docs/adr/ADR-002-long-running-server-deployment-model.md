@@ -52,6 +52,9 @@ decision.
 - Always-on compute costs are higher at very low traffic volumes compared to a per-invocation
   billing model.
 
+Shared concurrency coordination for safe multi-instance deployments is tracked in
+[issue #267](https://github.com/pvandervelde/release_regent/issues/267).
+
 ## Alternatives considered
 
 ### Option A: Serverless functions runtime (original spec)

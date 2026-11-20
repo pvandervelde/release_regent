@@ -131,6 +131,8 @@ metadata:
     app: release-regent
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: release-regent
@@ -195,7 +197,9 @@ Expose the service externally (for example via an ingress) so that GitHub can re
     or race while creating tags and releases. Do not increase the replica count or enable
     autoscaling; a load balancer or sticky sessions do not make multiple instances safe.
     High availability through multiple instances requires concurrency coordination that is
-    not currently implemented.
+    not currently implemented. The Kubernetes example uses `strategy: type: Recreate` so an old
+    pod is fully stopped before a replacement pod starts. See [ADR-002](../../../adr/ADR-002-long-running-server-deployment-model.md)
+    for the deployment decision and concurrency constraint.
 
 ## Passing the private key securely
 
