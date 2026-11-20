@@ -23,8 +23,10 @@ read this page.
 
 !!! important "Metadata repository access required"
     The App installation used to read policy files must include the `.release-regent`
-    repository. An installation that excludes it cannot fetch the policy files; those
-    requests can return `403`, and global and group policy will not be loaded.
+    repository and the target repositories it manages. Release Regent uses this installation
+    to read target-repository dotfiles as well as policy files. If either the metadata
+    repository or a target repository is excluded, requests can return `403`; global and
+    group policy may not load, or the target repository's dotfile may not be read.
 
 ---
 
@@ -50,7 +52,7 @@ Create a new GitHub repository named exactly `.release-regent` in your organisat
 !!! tip "Choose the narrowest access you need"
     A selected-repositories installation that includes `.release-regent` and the target
     repositories is recommended. Selecting **All repositories** also works, but is not
-    required.
+    required. Add new target repositories to the selection when you start managing them.
 
 Release Regent discovers the App installation automatically when it processes the first event
 for a repository in your organisation.

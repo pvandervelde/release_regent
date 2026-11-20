@@ -50,8 +50,9 @@ GitHub organisation and add a `global.toml` file. Release Regent auto-discovers 
 repository and merges its settings over the app-level config for every event in the org.
 
 The App installation used to read policy files must include `.release-regent`. If you select
-specific repositories, include it alongside the target repositories; access to all
-repositories is not required.
+specific repositories, include it alongside the target repositories. Release Regent uses
+this installation to read those repositories' dotfiles too, so add new target repositories
+to the selection as you start managing them. Access to all repositories is not required.
 
 You can also apply per-group defaults by adding files under `groups/` and having repositories
 declare `group = "name"` in their dotfiles.

@@ -807,12 +807,14 @@ relevant cache entry immediately.
 > arrays and YAML-first ordering were removed when YAML support was dropped.
 
 > **Metadata installation scope**: The `meta` client is scoped to the metadata repo
-> installation (`meta_id` from `resolve_metadata_installation`). This installation must
-> be an **org-level** GitHub App installation with access to all repositories in `{owner}`
-> — not one scoped only to `.release-regent`. If the installation is repo-scoped, the
-> `fetch_repo_dotfile` call using `&meta` will return `Err(403)`. The `None` branch
-> (no metadata repo) correctly uses `self.github.scoped_to(installation_id)` which is
-> the per-event repo installation and always has access to the target repository.
+> installation (`meta_id` from `resolve_metadata_installation`). That installation must
+> include `.release-regent` and every target repository whose dotfile Release Regent reads
+> with that client. An installation limited to `.release-regent` will return `Err(403)` when
+> `fetch_repo_dotfile` tries to read a target repository it does not include. Selecting
+> those repositories is sufficient; access to all repositories in `{owner}` is not required.
+> The `None` branch (no metadata repo) correctly uses
+> `self.github.scoped_to(installation_id)`, the per-event repo installation, to read the
+> target repository.
 
 ---
 

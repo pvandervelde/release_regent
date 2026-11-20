@@ -58,8 +58,8 @@ After creating the app, you land on its settings page.
 2. Click **Install** next to your account or organisation.
 3. Choose which repositories the app can access:
    - **All repositories** — easier, but grants access to every current and future repository
-   - **Only select repositories** — recommended; choose the specific repositories you want
-     Release Regent to manage
+   - **Only select repositories** — recommended; choose the repositories you want Release
+     Regent to manage, and include `.release-regent` if you use organisation-wide policy
 4. Click **Install**.
 
 ## Step 4: Configure the server
