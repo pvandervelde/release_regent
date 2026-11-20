@@ -396,7 +396,8 @@ sequenceDiagram
 **Configuration**: Shared configuration context across components
 **State**: Workflow context is passed explicitly; webhook queueing is process-local
 **Caching**: In-memory caching for GitHub tokens and repository metadata
-**Persistence**: No persistent storage required
+**Persistence**: No persistent storage required. The process-local webhook queue also requires
+running exactly one server instance; persistence is not an inter-process coordination mechanism.
 
 ## Deployment Architecture
 

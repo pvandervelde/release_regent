@@ -151,7 +151,7 @@ and concurrency are process-local
 - Platform-native queue depth monitoring
 - Automatic overflow handling and back-pressure
 
-### S-3: Growth Capacity
+### S-3: Future Growth Capacity (Serverless)
 
 **Serverless Auto-Scaling**: Platform-managed scaling based on event volume
 

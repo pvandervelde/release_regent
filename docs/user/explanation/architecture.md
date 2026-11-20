@@ -117,6 +117,6 @@ it requires a different build target and deployment pipeline. The core logic is 
 
 ## Related reading
 
-- [ADR-001: Hexagonal architecture](https://github.com/pvandervelde/release_regent/blob/main/docs/adr/ADR-001-hexagonal-architecture.md)
-- [ADR-002: Long-running server deployment model](https://github.com/pvandervelde/release_regent/blob/main/docs/adr/ADR-002-long-running-server-deployment-model.md)
+- [ADR-001: Hexagonal architecture](https://github.com/pvandervelde/release_regent/blob/master/docs/adr/ADR-001-hexagonal-architecture.md)
+- [ADR-002: Long-running server deployment model](https://github.com/pvandervelde/release_regent/blob/master/docs/adr/ADR-002-long-running-server-deployment-model.md)
 - [Deploy the server](../how-to/setup/install-server.md)

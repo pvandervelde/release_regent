@@ -4,6 +4,11 @@ Status: Accepted
 Date: 2026-03-13
 Owners: ReleaseRegent team
 
+**Amendment 2026-11-20:** The container deployment requires exactly one `rr-server` instance.
+Webhook events are currently coordinated only by a process-local queue, so replica scaling,
+autoscaling, and rolling updates that overlap instances are unsupported. Issue #267 tracks the
+shared concurrency coordination required before multi-instance deployment becomes safe.
+
 ## Context
 
 The architecture spec (`docs/specs/architecture/overview.md`) described a serverless,
