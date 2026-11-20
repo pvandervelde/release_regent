@@ -198,7 +198,7 @@ Expose the service externally (for example via an ingress) so that GitHub can re
     autoscaling; a load balancer or sticky sessions do not make multiple instances safe.
     High availability through multiple instances requires concurrency coordination that is
     not currently implemented. The Kubernetes example uses `strategy: type: Recreate` so an old
-    pod is fully stopped before a replacement pod starts. See [ADR-002](../../../adr/ADR-002-long-running-server-deployment-model.md)
+    pod is fully stopped before a replacement pod starts. See [ADR-002](https://github.com/pvandervelde/release_regent/blob/main/docs/adr/ADR-002-long-running-server-deployment-model.md)
     for the deployment decision and concurrency constraint.
 
 ## Passing the private key securely
