@@ -9,13 +9,14 @@ PR comment commands let authorised team members override Release Regent's automa
 calculation by posting a specially formatted comment on a pull request. No configuration file
 edits or Git operations are required.
 
-## Enabling commands
+## Disabling commands
 
-Commands are disabled unless `allow_override = true` is set in `.release-regent.toml`:
+Commands are enabled by default. To disable them, set `allow_override = false` in
+`.release-regent.toml`:
 
 ```toml
 [versioning]
-allow_override = true
+allow_override = false
 ```
 
 ## Permissions

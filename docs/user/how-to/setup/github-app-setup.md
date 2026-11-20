@@ -36,13 +36,11 @@ For background on why Release Regent uses a GitHub App rather than a personal ac
 
 4. Under **Subscribe to events**, tick:
    - ✅ Pull request — required for release automation
-   - ✅ Issue comment — also required if you enable the optional PR comment commands
-     with `versioning.allow_override = true`
-   - ✅ Pull request review comment — also required if you enable the optional PR comment
-     commands with `versioning.allow_override = true`
+   - ✅ Issue comment — required for PR comment commands
+   - ✅ Pull request review comment — required for PR review comment commands
 
-   If you do not enable `versioning.allow_override`, **Pull request** is the minimum required
-   event.
+   PR comment commands are enabled by default. You can subscribe to only **Pull request** if
+   you disable them by setting `versioning.allow_override = false` in `.release-regent.toml`.
 
 5. Under **Where can this GitHub App be installed?**, choose:
    - **Only on this account** — if the app is for your personal or a single organisation
