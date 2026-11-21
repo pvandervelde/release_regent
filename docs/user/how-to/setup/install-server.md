@@ -199,8 +199,8 @@ Expose the service externally (for example via an ingress) so that GitHub can re
     High availability through multiple instances requires concurrency coordination that is
     not currently implemented. The Kubernetes example uses `strategy: type: Recreate` so an old
     pod is fully stopped before a replacement pod starts. For Azure Container Apps, use revision
-    mode `Single`; for ECS, set deployment limits to `minimumHealthyPercent: 100` and
-    `maximumPercent: 100`. See [ADR-002](https://github.com/pvandervelde/release_regent/blob/master/docs/adr/ADR-002-long-running-server-deployment-model.md)
+    mode `Single`; for ECS, set deployment limits to `minimumHealthyPercent: 0` and
+    `maximumPercent: 100` so the old task stops before the replacement task starts. See [ADR-002](https://github.com/pvandervelde/release_regent/blob/master/docs/adr/ADR-002-long-running-server-deployment-model.md)
     for the deployment decision and concurrency constraint.
 
 ## Passing the private key securely
