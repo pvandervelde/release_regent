@@ -4039,7 +4039,7 @@ async fn test_processing_error_dispatch_summary_is_stable_across_events() {
 // ─────────────────────────────────────────────────────────────────────────────
 // `lib.rs` config-threading regression tests
 //
-// These prove the Section-??? wiring that reads `repo_config.releases.draft`
+// These prove the `lib.rs` wiring that reads `repo_config.releases.draft`
 // and `repo_config.release_pr.draft` and threads them into the
 // `release_automator::AutomatorConfig` / `release_orchestrator::OrchestratorConfig`
 // construction sites in `lib.rs`.  Unlike the automator/orchestrator unit
@@ -4152,5 +4152,73 @@ async fn test_handle_merged_pull_request_threads_release_pr_draft_config_into_pr
         vec![true],
         "release_pr.draft = true in the merged config must thread through to \
          the created release PR"
+    );
+}
+
+/// `repo_config.releases.draft` must reach the `Release` created by the
+/// release automator when a release PR merge arrives as a `PullRequestMerged`
+/// event whose head branch matches the release prefix — the second, distinct
+/// `AutomatorConfig` construction site in `lib.rs` (inside
+/// `process_release_pr_merged`), not the one covered by
+/// `test_handle_release_pr_merged_threads_releases_draft_config_into_release`
+/// (which only exercises the dedicated `ReleasePrMerged` event type).
+///
+/// If the `draft: repo_config.releases.draft,` line in `process_release_pr_merged`
+/// were dropped, this test would fail.
+#[tokio::test]
+async fn test_merged_release_pr_via_pull_request_merged_threads_releases_draft_config() {
+    let github = TestGitHubForLib::new_empty();
+    let config = TestConfigWith::new(config_with_releases_draft(true));
+    let version_calc = TestVersionCalcForLib::returning("1.0.0");
+
+    let processor = ReleaseRegentProcessor::new(
+        github.clone(),
+        config,
+        version_calc,
+        SpyNotificationSender::new(),
+    );
+
+    let event = ProcessingEvent {
+        event_id: "evt-release-pr-via-merge".into(),
+        correlation_id: "corr-release-pr-via-merge".into(),
+        event_type: EventType::PullRequestMerged,
+        repository: test_repo(),
+        payload: serde_json::json!({
+            "pull_request": {
+                "head": { "ref": "release/v1.0.0" },
+                "base": { "ref": "main" },
+                "number": 51,
+                "merge_commit_sha": "f".repeat(40)
+            }
+        }),
+        received_at: Utc::now(),
+        source: EventSourceKind::Webhook,
+        installation_id: 0,
+    };
+
+    let result = processor
+        .handle_merged_pull_request(&event)
+        .await
+        .expect("release automation via PullRequestMerged routing should succeed");
+    assert!(
+        matches!(
+            result,
+            release_orchestrator::OrchestratorResult::TaggedRelease
+        ),
+        "expected TaggedRelease (automator path), got: {result:?}"
+    );
+
+    let releases = github.created_releases().await;
+    assert_eq!(
+        releases.len(),
+        1,
+        "exactly one release should have been created"
+    );
+    assert!(
+        releases[0].draft,
+        "releases.draft = true in the merged config must thread through to \
+         the created Release even when the release PR merge arrives as a \
+         PullRequestMerged event; got draft = {}",
+        releases[0].draft
     );
 }
