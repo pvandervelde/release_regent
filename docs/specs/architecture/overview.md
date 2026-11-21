@@ -394,9 +394,10 @@ sequenceDiagram
 #### Data Sharing
 
 **Configuration**: Shared configuration context across components
-**State**: Stateless design with all context passed explicitly
+**State**: Workflow context is passed explicitly; webhook queueing is process-local
 **Caching**: In-memory caching for GitHub tokens and repository metadata
-**Persistence**: No persistent storage required
+**Persistence**: No persistent storage required. The process-local webhook queue also requires
+running exactly one server instance; persistence is not an inter-process coordination mechanism.
 
 ## Deployment Architecture
 
@@ -411,7 +412,6 @@ graph TB
     subgraph "Container Platform (Kubernetes / ACA / ECS)"
         subgraph "Compute"
             C[rr-server container]
-            RS[Replica set / horizontal pod autoscaler]
         end
 
         subgraph "Security"
@@ -434,7 +434,6 @@ graph TB
     C --> KV
     C --> L
     C --> M
-    RS --> C
     ING --> C
     DNS --> ING
     IAM --> C
@@ -449,9 +448,11 @@ graph TB
 **Container image**: Built with a multi-stage Dockerfile; final image is a minimal
 `debian:bookworm-slim` or `distroless` image containing only the `rr-server` binary.
 
-**Scaling**: Horizontal pod / task scaling driven by CPU or request-rate metrics.
-A minimum of one replica is required; the application is stateless so any number of
-replicas can run behind a load balancer.
+**Scaling**: Run exactly one server instance. Webhook events are queued in process memory;
+there is no shared queue, datastore, or distributed lock to coordinate replicas. Running
+multiple instances can process events concurrently and create duplicate release PRs or branches,
+conflicting updates, or conflicting tags. Horizontal scaling is not safe until shared
+concurrency coordination is implemented.
 
 **Health probes**:
 
@@ -597,7 +598,13 @@ graph LR
 
 ## Scalability Architecture
 
-### Horizontal Scaling
+### Future Horizontal Scaling
+
+> **Not supported by the current deployment.** The current `rr-server` container must run as exactly
+> one instance. The architecture below describes a future design that requires shared
+> per-repository concurrency coordination and distributed locking or queueing.
+> See [ADR-002](../../adr/ADR-002-long-running-server-deployment-model.md) and
+> [issue #267](https://github.com/pvandervelde/release_regent/issues/267).
 
 ```mermaid
 graph TB
@@ -630,7 +637,7 @@ graph TB
     AS --> CONN
 ```
 
-### Scaling Strategies
+### Future Scaling Strategies
 
 #### Function Scaling
 

@@ -4,6 +4,11 @@ Status: Accepted
 Date: 2026-03-13
 Owners: ReleaseRegent team
 
+**Amendment 2026-11-20:** The container deployment requires exactly one `rr-server` instance.
+Webhook events are currently coordinated only by a process-local queue, so replica scaling,
+autoscaling, and rolling updates that overlap instances are unsupported. Issue #267 tracks the
+shared concurrency coordination required before multi-instance deployment becomes safe.
+
 ## Context
 
 The architecture spec (`docs/specs/architecture/overview.md`) described a serverless,
@@ -32,20 +37,28 @@ decision.
 - Consistent deployment in any OCI-compatible environment (Kubernetes, ACA, ECS, Docker Compose).
 - `cargo run` and `docker run` local development with no extra tooling.
 - Full control over process lifecycle, connection pooling, and in-memory state.
-- Straightforward horizontal scaling via container replicas with a load balancer in front.
 - Predictable latency — no cold-start penalty.
 
 **Forbids:**
 
 - Deploying directly to a managed serverless runtime (Azure Functions, AWS Lambda) without an
   HTTP reverse-proxy shim; that deployment path is no longer a supported target.
+- Running multiple `rr-server` instances: webhook processing uses an in-memory queue with no
+  shared coordination, so concurrent instances can create duplicate or conflicting release
+  artifacts. Exactly one instance is required for correctness until concurrency coordination is
+  implemented.
 
 **Trade-offs:**
 
 - Operators must provision and manage container infrastructure (orchestrator, image registry,
   ingress). There is no auto-scale-to-zero.
+- The server must run as a single instance, so replica-based high availability and autoscaling
+  are not supported.
 - Always-on compute costs are higher at very low traffic volumes compared to a per-invocation
   billing model.
+
+Shared concurrency coordination for safe multi-instance deployments is tracked in
+[issue #267](https://github.com/pvandervelde/release_regent/issues/267).
 
 ## Alternatives considered
 

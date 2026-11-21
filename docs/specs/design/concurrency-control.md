@@ -1,7 +1,13 @@
 # Concurrency Control Design
 
 **Last Updated**: 2025-07-19
-**Status**: Updated for Serverless Architecture
+**Status**: Future serverless and distributed-concurrency design
+
+> **Current deployment constraint:** Release Regent's shipped container deployment must run as
+> exactly one `rr-server` instance. The mechanisms in this document are design targets for future
+> serverless or multi-instance deployments, not a description of currently implemented locking.
+> The current process-local queue provides ordering only within that process.
+> See [ADR-002](../../adr/ADR-002-long-running-server-deployment-model.md).
 
 ## Overview
 
@@ -285,7 +291,8 @@ graph LR
 
 - **Per-repository ordering**: FIFO queues ensure sequential processing per repository
 - **Reliability**: Built-in retry mechanisms and dead letter queues
-- **Scalability**: Automatic scaling based on queue depth
+- **Future scalability**: Automatic scaling based on queue depth after shared concurrency
+  coordination is implemented
 - **Observability**: Cloud-native monitoring and alerting
 
 **Trade-offs**:

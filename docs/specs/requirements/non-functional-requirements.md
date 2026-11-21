@@ -3,6 +3,10 @@
 **Last Updated**: 2025-07-19
 **Status**: Complete
 
+> **Current deployment scope:** The shipped container deployment must run one `rr-server`
+> instance. Serverless and multi-instance scaling targets in this document are future requirements
+> and do not describe supported current behavior.
+
 ## Performance Requirements
 
 ### P-1: Response Time
@@ -32,7 +36,8 @@
 
 **Scaling Strategy**:
 
-- Auto-scaling based on queue depth
+- The current deployment must remain at one replica; auto-scaling is not supported
+- Future auto-scaling based on queue depth requires shared per-repository concurrency coordination
 - Sequential processing per repository to avoid conflicts
 - Parallel processing across different repositories
 - Circuit breaker to prevent cascade failures
@@ -49,7 +54,9 @@
 
 **CPU**: <1 vCPU-second per webhook processing
 
-**Storage**: Stateless operation, no persistent storage requirements
+**Storage**: Stateless operation, no persistent storage requirements; the current container
+deployment is additionally restricted to exactly one `rr-server` instance because webhook ordering
+and concurrency are process-local
 
 **Network**: <10KB payload size for typical operations
 
@@ -144,7 +151,7 @@
 - Platform-native queue depth monitoring
 - Automatic overflow handling and back-pressure
 
-### S-3: Growth Capacity
+### S-3: Future Growth Capacity (Serverless)
 
 **Serverless Auto-Scaling**: Platform-managed scaling based on event volume
 
