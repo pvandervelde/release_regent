@@ -642,6 +642,12 @@ struct TestGitHubForLib {
     /// Labels keyed by PR / issue number (drives `list_pr_labels`).
     pr_labels: HashMap<u64, Vec<Label>>,
     created_prs: Arc<Mutex<Vec<(String, String, String)>>>, // (branch, title, body)
+    /// Records the `draft` flag passed to `create_pull_request` for every
+    /// call, in order.  Kept separate from `created_prs` so that tuple's
+    /// shape (destructured by many existing tests) never has to change.
+    created_pr_drafts: Arc<Mutex<Vec<bool>>>,
+    /// Records every `Release` produced by `create_release`, in order.
+    created_releases: Arc<Mutex<Vec<Release>>>,
     create_branch_calls: Arc<Mutex<Vec<String>>>,
     /// Records every `(issue_number, label_name)` passed to `remove_label`.
     removed_labels: Arc<Mutex<Vec<(u64, String)>>>,
@@ -673,6 +679,8 @@ impl TestGitHubForLib {
             search_results: vec![],
             pr_labels: HashMap::new(),
             created_prs: Arc::new(Mutex::new(vec![])),
+            created_pr_drafts: Arc::new(Mutex::new(vec![])),
+            created_releases: Arc::new(Mutex::new(vec![])),
             create_branch_calls: Arc::new(Mutex::new(vec![])),
             removed_labels: Arc::new(Mutex::new(vec![])),
             issue_comments: Arc::new(Mutex::new(vec![])),
@@ -740,6 +748,16 @@ impl TestGitHubForLib {
     fn with_fail_list_labels_for_pr(mut self, pr_number: u64) -> Self {
         self.fail_list_labels_for_pr = Some(pr_number);
         self
+    }
+
+    /// Every `draft` flag passed to `create_pull_request`, in call order.
+    async fn created_pr_drafts(&self) -> Vec<bool> {
+        self.created_pr_drafts.lock().await.clone()
+    }
+
+    /// Every `Release` produced by `create_release`, in call order.
+    async fn created_releases(&self) -> Vec<Release> {
+        self.created_releases.lock().await.clone()
     }
 }
 
@@ -809,6 +827,7 @@ impl GitHubOperations for TestGitHubForLib {
         params: CreatePullRequestParams,
     ) -> CoreResult<PullRequest> {
         let pr = make_pr(42, &params.head, &params.title);
+        self.created_pr_drafts.lock().await.push(params.draft);
         self.created_prs.lock().await.push((
             params.head,
             params.title,
@@ -823,7 +842,7 @@ impl GitHubOperations for TestGitHubForLib {
         _repo: &str,
         params: CreateReleaseParams,
     ) -> CoreResult<Release> {
-        Ok(Release {
+        let release = Release {
             id: 1,
             tag_name: params.tag_name,
             target_commitish: params
@@ -840,7 +859,9 @@ impl GitHubOperations for TestGitHubForLib {
                 email: "release-regent@users.noreply.github.com".to_string(),
                 login: Some("release-regent[bot]".to_string()),
             },
-        })
+        };
+        self.created_releases.lock().await.push(release.clone());
+        Ok(release)
     }
 
     async fn create_tag(
@@ -1163,6 +1184,8 @@ impl GitHubOperations for TestGitHubForLib {
             search_results: self.search_results.clone(),
             pr_labels: self.pr_labels.clone(),
             created_prs: Arc::clone(&self.created_prs),
+            created_pr_drafts: Arc::clone(&self.created_pr_drafts),
+            created_releases: Arc::clone(&self.created_releases),
             create_branch_calls: Arc::clone(&self.create_branch_calls),
             removed_labels: Arc::clone(&self.removed_labels),
             issue_comments: Arc::clone(&self.issue_comments),
@@ -4010,5 +4033,192 @@ async fn test_processing_error_dispatch_summary_is_stable_across_events() {
     assert_eq!(
         first, second,
         "the summary must not vary with event-specific data (marker stability)"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// `lib.rs` config-threading regression tests
+//
+// These prove the `lib.rs` wiring that reads `repo_config.releases.draft`
+// and `repo_config.release_pr.draft` and threads them into the
+// `release_automator::AutomatorConfig` / `release_orchestrator::OrchestratorConfig`
+// construction sites in `lib.rs`.  Unlike the automator/orchestrator unit
+// tests (which only prove those config structs honour their own `draft`
+// field), these tests drive the real `ReleaseRegentProcessor` handler entry
+// points end-to-end so that a regression which silently drops one of the
+// `draft: repo_config.*.draft,` lines in `lib.rs` is caught here.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Build a `ReleaseRegentConfig` whose `releases.draft` is `draft` and all
+/// other sections are defaults.
+fn config_with_releases_draft(draft: bool) -> config::ReleaseRegentConfig {
+    config::ReleaseRegentConfig {
+        releases: config::ReleasesConfig {
+            draft,
+            ..config::ReleasesConfig::default()
+        },
+        ..config::ReleaseRegentConfig::default()
+    }
+}
+
+/// Build a `ReleaseRegentConfig` whose `release_pr.draft` is `draft` and all
+/// other sections are defaults.
+fn config_with_release_pr_draft(draft: bool) -> config::ReleaseRegentConfig {
+    config::ReleaseRegentConfig {
+        release_pr: config::ReleasePrConfig {
+            draft,
+            ..config::ReleasePrConfig::default()
+        },
+        ..config::ReleaseRegentConfig::default()
+    }
+}
+
+/// `repo_config.releases.draft` must reach the `Release` created by the
+/// release automator when a `ReleasePrMerged` event is handled.
+///
+/// This exercises the `lib.rs` wiring at `handle_release_pr_merged`, which
+/// builds `release_automator::AutomatorConfig { draft: repo_config.releases.draft, .. }`.
+/// If that line were dropped (or always set to `false`/`true`), this test
+/// would fail.
+#[tokio::test]
+async fn test_handle_release_pr_merged_threads_releases_draft_config_into_release() {
+    let github = TestGitHubForLib::new_empty();
+    let config = TestConfigWith::new(config_with_releases_draft(true));
+    let version_calc = TestVersionCalcForLib::returning("1.2.0");
+    let spy = SpyNotificationSender::new();
+
+    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc, spy);
+
+    let event = release_pr_merged_event();
+
+    MergedPullRequestHandler::handle_release_pr_merged(&processor, &event)
+        .await
+        .expect("release automation should succeed");
+
+    let releases = github.created_releases().await;
+    assert_eq!(
+        releases.len(),
+        1,
+        "exactly one release should have been created"
+    );
+    assert!(
+        releases[0].draft,
+        "releases.draft = true in the merged config must thread through to \
+         the created Release; got draft = {}",
+        releases[0].draft
+    );
+}
+
+/// `repo_config.release_pr.draft` must reach the `CreatePullRequestParams`
+/// used by the orchestrator when a feature `PullRequestMerged` event with no
+/// existing open release PR is handled.
+///
+/// This exercises the `lib.rs` wiring inside
+/// `ReleaseRegentProcessor::handle_merged_pull_request`, which builds
+/// `release_orchestrator::OrchestratorConfig { draft: repo_config.release_pr.draft, .. }`.
+/// If that line were dropped (or always set to `false`/`true`), this test
+/// would fail.
+#[tokio::test]
+async fn test_handle_merged_pull_request_threads_release_pr_draft_config_into_pr() {
+    let github = TestGitHubForLib::new_empty();
+    let config = TestConfigWith::new(config_with_release_pr_draft(true));
+    let version_calc = TestVersionCalcForLib::returning("0.2.0");
+    let spy = SpyNotificationSender::new();
+
+    let processor = ReleaseRegentProcessor::new(github.clone(), config, version_calc, spy);
+
+    let event = ProcessingEvent {
+        event_id: "evt-release-pr-draft".into(),
+        correlation_id: "corr-release-pr-draft".into(),
+        event_type: EventType::PullRequestMerged,
+        repository: test_repo(),
+        payload: serde_json::json!({
+            "pull_request": {
+                "base": { "ref": "main" },
+                "merge_commit_sha": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+            }
+        }),
+        received_at: Utc::now(),
+        source: EventSourceKind::Webhook,
+        installation_id: 0,
+    };
+
+    MergedPullRequestHandler::handle_merged_pull_request(&processor, &event)
+        .await
+        .expect("handle_merged_pull_request should succeed");
+
+    assert_eq!(
+        github.created_pr_drafts().await,
+        vec![true],
+        "release_pr.draft = true in the merged config must thread through to \
+         the created release PR"
+    );
+}
+
+/// `repo_config.releases.draft` must reach the `Release` created by the
+/// release automator when a release PR merge arrives as a `PullRequestMerged`
+/// event whose head branch matches the release prefix — the second, distinct
+/// `AutomatorConfig` construction site in `lib.rs` (inside
+/// `process_release_pr_merged`), not the one covered by
+/// `test_handle_release_pr_merged_threads_releases_draft_config_into_release`
+/// (which only exercises the dedicated `ReleasePrMerged` event type).
+///
+/// If the `draft: repo_config.releases.draft,` line in `process_release_pr_merged`
+/// were dropped, this test would fail.
+#[tokio::test]
+async fn test_merged_release_pr_via_pull_request_merged_threads_releases_draft_config() {
+    let github = TestGitHubForLib::new_empty();
+    let config = TestConfigWith::new(config_with_releases_draft(true));
+    let version_calc = TestVersionCalcForLib::returning("1.0.0");
+
+    let processor = ReleaseRegentProcessor::new(
+        github.clone(),
+        config,
+        version_calc,
+        SpyNotificationSender::new(),
+    );
+
+    let event = ProcessingEvent {
+        event_id: "evt-release-pr-via-merge".into(),
+        correlation_id: "corr-release-pr-via-merge".into(),
+        event_type: EventType::PullRequestMerged,
+        repository: test_repo(),
+        payload: serde_json::json!({
+            "pull_request": {
+                "head": { "ref": "release/v1.0.0" },
+                "base": { "ref": "main" },
+                "number": 51,
+                "merge_commit_sha": "f".repeat(40)
+            }
+        }),
+        received_at: Utc::now(),
+        source: EventSourceKind::Webhook,
+        installation_id: 0,
+    };
+
+    let result = processor
+        .handle_merged_pull_request(&event)
+        .await
+        .expect("release automation via PullRequestMerged routing should succeed");
+    assert!(
+        matches!(
+            result,
+            release_orchestrator::OrchestratorResult::TaggedRelease
+        ),
+        "expected TaggedRelease (automator path), got: {result:?}"
+    );
+
+    let releases = github.created_releases().await;
+    assert_eq!(
+        releases.len(),
+        1,
+        "exactly one release should have been created"
+    );
+    assert!(
+        releases[0].draft,
+        "releases.draft = true in the merged config must thread through to \
+         the created Release even when the release PR merge arrives as a \
+         PullRequestMerged event; got draft = {}",
+        releases[0].draft
     );
 }

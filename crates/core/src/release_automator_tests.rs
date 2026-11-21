@@ -918,6 +918,10 @@ async fn test_automate_happy_path_creates_tag_release_and_deletes_branch() {
     assert_eq!(releases.len(), 1);
     assert_eq!(releases[0].tag_name, "v1.2.3");
     assert!(!releases[0].prerelease);
+    assert!(
+        !releases[0].draft,
+        "AutomatorConfig::default() must default draft to false"
+    );
 
     let branches = github.deleted_branches().await;
     assert_eq!(branches, vec!["release/v1.2.3"]);
@@ -1487,6 +1491,75 @@ async fn test_automate_generate_release_notes_false_clears_flag_in_api_call() {
     assert!(
         !releases[0].generate_release_notes,
         "generate_release_notes must be false when configured as false"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// draft config tests (GitHub issue #140)
+//
+// `release-regent.toml`'s `[releases] draft = true` must be honoured by
+// `ReleaseAutomator::automate`: the `CreateReleaseParams.draft` flag passed to
+// `GitHubOperations::create_release` must mirror `AutomatorConfig::draft`
+// rather than being hardcoded.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_automate_draft_true_sets_draft_flag_in_api_call() {
+    // When AutomatorConfig::draft is true, the API request must pass
+    // draft: true so GitHub creates the release as a draft.
+    let github = TestGitHub::new();
+    let config = AutomatorConfig {
+        draft: true,
+        ..AutomatorConfig::default()
+    };
+    let automator = ReleaseAutomator::new(config, &github);
+
+    let event = make_release_pr_event(
+        "release/v1.2.3",
+        "deadbeef1234567890deadbeef1234567890abcd",
+        "## Changelog\n\n- feat: add widget [abc123def456789012345678901234567890abcd]\n",
+    );
+
+    automator
+        .automate("testorg", "testrepo", &event, "corr-001")
+        .await
+        .unwrap();
+
+    let releases = github.created_releases().await;
+    assert_eq!(releases.len(), 1);
+    assert!(
+        releases[0].draft,
+        "draft must be true when AutomatorConfig::draft is configured as true"
+    );
+}
+
+#[tokio::test]
+async fn test_automate_draft_false_clears_draft_flag_in_api_call() {
+    // When AutomatorConfig::draft is false (the default), the API request
+    // must pass draft: false so GitHub publishes the release immediately.
+    let github = TestGitHub::new();
+    let config = AutomatorConfig {
+        draft: false,
+        ..AutomatorConfig::default()
+    };
+    let automator = ReleaseAutomator::new(config, &github);
+
+    let event = make_release_pr_event(
+        "release/v1.2.3",
+        "deadbeef1234567890deadbeef1234567890abcd",
+        "## Changelog\n\n- feat: add widget [abc123def456789012345678901234567890abcd]\n",
+    );
+
+    automator
+        .automate("testorg", "testrepo", &event, "corr-001")
+        .await
+        .unwrap();
+
+    let releases = github.created_releases().await;
+    assert_eq!(releases.len(), 1);
+    assert!(
+        !releases[0].draft,
+        "draft must be false when AutomatorConfig::draft is configured as false"
     );
 }
 

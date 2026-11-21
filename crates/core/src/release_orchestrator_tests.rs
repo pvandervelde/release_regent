@@ -692,6 +692,10 @@ async fn test_orchestrate_no_existing_pr_creates_branch_and_pr() {
         .as_deref()
         .unwrap_or("")
         .contains("## Changelog"));
+    assert!(
+        !prs[0].draft,
+        "OrchestratorConfig::default() must default draft to false"
+    );
 
     // `create_release_branch_and_pr` uses `batch_commit_files_rebased` to avoid
     // the race where setting branch tip == base_sha first would auto-close the PR.
@@ -1269,6 +1273,90 @@ async fn test_body_template_is_used_in_pr_body() {
     } else {
         panic!("expected Created, got {result:?}");
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// draft config tests (GitHub issue #142)
+//
+// `release-regent.toml`'s `[release_pr] draft = true` must be honoured by
+// `ReleaseOrchestrator::create_release_branch_and_pr`: the
+// `CreatePullRequestParams.draft` flag passed to
+// `GitHubOperations::create_pull_request` must mirror `OrchestratorConfig::draft`
+// rather than being hardcoded.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// When `OrchestratorConfig::draft` is `true`, the release PR created on the
+/// no-existing-PR path must be opened as a draft.
+#[tokio::test]
+async fn test_orchestrate_draft_true_creates_pr_as_draft() {
+    let github = TestGitHub::new();
+    let config = OrchestratorConfig {
+        draft: true,
+        ..OrchestratorConfig::default()
+    };
+    let orchestrator = ReleaseOrchestrator::new(config, &github);
+
+    let result = orchestrator
+        .orchestrate(
+            "testorg",
+            "testrepo",
+            &ver(1, 2, 3),
+            "- feat: add thing [abc1234567890123456789012345678901234567890]",
+            "main",
+            "sha-draft-true",
+            "corr-draft-true",
+        )
+        .await
+        .expect("orchestrate should succeed");
+
+    assert!(
+        matches!(result, OrchestratorResult::Created { .. }),
+        "expected Created, got {result:?}"
+    );
+
+    let prs = github.created_prs().await;
+    assert_eq!(prs.len(), 1);
+    assert!(
+        prs[0].draft,
+        "draft must be true when OrchestratorConfig::draft is configured as true"
+    );
+}
+
+/// When `OrchestratorConfig::draft` is `false` (the default), the release PR
+/// created on the no-existing-PR path must not be a draft.
+#[tokio::test]
+async fn test_orchestrate_draft_false_creates_pr_as_not_draft() {
+    let github = TestGitHub::new();
+    let config = OrchestratorConfig {
+        draft: false,
+        ..OrchestratorConfig::default()
+    };
+    let orchestrator = ReleaseOrchestrator::new(config, &github);
+
+    let result = orchestrator
+        .orchestrate(
+            "testorg",
+            "testrepo",
+            &ver(1, 2, 3),
+            "- feat: add thing [abc1234567890123456789012345678901234567890]",
+            "main",
+            "sha-draft-false",
+            "corr-draft-false",
+        )
+        .await
+        .expect("orchestrate should succeed");
+
+    assert!(
+        matches!(result, OrchestratorResult::Created { .. }),
+        "expected Created, got {result:?}"
+    );
+
+    let prs = github.created_prs().await;
+    assert_eq!(prs.len(), 1);
+    assert!(
+        !prs[0].draft,
+        "draft must be false when OrchestratorConfig::draft is configured as false"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

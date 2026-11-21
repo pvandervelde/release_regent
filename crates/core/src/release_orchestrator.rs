@@ -137,6 +137,16 @@ pub struct OrchestratorConfig {
     /// Set to `false` to disable auto-detection and rely solely on the explicit list.
     pub auto_detect_manifests: bool,
 
+    /// Whether the release PR should be opened as a draft.
+    ///
+    /// When `true` the `draft` flag in the GitHub API request is set,
+    /// causing GitHub to open the release PR as a draft instead of ready
+    /// for review. When `false` (the default) the PR is opened ready for
+    /// review immediately.
+    ///
+    /// Defaults to `false`.
+    pub draft: bool,
+
     /// Retry policy applied to transient GitHub API failures encountered
     /// while orchestrating a release PR.
     ///
@@ -251,6 +261,7 @@ impl Default for OrchestratorConfig {
             body_template,
             manifest_files: Vec::new(),
             auto_detect_manifests: true,
+            draft: false,
             error_handling: ErrorHandlingConfig::default(),
         }
     }
@@ -697,7 +708,7 @@ impl<'a, G: GitHubOperations> ReleaseOrchestrator<'a, G> {
                         head: actual_branch.clone(),
                         title: title.clone(),
                         body: Some(body.clone()),
-                        draft: false,
+                        draft: self.config.draft,
                         maintainer_can_modify: true,
                     },
                 )

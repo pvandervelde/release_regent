@@ -481,6 +481,11 @@ Publish releases as drafts (not publicly visible until manually published in the
 draft = false
 ```
 
+> **Note**: A draft release is not published, so GitHub does not emit a `release: published`
+> webhook event for it. If you have other automation (CI/CD pipelines, notifications, etc.)
+> that triggers on that event, it will not fire until someone manually publishes the draft
+> in the GitHub UI.
+
 ### `releases.prerelease`
 
 **Type**: boolean
