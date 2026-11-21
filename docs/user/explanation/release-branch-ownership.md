@@ -50,10 +50,27 @@ Regent will pick it up and update the release PR.
 
 ## Branch protection settings
 
-If your repository uses branch protection rules, you do not need to protect `release/v*`
-branches specifically — Release Regent manages their lifecycle automatically. However, if you
-have a rule that protects all branches (e.g., "require pull request before merging"), ensure
-that the GitHub App has the bypass permission, or that the `release/v*` branches are exempt.
+Release Regent does not need write access to the default branch. It updates its release PR by
+writing to `release/v*` branches; it does not merge PRs or write to the default branch.
+
+If your repository protects all branches, prefer exempting `release/v*` from the broad rule
+and protecting those branches with a separate ruleset. Target the `release/v*` pattern,
+configure **Restrict creations**, **Restrict updates**, and **Restrict deletions**, and add only
+the Release Regent GitHub App identity to that ruleset's bypass list. These restrictions limit
+branch lifecycle operations to the App; **Block force pushes** also prevents force-pushing
+release branches outside the App identity. This lets the App manage release branches without
+granting it authority over the default branch.
+
+If tag rulesets restrict tag creation, allow the App identity to create the tags generated
+for releases. The default tag pattern is `v*`; this follows the configured version prefix,
+which may differ. The App requires **Contents: Read & write** for branch updates and tag
+creation; see [the required App permissions](github-app-model.md#required-permissions).
+
+Granting the App bypass permission on a rule that covers all branches should be a last resort.
+GitHub applies that bypass to every branch in the rule's scope; it cannot be limited to a
+branch pattern within that rule. The App could therefore push directly to the default branch
+and bypass review in any repository that grants it, an authority Release Regent does not need.
+Prefer the scoped `release/v*` ruleset instead.
 
 ## What happens to the branch after the release
 
