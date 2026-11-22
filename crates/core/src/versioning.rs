@@ -161,6 +161,37 @@ pub enum BumpKind {
     Patch,
 }
 
+impl BumpKind {
+    /// Numeric severity rank used to implement [`Ord`]/[`PartialOrd`].
+    ///
+    /// Higher is more severe. This intentionally does **not** match the
+    /// enum's declaration order (`Major, Minor, Patch`) — a naive
+    /// `#[derive(PartialOrd, Ord)]` would rank variants by declaration
+    /// order, which happens to coincide with severity here only by
+    /// coincidence of how the variants are listed. Defining an explicit
+    /// rank keeps the ordering correct and self-documenting even if
+    /// variants are reordered in the future.
+    const fn rank(&self) -> u8 {
+        match self {
+            BumpKind::Patch => 0,
+            BumpKind::Minor => 1,
+            BumpKind::Major => 2,
+        }
+    }
+}
+
+impl PartialOrd for BumpKind {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for BumpKind {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.rank().cmp(&other.rank())
+    }
+}
+
 /// Conventional commit information
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConventionalCommit {
@@ -773,6 +804,30 @@ pub fn apply_bump_floor(
         Ordering::Less => floor_version,
         _ => calculated.clone(),
     }
+}
+
+/// Returns the highest-severity [`BumpKind`] among `kinds`, or `None` if the
+/// iterator is empty.
+///
+/// Severity ordering is `Major > Minor > Patch` (see [`BumpKind`]'s `Ord`
+/// implementation). The result is independent of input order: ties resolve
+/// to that same kind regardless of how many lower-severity entries surround
+/// it.
+///
+/// # Examples
+///
+/// ```
+/// use release_regent_core::versioning::{highest_bump_kind, BumpKind};
+///
+/// let kinds = vec![BumpKind::Minor, BumpKind::Major, BumpKind::Patch];
+/// assert_eq!(highest_bump_kind(kinds), Some(BumpKind::Major));
+///
+/// let empty: Vec<BumpKind> = vec![];
+/// assert_eq!(highest_bump_kind(empty), None);
+/// ```
+#[must_use]
+pub fn highest_bump_kind<I: IntoIterator<Item = BumpKind>>(kinds: I) -> Option<BumpKind> {
+    kinds.into_iter().max()
 }
 
 /// Compare two semver pre-release strings following the semver 2.0 specification (§11.4).

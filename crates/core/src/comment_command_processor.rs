@@ -43,8 +43,14 @@ pub use crate::versioning::BumpKind;
 use crate::{
     release_orchestrator::{OrchestratorConfig, ReleaseOrchestrator},
     retry::retry_with_backoff,
-    traits::{event_source::ProcessingEvent, github_operations::GitHubOperations},
-    versioning::{resolve_current_version, SemanticVersion, VersionCalculator},
+    traits::{
+        event_source::ProcessingEvent, git_operations::GetCommitsOptions,
+        github_operations::GitHubOperations,
+    },
+    versioning::{
+        apply_bump_floor, highest_bump_kind, resolve_current_version, SemanticVersion,
+        VersionCalculator,
+    },
     CoreResult,
 };
 
@@ -490,6 +496,57 @@ impl<'a, G: GitHubOperations + Send + Sync> CommentCommandProcessor<'a, G> {
             return self.post_comment(owner, repo, pr_number, &rejection).await;
         }
 
+        // Guard D: reject a pinned version that falls below an outstanding
+        // `rr:override-*` bump-floor still recorded on a merged PR in the
+        // current release cycle (task #211). The scan covers commits from
+        // the last release tag (or the repository root when no release has
+        // been made yet) up to this release PR's base SHA.
+        let override_floor_base = current_version
+            .as_ref()
+            .map(|v| format!("{}{v}", self.config.orchestrator_config.version_prefix))
+            .unwrap_or_default();
+        if let Some((floor_kind, floor_pr_number)) = resolve_outstanding_override_floor(
+            self.github,
+            owner,
+            repo,
+            &override_floor_base,
+            &pr.base.sha,
+        )
+        .await?
+        {
+            let floor_baseline = current_version.clone().unwrap_or(SemanticVersion {
+                major: 0,
+                minor: 0,
+                patch: 0,
+                prerelease: None,
+                build: None,
+            });
+            let floor_version = apply_bump_floor(&floor_baseline, pinned_version, &floor_kind);
+            if floor_version.compare_precedence(pinned_version) != Ordering::Equal {
+                let kind_str = match floor_kind {
+                    BumpKind::Major => "major",
+                    BumpKind::Minor => "minor",
+                    BumpKind::Patch => "patch",
+                };
+                let rejection = format!(
+                    "❌ **Release Regent**: `!set-version {pinned_version}` was rejected — an \
+                     `rr:override-{kind_str}` label is outstanding on PR #{floor_pr_number}, \
+                     which requires the release version to be at least `{floor_version}`. Use \
+                     `!set-version {floor_version}` or higher, or remove the `!release \
+                     {kind_str}` override first."
+                );
+                warn!(
+                    pr_number,
+                    pinned = %pinned_version,
+                    floor = %floor_version,
+                    floor_pr = floor_pr_number,
+                    correlation_id,
+                    "Rejecting !set-version: below outstanding override floor"
+                );
+                return self.post_comment(owner, repo, pr_number, &rejection).await;
+            }
+        }
+
         info!(
             pr_number,
             pinned = %pinned_version,
@@ -619,6 +676,81 @@ impl<'a, G: GitHubOperations + Send + Sync> CommentCommandProcessor<'a, G> {
         }
         Ok(())
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// resolve_outstanding_override_floor — free function (task #211)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Scan commits in the range `base..head` for an outstanding `rr:override-*`
+/// bump-floor label on any pull request associated with those commits.
+///
+/// For each commit returned by [`crate::traits::GitOperations::get_commits_between`],
+/// every pull request associated with it (via
+/// [`GitHubOperations::list_pull_requests_for_commit`]) is inspected for
+/// `rr:override-*` labels (via [`GitHubOperations::list_pr_labels`]). The
+/// highest-severity [`BumpKind`] found across all commits/PRs is returned
+/// together with the PR number it originated from.
+///
+/// Returns `Ok(None)` when no commits are in range, no commit resolves to an
+/// associated PR, or no associated PR carries an `rr:override-*` label.
+///
+/// When more than one PR carries the highest-severity override (a tie), the
+/// PR returned is whichever is encountered first during iteration — this is
+/// an implementation detail, not a documented guarantee, since callers only
+/// care about the floor value.
+///
+/// # Errors
+///
+/// Propagates any [`crate::CoreError`] returned by `get_commits_between`,
+/// `list_pull_requests_for_commit`, or `list_pr_labels` — a transient GitHub
+/// API failure must never be silently treated as "no floor outstanding".
+// CoreError is intentionally large; this is the established pattern throughout the codebase.
+#[allow(clippy::result_large_err)]
+pub(crate) async fn resolve_outstanding_override_floor<G>(
+    github: &G,
+    owner: &str,
+    repo: &str,
+    base: &str,
+    head: &str,
+) -> CoreResult<Option<(BumpKind, u64)>>
+where
+    G: GitHubOperations + Send + Sync,
+{
+    let commits = github
+        .get_commits_between(owner, repo, base, head, GetCommitsOptions::default())
+        .await?;
+
+    let mut found: Vec<(BumpKind, u64)> = Vec::new();
+
+    for commit in &commits {
+        let prs = github
+            .list_pull_requests_for_commit(owner, repo, &commit.sha)
+            .await?;
+
+        for pr in &prs {
+            let labels = github.list_pr_labels(owner, repo, pr.number).await?;
+            let kind = labels.iter().find_map(|l| match l.name.as_str() {
+                OVERRIDE_LABEL_MAJOR => Some(BumpKind::Major),
+                OVERRIDE_LABEL_MINOR => Some(BumpKind::Minor),
+                OVERRIDE_LABEL_PATCH => Some(BumpKind::Patch),
+                _ => None,
+            });
+            if let Some(kind) = kind {
+                found.push((kind, pr.number));
+            }
+        }
+    }
+
+    let Some(highest) = highest_bump_kind(found.iter().map(|(k, _)| k.clone())) else {
+        return Ok(None);
+    };
+    let pr_number = found
+        .into_iter()
+        .find_map(|(k, n)| if k == highest { Some(n) } else { None })
+        .expect("highest kind was derived from `found`, so a match must exist");
+
+    Ok(Some((highest, pr_number)))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -1288,6 +1288,7 @@ where
             &changelog,
             &base_branch,
             &base_sha,
+            &repo_config.core.version_prefix,
         )
         .await
     }
@@ -1604,7 +1605,7 @@ where
     /// Applies any bump-floor override from the merged PR's labels, orchestrates
     /// the release PR, posts an audit comment if the floor was applied, and
     /// removes the consumed override labels.
-    #[allow(clippy::too_many_arguments)] // owner/repo/installation_id/pr_num/correlation/orchestrator/current/calc/changelog/branch/sha is minimal
+    #[allow(clippy::too_many_arguments)] // owner/repo/installation_id/pr_num/correlation/orchestrator/current/calc/changelog/branch/sha/prefix is minimal
     async fn process_feature_pr_merged(
         &self,
         owner: &str,
@@ -1618,9 +1619,11 @@ where
         changelog: &str,
         base_branch: &str,
         base_sha: &str,
+        version_prefix: &str,
     ) -> CoreResult<release_orchestrator::OrchestratorResult> {
         use comment_command_processor::{
-            ALL_OVERRIDE_LABELS, OVERRIDE_LABEL_MAJOR, OVERRIDE_LABEL_MINOR, OVERRIDE_LABEL_PATCH,
+            resolve_outstanding_override_floor, ALL_OVERRIDE_LABELS, OVERRIDE_LABEL_MAJOR,
+            OVERRIDE_LABEL_MINOR, OVERRIDE_LABEL_PATCH,
         };
         use versioning::BumpKind;
 
@@ -1641,12 +1644,50 @@ where
             vec![]
         };
 
-        let floor_kind: Option<BumpKind> = labels.iter().find_map(|l| match l.name.as_str() {
+        let mut floor_kind: Option<BumpKind> = labels.iter().find_map(|l| match l.name.as_str() {
             OVERRIDE_LABEL_MAJOR => Some(BumpKind::Major),
             OVERRIDE_LABEL_MINOR => Some(BumpKind::Minor),
             OVERRIDE_LABEL_PATCH => Some(BumpKind::Patch),
             _ => None,
         });
+        // Tracks whether the floor (if any) originated from the merged PR's
+        // own label, as opposed to the commit-history fallback below. Only
+        // an own label should be "consumed" (removed) from the merged PR in
+        // step 7 — a historical floor belongs to a different, earlier PR
+        // that this merge event has no business modifying.
+        let own_label_present = floor_kind.is_some();
+
+        // The just-merged PR's own label always wins. Only when it carries no
+        // override of its own do we fall back to scanning commit history —
+        // since the last release tag up to this merge's base SHA — for an
+        // outstanding `rr:override-*` label on an earlier PR in the same
+        // release cycle (task #211, scenarios 2 & 4). This covers cases where
+        // the overriding PR merged earlier in the cycle, possibly before the
+        // release PR was created or after it was deleted and must be recreated.
+        if floor_kind.is_none() {
+            let scan_base = current_version
+                .map(|v| format!("{version_prefix}{v}"))
+                .unwrap_or_default();
+            if let Some((historical_kind, historical_pr)) = resolve_outstanding_override_floor(
+                &scoped_github,
+                owner,
+                repo,
+                &scan_base,
+                base_sha,
+            )
+            .await?
+            {
+                tracing::debug!(
+                    owner = %owner,
+                    repo = %repo,
+                    historical_pr,
+                    floor = ?historical_kind,
+                    correlation_id = %correlation_id,
+                    "Applying bump-override floor found via commit-history scan"
+                );
+                floor_kind = Some(historical_kind);
+            }
+        }
 
         let effective_version =
             if let (Some(ref floor), Some(current)) = (&floor_kind, current_version) {
@@ -1725,9 +1766,11 @@ where
         }
 
         // Consume override label: remove from the now-merged feature PR.
-        // This is idempotent (remove_label treats 404 as Ok) and runs
-        // unconditionally to clean up any label applied by `!release` commands.
-        if floor_kind.is_some() {
+        // This is idempotent (remove_label treats 404 as Ok) and runs only
+        // when the floor came from the merged PR's own label — a floor
+        // sourced from the commit-history scan belongs to a different,
+        // earlier PR whose label must be left alone (task #211).
+        if own_label_present {
             for &label in ALL_OVERRIDE_LABELS {
                 if let Err(e) = scoped_github
                     .remove_label(owner, repo, merged_pr_number, label)
