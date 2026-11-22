@@ -178,6 +178,20 @@ impl BumpKind {
             BumpKind::Major => 2,
         }
     }
+
+    /// Lower-case command-word representation (`"major"`, `"minor"`,
+    /// `"patch"`), matching the `!release <kind>` command syntax.
+    ///
+    /// Used wherever a [`BumpKind`] needs to be rendered into user-facing
+    /// text (e.g. rejection or audit comments) without the
+    /// `rr:override-` label prefix.
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            BumpKind::Major => "major",
+            BumpKind::Minor => "minor",
+            BumpKind::Patch => "patch",
+        }
+    }
 }
 
 impl PartialOrd for BumpKind {

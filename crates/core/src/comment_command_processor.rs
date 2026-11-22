@@ -47,10 +47,7 @@ use crate::{
         event_source::ProcessingEvent, git_operations::GetCommitsOptions,
         github_operations::GitHubOperations,
     },
-    versioning::{
-        apply_bump_floor, highest_bump_kind, resolve_current_version, SemanticVersion,
-        VersionCalculator,
-    },
+    versioning::{apply_bump_floor, resolve_current_version, SemanticVersion, VersionCalculator},
     CoreResult,
 };
 
@@ -70,6 +67,21 @@ pub const ALL_OVERRIDE_LABELS: &[&str] = &[
     OVERRIDE_LABEL_MINOR,
     OVERRIDE_LABEL_PATCH,
 ];
+
+/// Map a GitHub label name to the [`BumpKind`] it represents, or `None` when
+/// `name` is not one of the `rr:override-*` labels.
+///
+/// Shared by every site that needs to resolve an override floor from a PR's
+/// labels (task #211): the merged-PR label check and the commit-history
+/// fallback scan both call this instead of duplicating the match arms.
+pub(crate) fn label_name_to_bump_kind(name: &str) -> Option<BumpKind> {
+    match name {
+        OVERRIDE_LABEL_MAJOR => Some(BumpKind::Major),
+        OVERRIDE_LABEL_MINOR => Some(BumpKind::Minor),
+        OVERRIDE_LABEL_PATCH => Some(BumpKind::Patch),
+        _ => None,
+    }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Public types
@@ -382,11 +394,7 @@ impl<'a, G: GitHubOperations + Send + Sync> CommentCommandProcessor<'a, G> {
         );
 
         // Post a confirmation comment.
-        let kind_str = match kind {
-            BumpKind::Major => "major",
-            BumpKind::Minor => "minor",
-            BumpKind::Patch => "patch",
-        };
+        let kind_str = kind.as_str();
         let body = if let Some(old_label) = replaced_kind {
             let old_kind = old_label.strip_prefix("rr:override-").unwrap_or(old_label);
             if old_label == new_label {
@@ -523,11 +531,7 @@ impl<'a, G: GitHubOperations + Send + Sync> CommentCommandProcessor<'a, G> {
             });
             let floor_version = apply_bump_floor(&floor_baseline, pinned_version, &floor_kind);
             if floor_version.compare_precedence(pinned_version) != Ordering::Equal {
-                let kind_str = match floor_kind {
-                    BumpKind::Major => "major",
-                    BumpKind::Minor => "minor",
-                    BumpKind::Patch => "patch",
-                };
+                let kind_str = floor_kind.as_str();
                 let rejection = format!(
                     "❌ **Release Regent**: `!set-version {pinned_version}` was rejected — an \
                      `rr:override-{kind_str}` label is outstanding on PR #{floor_pr_number}, \
@@ -721,7 +725,11 @@ where
         .get_commits_between(owner, repo, base, head, GetCommitsOptions::default())
         .await?;
 
-    let mut found: Vec<(BumpKind, u64)> = Vec::new();
+    // Tracks the highest-severity override seen so far together with the PR
+    // it came from. Updated with a strict `>` comparison (rather than two
+    // passes of max-then-find) so that a tie in severity leaves the
+    // first-encountered PR in place — see the function docs' tie-break note.
+    let mut best: Option<(BumpKind, u64)> = None;
 
     for commit in &commits {
         let prs = github
@@ -730,27 +738,20 @@ where
 
         for pr in &prs {
             let labels = github.list_pr_labels(owner, repo, pr.number).await?;
-            let kind = labels.iter().find_map(|l| match l.name.as_str() {
-                OVERRIDE_LABEL_MAJOR => Some(BumpKind::Major),
-                OVERRIDE_LABEL_MINOR => Some(BumpKind::Minor),
-                OVERRIDE_LABEL_PATCH => Some(BumpKind::Patch),
-                _ => None,
-            });
+            let kind = labels.iter().find_map(|l| label_name_to_bump_kind(&l.name));
             if let Some(kind) = kind {
-                found.push((kind, pr.number));
+                let is_new_high = match &best {
+                    Some((best_kind, _)) => kind > *best_kind,
+                    None => true,
+                };
+                if is_new_high {
+                    best = Some((kind, pr.number));
+                }
             }
         }
     }
 
-    let Some(highest) = highest_bump_kind(found.iter().map(|(k, _)| k.clone())) else {
-        return Ok(None);
-    };
-    let pr_number = found
-        .into_iter()
-        .find_map(|(k, n)| if k == highest { Some(n) } else { None })
-        .expect("highest kind was derived from `found`, so a match must exist");
-
-    Ok(Some((highest, pr_number)))
+    Ok(best)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

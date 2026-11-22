@@ -1622,8 +1622,7 @@ where
         version_prefix: &str,
     ) -> CoreResult<release_orchestrator::OrchestratorResult> {
         use comment_command_processor::{
-            resolve_outstanding_override_floor, ALL_OVERRIDE_LABELS, OVERRIDE_LABEL_MAJOR,
-            OVERRIDE_LABEL_MINOR, OVERRIDE_LABEL_PATCH,
+            label_name_to_bump_kind, resolve_outstanding_override_floor, ALL_OVERRIDE_LABELS,
         };
         use versioning::BumpKind;
 
@@ -1644,12 +1643,8 @@ where
             vec![]
         };
 
-        let mut floor_kind: Option<BumpKind> = labels.iter().find_map(|l| match l.name.as_str() {
-            OVERRIDE_LABEL_MAJOR => Some(BumpKind::Major),
-            OVERRIDE_LABEL_MINOR => Some(BumpKind::Minor),
-            OVERRIDE_LABEL_PATCH => Some(BumpKind::Patch),
-            _ => None,
-        });
+        let mut floor_kind: Option<BumpKind> =
+            labels.iter().find_map(|l| label_name_to_bump_kind(&l.name));
         // Tracks whether the floor (if any) originated from the merged PR's
         // own label, as opposed to the commit-history fallback below. Only
         // an own label should be "consumed" (removed) from the merged PR in
@@ -1804,13 +1799,7 @@ where
         calc_version: &versioning::SemanticVersion,
         eff_version: &versioning::SemanticVersion,
     ) {
-        use versioning::BumpKind;
-
-        let kind_str = match floor {
-            BumpKind::Major => "major",
-            BumpKind::Minor => "minor",
-            BumpKind::Patch => "patch",
-        };
+        let kind_str = floor.as_str();
         let release_pr_number = match orch_result {
             release_orchestrator::OrchestratorResult::Created { pr, .. }
             | release_orchestrator::OrchestratorResult::Updated { pr }
