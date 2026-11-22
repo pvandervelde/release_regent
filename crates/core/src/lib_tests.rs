@@ -669,6 +669,21 @@ struct TestGitHubForLib {
     /// When set, `list_pr_labels` returns a `CoreError::GitHub` for the
     /// specified PR / issue number.
     fail_list_labels_for_pr: Option<u64>,
+    /// Commits returned by `get_commits_between` (task #211 override-floor
+    /// historical scan — ignores the actual `base`/`head` arguments,
+    /// consistent with this test double's existing simplifications).
+    commits_between: Vec<GitCommit>,
+    /// Pull requests associated with a given commit SHA, keyed by SHA —
+    /// drives `list_pull_requests_for_commit` (task #211).
+    commit_prs: HashMap<String, Vec<PullRequest>>,
+    /// When set, `list_pull_requests_for_commit` returns a `CoreError::GitHub`
+    /// for the specified commit SHA.
+    fail_list_prs_for_commit: Option<String>,
+    /// Every `(base, head)` argument pair passed to `get_commits_between`, in
+    /// call order.
+    get_commits_between_calls: Arc<Mutex<Vec<(String, String)>>>,
+    /// Every commit SHA passed to `list_pull_requests_for_commit`, in call order.
+    list_prs_for_commit_calls: Arc<Mutex<Vec<String>>>,
 }
 
 impl TestGitHubForLib {
@@ -690,6 +705,11 @@ impl TestGitHubForLib {
             fail_remove_label_for_pr: None,
             fail_comment_for_pr: None,
             fail_list_labels_for_pr: None,
+            commits_between: vec![],
+            commit_prs: HashMap::new(),
+            fail_list_prs_for_commit: None,
+            get_commits_between_calls: Arc::new(Mutex::new(vec![])),
+            list_prs_for_commit_calls: Arc::new(Mutex::new(vec![])),
         }
     }
 
@@ -750,6 +770,26 @@ impl TestGitHubForLib {
         self
     }
 
+    /// Pre-seed the commits returned by `get_commits_between` (task #211).
+    fn with_commits_between(mut self, commits: Vec<GitCommit>) -> Self {
+        self.commits_between = commits;
+        self
+    }
+
+    /// Associate a commit SHA with the pull request(s) `list_pull_requests_for_commit`
+    /// should return for it (task #211).
+    fn with_commit_prs(mut self, sha: impl Into<String>, prs: Vec<PullRequest>) -> Self {
+        self.commit_prs.insert(sha.into(), prs);
+        self
+    }
+
+    /// Make `list_pull_requests_for_commit` return a `CoreError::GitHub` for
+    /// the specified commit SHA only.
+    fn with_fail_list_prs_for_commit(mut self, sha: impl Into<String>) -> Self {
+        self.fail_list_prs_for_commit = Some(sha.into());
+        self
+    }
+
     /// Every `draft` flag passed to `create_pull_request`, in call order.
     async fn created_pr_drafts(&self) -> Vec<bool> {
         self.created_pr_drafts.lock().await.clone()
@@ -759,6 +799,16 @@ impl TestGitHubForLib {
     async fn created_releases(&self) -> Vec<Release> {
         self.created_releases.lock().await.clone()
     }
+
+    /// Every `(base, head)` pair passed to `get_commits_between`, in call order.
+    async fn get_commits_between_calls(&self) -> Vec<(String, String)> {
+        self.get_commits_between_calls.lock().await.clone()
+    }
+
+    /// Every commit SHA passed to `list_pull_requests_for_commit`, in call order.
+    async fn list_prs_for_commit_calls(&self) -> Vec<String> {
+        self.list_prs_for_commit_calls.lock().await.clone()
+    }
 }
 
 #[async_trait]
@@ -767,11 +817,15 @@ impl GitOperations for TestGitHubForLib {
         &self,
         _owner: &str,
         _repo: &str,
-        _base: &str,
-        _head: &str,
+        base: &str,
+        head: &str,
         _options: GetCommitsOptions,
     ) -> CoreResult<Vec<GitCommit>> {
-        Ok(vec![])
+        self.get_commits_between_calls
+            .lock()
+            .await
+            .push((base.to_string(), head.to_string()));
+        Ok(self.commits_between.clone())
     }
 
     async fn get_commit(&self, _owner: &str, _repo: &str, sha: &str) -> CoreResult<GitCommit> {
@@ -1083,6 +1137,29 @@ impl GitHubOperations for TestGitHubForLib {
             .unwrap_or_default())
     }
 
+    async fn list_pull_requests_for_commit(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        commit_sha: &str,
+    ) -> CoreResult<Vec<PullRequest>> {
+        self.list_prs_for_commit_calls
+            .lock()
+            .await
+            .push(commit_sha.to_string());
+        if self.fail_list_prs_for_commit.as_deref() == Some(commit_sha) {
+            return Err(CoreError::github(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("Simulated list_pull_requests_for_commit failure for sha {commit_sha}"),
+            )));
+        }
+        Ok(self
+            .commit_prs
+            .get(commit_sha)
+            .cloned()
+            .unwrap_or_default())
+    }
+
     async fn create_issue(
         &self,
         _owner: &str,
@@ -1195,6 +1272,11 @@ impl GitHubOperations for TestGitHubForLib {
             fail_remove_label_for_pr: self.fail_remove_label_for_pr,
             fail_comment_for_pr: self.fail_comment_for_pr,
             fail_list_labels_for_pr: self.fail_list_labels_for_pr,
+            commits_between: self.commits_between.clone(),
+            commit_prs: self.commit_prs.clone(),
+            fail_list_prs_for_commit: self.fail_list_prs_for_commit.clone(),
+            get_commits_between_calls: Arc::clone(&self.get_commits_between_calls),
+            list_prs_for_commit_calls: Arc::clone(&self.list_prs_for_commit_calls),
         }
     }
 }
@@ -2048,6 +2130,612 @@ async fn test_handle_merged_feature_pr_without_override_label_uses_calculated_ve
             .iter()
             .all(|(_, body)| !body.contains("Version floor applied")),
         "unexpected audit comment when no floor was applied"
+    );
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Bump-override historical-scan tests (task #211, scenarios 2 & 4)
+//
+// When the just-merged feature PR itself carries no `rr:override-*` label,
+// `process_feature_pr_merged` must fall back to scanning commits since the
+// last release tag, resolving each commit's associated PR(s) via the new
+// `GitHubOperations::list_pull_requests_for_commit`, and applying the
+// highest override label found among them as the bump-floor — whether an
+// open release PR already exists (scenario 2) or was deleted and must be
+// recreated (scenario 4).
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// Build an `rr:override-*` label by bump-kind name (`"major"`, `"minor"`, or `"patch"`).
+fn override_label(kind: &str) -> Label {
+    Label {
+        id: 1,
+        name: format!("rr:override-{kind}"),
+        color: "ededed".to_string(),
+        description: None,
+    }
+}
+
+/// Scenario 2: the just-merged PR has no override label of its own, but an
+/// earlier PR in the release cycle (found via the commit-history scan) still
+/// carries `rr:override-major`. The floor must be honoured even though it
+/// did not originate from the PR that triggered this merge event.
+#[tokio::test]
+async fn test_handle_merged_feature_pr_without_own_label_applies_floor_from_commit_history() {
+    let tag = GitTag {
+        name: "v1.0.0".to_string(),
+        target_sha: "a".repeat(40),
+        tag_type: GitTagType::Lightweight,
+        message: None,
+        tagger: None,
+        created_at: None,
+    };
+    let historical_sha = "c".repeat(40);
+    let historical_pr = make_pr(50, "feat/earlier-feature", "feat: earlier feature");
+
+    // The just-merged PR (#60) carries no override label of its own.
+    let github = TestGitHubForLib::new_empty()
+        .with_tags(vec![tag])
+        .with_commits_between(vec![make_git_commit(&historical_sha)])
+        .with_commit_prs(historical_sha.clone(), vec![historical_pr.clone()])
+        .with_pr_labels(50, vec![override_label("major")]);
+
+    let config = TestConfigForLib;
+    let version_calc = TestVersionCalcForLib::returning("1.1.0");
+
+    let processor = ReleaseRegentProcessor::new(
+        github.clone(),
+        config,
+        version_calc,
+        SpyNotificationSender::new(),
+    );
+
+    let event = ProcessingEvent {
+        event_id: "evt-scan-1".into(),
+        correlation_id: "corr-scan-1".into(),
+        event_type: EventType::PullRequestMerged,
+        repository: RepositoryInfo {
+            owner: "acme".into(),
+            name: "app".into(),
+            default_branch: "main".into(),
+        },
+        payload: serde_json::json!({
+            "pull_request": {
+                "head": { "ref": "feat/newer-feature" },
+                "base": { "ref": "main" },
+                "number": 60,
+                "merge_commit_sha": "d".repeat(40)
+            }
+        }),
+        received_at: Utc::now(),
+        source: EventSourceKind::Webhook,
+        installation_id: 0,
+    };
+
+    let result = processor.handle_merged_pull_request(&event).await.unwrap();
+
+    // apply_bump_floor(1.0.0, 1.1.0, Major) = 2.0.0 — the historical override
+    // must still be honoured even though PR #60 itself has no label.
+    match &result {
+        release_orchestrator::OrchestratorResult::Created { branch_name, .. } => {
+            assert!(
+                branch_name.contains("2.0.0"),
+                "branch should reference 2.0.0 (floor from history), got: {branch_name}"
+            );
+        }
+        other => panic!("expected Created, got {other:?}"),
+    }
+
+    // Stub-killing: the scan must have actually queried commit history and
+    // resolved the historical commit's PR, not just skipped straight to the
+    // calculated version.
+    assert!(
+        !github.get_commits_between_calls().await.is_empty(),
+        "expected the floor scan to call get_commits_between"
+    );
+    assert!(
+        github
+            .list_prs_for_commit_calls()
+            .await
+            .contains(&historical_sha),
+        "expected the floor scan to resolve the historical commit's PR"
+    );
+}
+
+/// Scenario 2, highest-wins: multiple historical PRs carry different
+/// override severities; the highest (`major`) must be the one applied,
+/// regardless of how many lower-severity overrides are also present.
+#[tokio::test]
+async fn test_handle_merged_feature_pr_picks_highest_override_across_multiple_historical_prs() {
+    let tag = GitTag {
+        name: "v1.0.0".to_string(),
+        target_sha: "a".repeat(40),
+        tag_type: GitTagType::Lightweight,
+        message: None,
+        tagger: None,
+        created_at: None,
+    };
+    let sha_patch = "1".repeat(40);
+    let sha_minor = "2".repeat(40);
+    let pr_patch = make_pr(30, "feat/patch-work", "fix: small fix");
+    let pr_minor = make_pr(40, "feat/minor-work", "feat: medium feature");
+
+    let github = TestGitHubForLib::new_empty()
+        .with_tags(vec![tag])
+        .with_commits_between(vec![
+            make_git_commit(&sha_patch),
+            make_git_commit(&sha_minor),
+        ])
+        .with_commit_prs(sha_patch, vec![pr_patch.clone()])
+        .with_commit_prs(sha_minor, vec![pr_minor.clone()])
+        .with_pr_labels(30, vec![override_label("patch")])
+        .with_pr_labels(40, vec![override_label("minor")]);
+
+    let config = TestConfigForLib;
+    let version_calc = TestVersionCalcForLib::returning("1.0.1");
+
+    let processor = ReleaseRegentProcessor::new(
+        github.clone(),
+        config,
+        version_calc,
+        SpyNotificationSender::new(),
+    );
+
+    let event = ProcessingEvent {
+        event_id: "evt-scan-2".into(),
+        correlation_id: "corr-scan-2".into(),
+        event_type: EventType::PullRequestMerged,
+        repository: RepositoryInfo {
+            owner: "acme".into(),
+            name: "app".into(),
+            default_branch: "main".into(),
+        },
+        payload: serde_json::json!({
+            "pull_request": {
+                "head": { "ref": "feat/newest-feature" },
+                "base": { "ref": "main" },
+                "number": 61,
+                "merge_commit_sha": "e".repeat(40)
+            }
+        }),
+        received_at: Utc::now(),
+        source: EventSourceKind::Webhook,
+        installation_id: 0,
+    };
+
+    let result = processor.handle_merged_pull_request(&event).await.unwrap();
+
+    // apply_bump_floor(1.0.0, 1.0.1, Minor) = 1.1.0 — minor outranks patch.
+    match &result {
+        release_orchestrator::OrchestratorResult::Created { branch_name, .. } => {
+            assert!(
+                branch_name.contains("1.1.0"),
+                "branch should reference 1.1.0 (highest historical floor = minor), \
+                 got: {branch_name}"
+            );
+        }
+        other => panic!("expected Created, got {other:?}"),
+    }
+}
+
+/// When the just-merged PR's own override label is lower-severity than a
+/// higher override still outstanding in history, the PR's OWN label still
+/// takes priority — the historical scan only runs when the current PR has
+/// *no* label of its own. Combining the two would be a plausible but wrong
+/// implementation; this test locks in the documented short-circuit behaviour.
+#[tokio::test]
+async fn test_handle_merged_feature_pr_own_label_takes_priority_over_historical_override() {
+    let tag = GitTag {
+        name: "v1.0.0".to_string(),
+        target_sha: "a".repeat(40),
+        tag_type: GitTagType::Lightweight,
+        message: None,
+        tagger: None,
+        created_at: None,
+    };
+    let historical_sha = "3".repeat(40);
+    let historical_pr = make_pr(70, "feat/historical", "feat: historical work");
+
+    // Just-merged PR #71 carries rr:override-minor itself.
+    let github = TestGitHubForLib::new_empty()
+        .with_tags(vec![tag])
+        .with_pr_labels(71, vec![override_label("minor")])
+        .with_commits_between(vec![make_git_commit(&historical_sha)])
+        .with_commit_prs(historical_sha, vec![historical_pr.clone()])
+        // History has a HIGHER override (major) — must be ignored because
+        // PR #71 already has its own label.
+        .with_pr_labels(70, vec![override_label("major")]);
+
+    let config = TestConfigForLib;
+    let version_calc = TestVersionCalcForLib::returning("1.0.1");
+
+    let processor = ReleaseRegentProcessor::new(
+        github.clone(),
+        config,
+        version_calc,
+        SpyNotificationSender::new(),
+    );
+
+    let event = ProcessingEvent {
+        event_id: "evt-scan-3".into(),
+        correlation_id: "corr-scan-3".into(),
+        event_type: EventType::PullRequestMerged,
+        repository: RepositoryInfo {
+            owner: "acme".into(),
+            name: "app".into(),
+            default_branch: "main".into(),
+        },
+        payload: serde_json::json!({
+            "pull_request": {
+                "head": { "ref": "feat/own-label-feature" },
+                "base": { "ref": "main" },
+                "number": 71,
+                "merge_commit_sha": "f".repeat(40)
+            }
+        }),
+        received_at: Utc::now(),
+        source: EventSourceKind::Webhook,
+        installation_id: 0,
+    };
+
+    let result = processor.handle_merged_pull_request(&event).await.unwrap();
+
+    // apply_bump_floor(1.0.0, 1.0.1, Minor) = 1.1.0 — own label (minor) wins,
+    // NOT the historical major override.
+    match &result {
+        release_orchestrator::OrchestratorResult::Created { branch_name, .. } => {
+            assert!(
+                branch_name.contains("1.1.0"),
+                "own label (minor) must take priority over historical major \
+                 override, got: {branch_name}"
+            );
+            assert!(
+                !branch_name.contains("2.0.0"),
+                "historical major override must NOT be combined with own \
+                 label, got: {branch_name}"
+            );
+        }
+        other => panic!("expected Created, got {other:?}"),
+    }
+}
+
+/// Scenario 4: the previous release PR was deleted before merging (no open
+/// release PR and no search results — `search_for_existing_release_pr`
+/// finds nothing), so a *new* release PR must be created. The historical
+/// override from a PR merged before the deletion must still be honoured.
+#[tokio::test]
+async fn test_handle_merged_feature_pr_recreates_release_pr_honoring_historical_override() {
+    let tag = GitTag {
+        name: "v1.0.0".to_string(),
+        target_sha: "a".repeat(40),
+        tag_type: GitTagType::Lightweight,
+        message: None,
+        tagger: None,
+        created_at: None,
+    };
+    let historical_sha = "4".repeat(40);
+    let historical_pr = make_pr(70, "feat/pre-deletion-feature", "feat: pre-deletion work");
+
+    // No existing_prs / search_results configured → simulates a deleted
+    // release PR: search_for_existing_release_pr will find none.
+    let github = TestGitHubForLib::new_empty()
+        .with_tags(vec![tag])
+        .with_commits_between(vec![make_git_commit(&historical_sha)])
+        .with_commit_prs(historical_sha, vec![historical_pr.clone()])
+        .with_pr_labels(70, vec![override_label("major")]);
+
+    let config = TestConfigForLib;
+    let version_calc = TestVersionCalcForLib::returning("1.0.1");
+
+    let processor = ReleaseRegentProcessor::new(
+        github.clone(),
+        config,
+        version_calc,
+        SpyNotificationSender::new(),
+    );
+
+    let event = ProcessingEvent {
+        event_id: "evt-scan-4".into(),
+        correlation_id: "corr-scan-4".into(),
+        event_type: EventType::PullRequestMerged,
+        repository: RepositoryInfo {
+            owner: "acme".into(),
+            name: "app".into(),
+            default_branch: "main".into(),
+        },
+        payload: serde_json::json!({
+            "pull_request": {
+                "head": { "ref": "feat/post-deletion-feature" },
+                "base": { "ref": "main" },
+                "number": 90,
+                "merge_commit_sha": "5".repeat(40)
+            }
+        }),
+        received_at: Utc::now(),
+        source: EventSourceKind::Webhook,
+        installation_id: 0,
+    };
+
+    let result = processor.handle_merged_pull_request(&event).await.unwrap();
+
+    // The release PR must be (re-)created at 2.0.0, honouring the historical
+    // major override, via the Created path (confirming recreation, not an
+    // update to a now-nonexistent PR).
+    match &result {
+        release_orchestrator::OrchestratorResult::Created { pr, branch_name } => {
+            assert!(
+                branch_name.contains("2.0.0"),
+                "recreated branch should reference 2.0.0 (historical floor), \
+                 got: {branch_name}"
+            );
+            assert!(
+                pr.head.ref_name.contains("2.0.0"),
+                "recreated PR head should reference 2.0.0, got: {}",
+                pr.head.ref_name
+            );
+        }
+        other => panic!("expected Created (recreation path), got {other:?}"),
+    }
+}
+
+/// Zero commits in the scan range (e.g. the last release tag's target SHA
+/// equals the current HEAD) must resolve to no floor — not an error, not a
+/// spurious bump.
+#[tokio::test]
+async fn test_handle_merged_feature_pr_zero_commits_in_range_uses_calculated_version() {
+    let tag = GitTag {
+        name: "v1.0.0".to_string(),
+        target_sha: "a".repeat(40),
+        tag_type: GitTagType::Lightweight,
+        message: None,
+        tagger: None,
+        created_at: None,
+    };
+    // commits_between left empty — zero commits in range.
+    let github = TestGitHubForLib::new_empty().with_tags(vec![tag]);
+
+    let config = TestConfigForLib;
+    let version_calc = TestVersionCalcForLib::returning("1.1.0");
+
+    let processor = ReleaseRegentProcessor::new(
+        github.clone(),
+        config,
+        version_calc,
+        SpyNotificationSender::new(),
+    );
+
+    let event = ProcessingEvent {
+        event_id: "evt-scan-5".into(),
+        correlation_id: "corr-scan-5".into(),
+        event_type: EventType::PullRequestMerged,
+        repository: RepositoryInfo {
+            owner: "acme".into(),
+            name: "app".into(),
+            default_branch: "main".into(),
+        },
+        payload: serde_json::json!({
+            "pull_request": {
+                "head": { "ref": "feat/no-history-feature" },
+                "base": { "ref": "main" },
+                "number": 95,
+                "merge_commit_sha": "6".repeat(40)
+            }
+        }),
+        received_at: Utc::now(),
+        source: EventSourceKind::Webhook,
+        installation_id: 0,
+    };
+
+    let result = processor.handle_merged_pull_request(&event).await.unwrap();
+
+    match &result {
+        release_orchestrator::OrchestratorResult::Created { branch_name, .. } => {
+            assert!(
+                branch_name.contains("1.1.0"),
+                "expected unchanged calculated version 1.1.0, got: {branch_name}"
+            );
+        }
+        other => panic!("expected Created, got {other:?}"),
+    }
+}
+
+/// A commit in the scan range that resolves to no associated PR must be
+/// skipped gracefully; a later commit's override must still be found.
+#[tokio::test]
+async fn test_handle_merged_feature_pr_skips_commits_with_no_associated_pr() {
+    let tag = GitTag {
+        name: "v1.0.0".to_string(),
+        target_sha: "a".repeat(40),
+        tag_type: GitTagType::Lightweight,
+        message: None,
+        tagger: None,
+        created_at: None,
+    };
+    let sha_orphan = "7".repeat(40);
+    let sha_with_pr = "8".repeat(40);
+    let pr_with_override = make_pr(80, "feat/with-override", "feat: with override");
+
+    // sha_orphan is in the scan range but has no configured commit_prs entry
+    // → list_pull_requests_for_commit returns [] for it.
+    let github = TestGitHubForLib::new_empty()
+        .with_tags(vec![tag])
+        .with_commits_between(vec![
+            make_git_commit(&sha_orphan),
+            make_git_commit(&sha_with_pr),
+        ])
+        .with_commit_prs(sha_with_pr, vec![pr_with_override.clone()])
+        .with_pr_labels(80, vec![override_label("minor")]);
+
+    let config = TestConfigForLib;
+    let version_calc = TestVersionCalcForLib::returning("1.0.1");
+
+    let processor = ReleaseRegentProcessor::new(
+        github.clone(),
+        config,
+        version_calc,
+        SpyNotificationSender::new(),
+    );
+
+    let event = ProcessingEvent {
+        event_id: "evt-scan-6".into(),
+        correlation_id: "corr-scan-6".into(),
+        event_type: EventType::PullRequestMerged,
+        repository: RepositoryInfo {
+            owner: "acme".into(),
+            name: "app".into(),
+            default_branch: "main".into(),
+        },
+        payload: serde_json::json!({
+            "pull_request": {
+                "head": { "ref": "feat/mixed-history-feature" },
+                "base": { "ref": "main" },
+                "number": 81,
+                "merge_commit_sha": "9".repeat(40)
+            }
+        }),
+        received_at: Utc::now(),
+        source: EventSourceKind::Webhook,
+        installation_id: 0,
+    };
+
+    let result = processor.handle_merged_pull_request(&event).await.unwrap();
+
+    match &result {
+        release_orchestrator::OrchestratorResult::Created { branch_name, .. } => {
+            assert!(
+                branch_name.contains("1.1.0"),
+                "expected minor floor from the commit with an associated PR \
+                 despite the orphan commit, got: {branch_name}"
+            );
+        }
+        other => panic!("expected Created, got {other:?}"),
+    }
+}
+
+/// A payload missing `pull_request.number` (so the just-merged PR's own
+/// labels cannot be read) must NOT disable the historical scan — the scan
+/// only depends on commit history, not on the merged PR's number.
+#[tokio::test]
+async fn test_handle_merged_feature_pr_scan_still_runs_when_merged_pr_number_is_missing() {
+    let tag = GitTag {
+        name: "v1.0.0".to_string(),
+        target_sha: "a".repeat(40),
+        tag_type: GitTagType::Lightweight,
+        message: None,
+        tagger: None,
+        created_at: None,
+    };
+    let historical_sha = "b".repeat(40);
+    let historical_pr = make_pr(85, "feat/historical-85", "feat: historical 85");
+
+    let github = TestGitHubForLib::new_empty()
+        .with_tags(vec![tag])
+        .with_commits_between(vec![make_git_commit(&historical_sha)])
+        .with_commit_prs(historical_sha, vec![historical_pr.clone()])
+        .with_pr_labels(85, vec![override_label("major")]);
+
+    let config = TestConfigForLib;
+    let version_calc = TestVersionCalcForLib::returning("1.1.0");
+
+    let processor = ReleaseRegentProcessor::new(
+        github.clone(),
+        config,
+        version_calc,
+        SpyNotificationSender::new(),
+    );
+
+    let event = ProcessingEvent {
+        event_id: "evt-scan-7".into(),
+        correlation_id: "corr-scan-7".into(),
+        event_type: EventType::PullRequestMerged,
+        repository: RepositoryInfo {
+            owner: "acme".into(),
+            name: "app".into(),
+            default_branch: "main".into(),
+        },
+        payload: serde_json::json!({
+            "pull_request": {
+                "head": { "ref": "feat/no-number-feature" },
+                "base": { "ref": "main" },
+                // "number" intentionally omitted.
+                "merge_commit_sha": "c".repeat(40)
+            }
+        }),
+        received_at: Utc::now(),
+        source: EventSourceKind::Webhook,
+        installation_id: 0,
+    };
+
+    let result = processor.handle_merged_pull_request(&event).await.unwrap();
+
+    match &result {
+        release_orchestrator::OrchestratorResult::Created { branch_name, .. } => {
+            assert!(
+                branch_name.contains("2.0.0"),
+                "expected the historical major override to still apply even \
+                 though pull_request.number was missing, got: {branch_name}"
+            );
+        }
+        other => panic!("expected Created, got {other:?}"),
+    }
+}
+
+/// A transient GitHub API failure resolving a historical commit's PR must
+/// propagate as an error, not be silently swallowed — an override floor must
+/// never be silently dropped due to an API hiccup.
+#[tokio::test]
+async fn test_handle_merged_feature_pr_propagates_error_when_historical_pr_lookup_fails() {
+    let tag = GitTag {
+        name: "v1.0.0".to_string(),
+        target_sha: "a".repeat(40),
+        tag_type: GitTagType::Lightweight,
+        message: None,
+        tagger: None,
+        created_at: None,
+    };
+    let historical_sha = "d".repeat(40);
+
+    let github = TestGitHubForLib::new_empty()
+        .with_tags(vec![tag])
+        .with_commits_between(vec![make_git_commit(&historical_sha)])
+        .with_fail_list_prs_for_commit(historical_sha);
+
+    let config = TestConfigForLib;
+    let version_calc = TestVersionCalcForLib::returning("1.1.0");
+
+    let processor = ReleaseRegentProcessor::new(
+        github.clone(),
+        config,
+        version_calc,
+        SpyNotificationSender::new(),
+    );
+
+    let event = ProcessingEvent {
+        event_id: "evt-scan-8".into(),
+        correlation_id: "corr-scan-8".into(),
+        event_type: EventType::PullRequestMerged,
+        repository: RepositoryInfo {
+            owner: "acme".into(),
+            name: "app".into(),
+            default_branch: "main".into(),
+        },
+        payload: serde_json::json!({
+            "pull_request": {
+                "head": { "ref": "feat/error-feature" },
+                "base": { "ref": "main" },
+                "number": 86,
+                "merge_commit_sha": "e".repeat(40)
+            }
+        }),
+        received_at: Utc::now(),
+        source: EventSourceKind::Webhook,
+        installation_id: 0,
+    };
+
+    let result = processor.handle_merged_pull_request(&event).await;
+
+    assert!(
+        result.is_err(),
+        "expected Err when the historical-scan PR lookup fails, got: {result:?}"
     );
 }
 

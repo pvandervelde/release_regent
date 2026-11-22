@@ -1584,3 +1584,182 @@ mod property_tests {
         }
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BumpKind ordering and `highest_bump_kind` (task #211, scenarios 2/3/4)
+//
+// `BumpKind` must support `Major > Minor > Patch` so that the highest
+// outstanding `rr:override-*` label across several PRs can be computed. The
+// naive `#[derive(PartialOrd, Ord)]` would order variants by *declaration*
+// order (Major < Minor < Patch) — the exact opposite of the required business
+// ordering — so these tests fail against that naive derive and only pass
+// against a deliberate `Ord` implementation.
+//
+// `highest_bump_kind` is a free function assumed to live in
+// `release_regent_core::versioning` with the signature:
+//
+// ```rust,ignore
+// pub fn highest_bump_kind<I: IntoIterator<Item = BumpKind>>(kinds: I) -> Option<BumpKind>;
+// ```
+// ─────────────────────────────────────────────────────────────────────────────
+
+mod bump_kind_ordering_tests {
+    use super::*;
+    use std::cmp::Ordering;
+
+    // ── Tier 1: specification tests ─────────────────────────────────────────
+
+    #[test]
+    fn test_bump_kind_major_outranks_minor() {
+        assert!(BumpKind::Major > BumpKind::Minor);
+    }
+
+    #[test]
+    fn test_bump_kind_minor_outranks_patch() {
+        assert!(BumpKind::Minor > BumpKind::Patch);
+    }
+
+    #[test]
+    fn test_bump_kind_major_outranks_patch() {
+        // Transitivity: a naive partial ordering that only compares adjacent
+        // variants correctly could still get the non-adjacent pair wrong.
+        assert!(BumpKind::Major > BumpKind::Patch);
+    }
+
+    #[test]
+    fn test_bump_kind_equal_kind_is_equal() {
+        assert_eq!(BumpKind::Minor.cmp(&BumpKind::Minor), Ordering::Equal);
+    }
+
+    #[test]
+    fn test_highest_bump_kind_returns_major_when_present_with_others() {
+        let kinds = vec![BumpKind::Minor, BumpKind::Major, BumpKind::Patch];
+        assert_eq!(highest_bump_kind(kinds), Some(BumpKind::Major));
+    }
+
+    #[test]
+    fn test_highest_bump_kind_returns_minor_when_major_absent() {
+        let kinds = vec![BumpKind::Patch, BumpKind::Minor];
+        assert_eq!(highest_bump_kind(kinds), Some(BumpKind::Minor));
+    }
+
+    #[test]
+    fn test_highest_bump_kind_returns_none_for_empty_iterator() {
+        let kinds: Vec<BumpKind> = vec![];
+        assert_eq!(highest_bump_kind(kinds), None);
+    }
+
+    // ── Tier 2: boundary / adversarial tests ────────────────────────────────
+
+    /// N=1 boundary: a stub that always returns `None` (ignoring the input)
+    /// fails this test, since a single-element iterator must yield that
+    /// element back.
+    #[test]
+    fn test_highest_bump_kind_single_element_returns_itself() {
+        assert_eq!(highest_bump_kind(vec![BumpKind::Patch]), Some(BumpKind::Patch));
+    }
+
+    /// Duplicate highest-ranked entries must not panic or produce a spurious
+    /// result — the tie resolves to that same kind.
+    #[test]
+    fn test_highest_bump_kind_ties_resolve_to_that_kind() {
+        let kinds = vec![BumpKind::Major, BumpKind::Major, BumpKind::Minor];
+        assert_eq!(highest_bump_kind(kinds), Some(BumpKind::Major));
+    }
+
+    /// Order independence: a stub that just returns `kinds.into_iter().next()`
+    /// (first element) passes when Major happens to be first, but fails here
+    /// because Major is listed last.
+    #[test]
+    fn test_highest_bump_kind_is_independent_of_input_order() {
+        let forward = vec![BumpKind::Patch, BumpKind::Minor, BumpKind::Major];
+        let reversed = vec![BumpKind::Major, BumpKind::Minor, BumpKind::Patch];
+        assert_eq!(highest_bump_kind(forward), Some(BumpKind::Major));
+        assert_eq!(highest_bump_kind(reversed), Some(BumpKind::Major));
+    }
+
+    /// A stub `Ord` impl that returns `Ordering::Equal` for every comparison
+    /// would leave a deliberately-shuffled vector unsorted by `sort()`. This
+    /// test fails against such a stub because the sorted result would not
+    /// match the expected ascending severity order.
+    #[test]
+    fn test_bump_kind_ordering_is_total_via_sort() {
+        let mut kinds = vec![BumpKind::Minor, BumpKind::Patch, BumpKind::Major];
+        kinds.sort();
+        assert_eq!(
+            kinds,
+            vec![BumpKind::Patch, BumpKind::Minor, BumpKind::Major],
+            "ascending sort must order Patch < Minor < Major"
+        );
+    }
+
+    // ── Tier 3: property-based tests ────────────────────────────────────────
+
+    mod property_tests {
+        use super::*;
+        use proptest::prelude::*;
+
+        fn bump_kind_strategy() -> impl Strategy<Value = BumpKind> {
+            prop_oneof![
+                Just(BumpKind::Major),
+                Just(BumpKind::Minor),
+                Just(BumpKind::Patch),
+            ]
+        }
+
+        proptest! {
+            /// `highest_bump_kind` returns `None` iff the input is empty, and
+            /// otherwise returns a kind that is `>=` every element supplied.
+            #[test]
+            fn prop_highest_bump_kind_is_none_or_maximum(
+                kinds in prop::collection::vec(bump_kind_strategy(), 0..10)
+            ) {
+                let result = highest_bump_kind(kinds.clone());
+
+                if kinds.is_empty() {
+                    prop_assert!(result.is_none(), "expected None for empty input");
+                } else {
+                    let found = result.expect("expected Some for non-empty input");
+                    for k in &kinds {
+                        prop_assert!(
+                            k <= &found,
+                            "element {k:?} outranks the returned maximum {found:?}"
+                        );
+                    }
+                    // The maximum must itself have been present in the input.
+                    prop_assert!(
+                        kinds.iter().any(|k| *k == found),
+                        "returned maximum {found:?} was not present in the input"
+                    );
+                }
+            }
+
+            /// The result is invariant under permutation of the input — in
+            /// particular, reversing the input never changes the answer.
+            #[test]
+            fn prop_highest_bump_kind_is_order_independent(
+                kinds in prop::collection::vec(bump_kind_strategy(), 1..10)
+            ) {
+                let forward = highest_bump_kind(kinds.clone());
+                let mut reversed_input = kinds.clone();
+                reversed_input.reverse();
+                let reversed = highest_bump_kind(reversed_input);
+                prop_assert_eq!(forward, reversed);
+            }
+
+            /// If any element in the input is `Major`, the result must be
+            /// `Major` — the highest severity always wins regardless of how
+            /// many lower-severity entries surround it.
+            #[test]
+            fn prop_highest_bump_kind_major_always_wins_when_present(
+                kinds in prop::collection::vec(bump_kind_strategy(), 1..10)
+            ) {
+                let has_major = kinds.iter().any(|k| *k == BumpKind::Major);
+                let result = highest_bump_kind(kinds);
+                if has_major {
+                    prop_assert_eq!(result, Some(BumpKind::Major));
+                }
+            }
+        }
+    }
+}

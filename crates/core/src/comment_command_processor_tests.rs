@@ -54,6 +54,25 @@ struct TestState {
     next_add_labels_error: bool,
     /// When `true`, every `remove_label` call returns a `CoreError::Network` error.
     all_remove_label_network_error: bool,
+    /// Commits returned by `get_commits_between` (task #211 override-floor scan).
+    commits_between: Vec<GitCommit>,
+    /// Pull requests associated with a given commit SHA, keyed by SHA —
+    /// drives `list_pull_requests_for_commit` (task #211).
+    commit_prs: HashMap<String, Vec<PullRequest>>,
+    /// When set, `list_pull_requests_for_commit` returns a `CoreError::GitHub`
+    /// error for this specific commit SHA.
+    fail_commit_prs_for_sha: Option<String>,
+    /// When set, `list_pr_labels` returns a `CoreError::GitHub` error for this
+    /// specific PR/issue number (task #211 — needed to test error propagation
+    /// from the override-floor scan's label lookup step).
+    fail_list_labels_for_pr: Option<u64>,
+    /// Every `(base, head)` argument pair passed to `get_commits_between`, in
+    /// call order — lets tests assert the historical scan was actually
+    /// invoked rather than short-circuited by a stub.
+    get_commits_between_calls: Vec<(String, String)>,
+    /// Every commit SHA passed to `list_pull_requests_for_commit`, in call
+    /// order.
+    list_prs_for_commit_calls: Vec<String>,
 }
 
 #[derive(Clone, Default)]
@@ -126,12 +145,52 @@ impl TestGitHub {
         self
     }
 
+    /// Pre-load the commits returned by `get_commits_between` (ignores the
+    /// actual `base`/`head` arguments, consistent with this test double's
+    /// existing simplifications — see `list_tags`).
+    async fn with_commits_between(self, commits: Vec<GitCommit>) -> Self {
+        self.state.lock().await.commits_between = commits;
+        self
+    }
+
+    /// Associate a commit SHA with the pull request(s) `list_pull_requests_for_commit`
+    /// should return for it. Calling this multiple times for different SHAs
+    /// accumulates independent mappings.
+    async fn with_commit_prs(self, sha: impl Into<String>, prs: Vec<PullRequest>) -> Self {
+        self.state.lock().await.commit_prs.insert(sha.into(), prs);
+        self
+    }
+
+    /// Make `list_pull_requests_for_commit` return a `CoreError::GitHub` error
+    /// for the specified commit SHA only.
+    async fn with_fail_commit_prs_for_sha(self, sha: impl Into<String>) -> Self {
+        self.state.lock().await.fail_commit_prs_for_sha = Some(sha.into());
+        self
+    }
+
+    /// Make `list_pr_labels` return a `CoreError::GitHub` error for the
+    /// specified PR/issue number only.
+    async fn with_fail_list_labels_for_pr(self, pr_number: u64) -> Self {
+        self.state.lock().await.fail_list_labels_for_pr = Some(pr_number);
+        self
+    }
+
     async fn issue_comments(&self) -> Vec<(u64, String)> {
         self.state.lock().await.created_issue_comments.clone()
     }
 
     async fn created_prs(&self) -> Vec<CreatePullRequestParams> {
         self.state.lock().await.created_prs.clone()
+    }
+
+    /// Every `(base, head)` pair passed to `get_commits_between`, in call order.
+    async fn get_commits_between_calls(&self) -> Vec<(String, String)> {
+        self.state.lock().await.get_commits_between_calls.clone()
+    }
+
+    /// Every commit SHA passed to `list_pull_requests_for_commit`, in call order.
+    async fn list_prs_for_commit_calls(&self) -> Vec<String> {
+        self.state.lock().await.list_prs_for_commit_calls.clone()
     }
 }
 
@@ -143,11 +202,14 @@ impl GitOperations for TestGitHub {
         &self,
         _owner: &str,
         _repo: &str,
-        _base: &str,
-        _head: &str,
+        base: &str,
+        head: &str,
         _options: GetCommitsOptions,
     ) -> CoreResult<Vec<GitCommit>> {
-        Ok(vec![])
+        let mut st = self.state.lock().await;
+        st.get_commits_between_calls
+            .push((base.to_string(), head.to_string()));
+        Ok(st.commits_between.clone())
     }
 
     async fn get_commit(&self, _owner: &str, _repo: &str, _sha: &str) -> CoreResult<GitCommit> {
@@ -469,14 +531,31 @@ impl GitHubOperations for TestGitHub {
         _repo: &str,
         pr_number: u64,
     ) -> CoreResult<Vec<Label>> {
-        Ok(self
-            .state
-            .lock()
-            .await
-            .pr_labels
-            .get(&pr_number)
-            .cloned()
-            .unwrap_or_default())
+        let st = self.state.lock().await;
+        if st.fail_list_labels_for_pr == Some(pr_number) {
+            return Err(CoreError::github(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("Simulated list_pr_labels failure for PR #{pr_number}"),
+            )));
+        }
+        Ok(st.pr_labels.get(&pr_number).cloned().unwrap_or_default())
+    }
+
+    async fn list_pull_requests_for_commit(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        commit_sha: &str,
+    ) -> CoreResult<Vec<PullRequest>> {
+        let mut st = self.state.lock().await;
+        st.list_prs_for_commit_calls.push(commit_sha.to_string());
+        if st.fail_commit_prs_for_sha.as_deref() == Some(commit_sha) {
+            return Err(CoreError::github(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("Simulated list_pull_requests_for_commit failure for sha {commit_sha}"),
+            )));
+        }
+        Ok(st.commit_prs.get(commit_sha).cloned().unwrap_or_default())
     }
 
     async fn create_issue(
@@ -648,6 +727,69 @@ fn make_release_pr(number: u64, base_sha: &str) -> PullRequest {
             sha: base_sha.to_string(),
             repo: r,
         },
+    }
+}
+
+/// Build a (now-merged) feature PR, used to populate `list_pull_requests_for_commit`
+/// responses for the override-floor historical scan (task #211).
+fn make_merged_feature_pr(number: u64) -> PullRequest {
+    let now = Utc::now();
+    let r = stub_repo("acme", "app");
+    PullRequest {
+        number,
+        title: format!("feat: historical feature #{number}"),
+        body: None,
+        state: "closed".to_string(),
+        draft: false,
+        created_at: now,
+        updated_at: now,
+        merged_at: Some(now),
+        user: stub_user(),
+        head: PullRequestBranch {
+            ref_name: format!("feat/historical-{number}"),
+            sha: format!("{number:0>40}"),
+            repo: stub_repo("acme", "app"),
+        },
+        base: PullRequestBranch {
+            ref_name: "main".to_string(),
+            sha: "basesha".to_string(),
+            repo: r,
+        },
+    }
+}
+
+/// Build an `rr:override-*` label by bump-kind name (`"major"`, `"minor"`, or `"patch"`).
+fn override_label(kind: &str) -> Label {
+    Label {
+        id: 1,
+        name: format!("rr:override-{kind}"),
+        color: "ededed".to_string(),
+        description: None,
+    }
+}
+
+/// Build a minimal `GitCommit` for the override-floor historical scan tests.
+fn make_git_commit(sha: &str) -> GitCommit {
+    use crate::traits::git_operations::GitUser as GitOpsUser;
+    GitCommit {
+        sha: sha.to_string(),
+        author: GitOpsUser {
+            name: "Dev".into(),
+            email: "dev@example.com".into(),
+            login: None,
+        },
+        committer: GitOpsUser {
+            name: "Dev".into(),
+            email: "dev@example.com".into(),
+            login: None,
+        },
+        author_date: Utc::now(),
+        commit_date: Utc::now(),
+        message: "feat: historical commit".into(),
+        subject: "feat: historical commit".into(),
+        body: None,
+        parents: vec![],
+        files: vec![],
     }
 }
 
@@ -1743,5 +1885,576 @@ async fn test_process_release_bump_same_override_reposted_shows_rererecorded_con
     assert!(
         labels.iter().any(|l| l.name == "rr:override-patch"),
         "rr:override-patch must be re-applied after repost, got: {labels:?}"
+    );
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// `resolve_outstanding_override_floor` — free-function contract tests
+// (task #211, Interface Contract gap #3)
+//
+// Assumed signature (does not exist yet — this is the RED-state target):
+//
+// ```rust,ignore
+// pub(crate) async fn resolve_outstanding_override_floor<G>(
+//     github: &G,
+//     owner: &str,
+//     repo: &str,
+//     base: &str,
+//     head: &str,
+// ) -> CoreResult<Option<(BumpKind, u64)>>
+// where
+//     G: GitHubOperations + Send + Sync;
+// ```
+//
+// Walks commits in `base..head` via `get_commits_between`, resolves each
+// commit's associated PR(s) via `list_pull_requests_for_commit`, reads each
+// PR's labels via `list_pr_labels`, and returns the highest `rr:override-*`
+// label found plus the PR number it came from.
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// Zero commits in range → no floor outstanding.
+#[tokio::test]
+async fn test_resolve_outstanding_override_floor_returns_none_when_no_commits_in_range() {
+    let github = TestGitHub::new().with_commits_between(vec![]).await;
+
+    let result =
+        resolve_outstanding_override_floor(&github, "acme", "app", "v1.0.0", "headsha").await;
+
+    assert_eq!(result.unwrap(), None);
+}
+
+/// A commit that resolves to no associated PR must not crash and must not be
+/// treated as carrying an override.
+#[tokio::test]
+async fn test_resolve_outstanding_override_floor_returns_none_when_commit_has_no_associated_pr() {
+    let sha = "a".repeat(40);
+    let github = TestGitHub::new()
+        .with_commits_between(vec![make_git_commit(&sha)])
+        .await;
+    // No `with_commit_prs` call for `sha` → list_pull_requests_for_commit
+    // returns an empty vec for it.
+
+    let result =
+        resolve_outstanding_override_floor(&github, "acme", "app", "v1.0.0", "headsha").await;
+
+    assert_eq!(result.unwrap(), None);
+}
+
+/// A commit whose PR carries labels, but none of them are `rr:override-*`,
+/// must not be mistaken for an outstanding floor.
+#[tokio::test]
+async fn test_resolve_outstanding_override_floor_returns_none_when_pr_has_no_override_label() {
+    let sha = "b".repeat(40);
+    let pr = make_merged_feature_pr(10);
+    let unrelated_label = Label {
+        id: 99,
+        name: "needs-review".to_string(),
+        color: "ffffff".to_string(),
+        description: None,
+    };
+    let github = TestGitHub::new()
+        .with_commits_between(vec![make_git_commit(&sha)])
+        .await
+        .with_commit_prs(sha, vec![pr.clone()])
+        .await
+        .with_pr_labels(pr.number, vec![unrelated_label])
+        .await;
+
+    let result =
+        resolve_outstanding_override_floor(&github, "acme", "app", "v1.0.0", "headsha").await;
+
+    assert_eq!(result.unwrap(), None);
+}
+
+/// A single historical PR carrying `rr:override-major` is found and reported
+/// together with its PR number.
+#[tokio::test]
+async fn test_resolve_outstanding_override_floor_finds_single_override_label() {
+    let sha = "c".repeat(40);
+    let pr = make_merged_feature_pr(55);
+    let github = TestGitHub::new()
+        .with_commits_between(vec![make_git_commit(&sha)])
+        .await
+        .with_commit_prs(sha, vec![pr.clone()])
+        .await
+        .with_pr_labels(pr.number, vec![override_label("major")])
+        .await;
+
+    let result =
+        resolve_outstanding_override_floor(&github, "acme", "app", "v1.0.0", "headsha")
+            .await
+            .unwrap();
+
+    assert_eq!(result, Some((BumpKind::Major, 55)));
+}
+
+/// Unrelated labels alongside the override label must not prevent detection.
+#[tokio::test]
+async fn test_resolve_outstanding_override_floor_ignores_non_override_labels_alongside_override() {
+    let sha = "d".repeat(40);
+    let pr = make_merged_feature_pr(21);
+    let unrelated_label = Label {
+        id: 5,
+        name: "bug".to_string(),
+        color: "ff0000".to_string(),
+        description: None,
+    };
+    let github = TestGitHub::new()
+        .with_commits_between(vec![make_git_commit(&sha)])
+        .await
+        .with_commit_prs(sha, vec![pr.clone()])
+        .await
+        .with_pr_labels(pr.number, vec![unrelated_label, override_label("minor")])
+        .await;
+
+    let result =
+        resolve_outstanding_override_floor(&github, "acme", "app", "v1.0.0", "headsha")
+            .await
+            .unwrap();
+
+    assert_eq!(result, Some((BumpKind::Minor, 21)));
+}
+
+/// When multiple commits resolve to different PRs carrying different
+/// override severities, the highest wins — regardless of which commit comes
+/// first chronologically.
+#[tokio::test]
+async fn test_resolve_outstanding_override_floor_picks_highest_across_multiple_prs() {
+    let sha_patch = "e".repeat(40);
+    let sha_major = "f".repeat(40);
+    let pr_patch = make_merged_feature_pr(10);
+    let pr_major = make_merged_feature_pr(20);
+    let github = TestGitHub::new()
+        .with_commits_between(vec![make_git_commit(&sha_patch), make_git_commit(&sha_major)])
+        .await
+        .with_commit_prs(sha_patch.clone(), vec![pr_patch.clone()])
+        .await
+        .with_commit_prs(sha_major.clone(), vec![pr_major.clone()])
+        .await
+        .with_pr_labels(pr_patch.number, vec![override_label("patch")])
+        .await
+        .with_pr_labels(pr_major.number, vec![override_label("major")])
+        .await;
+
+    let result =
+        resolve_outstanding_override_floor(&github, "acme", "app", "v1.0.0", "headsha")
+            .await
+            .unwrap();
+
+    assert_eq!(result, Some((BumpKind::Major, 20)));
+}
+
+/// Order independence: swapping which commit appears first in the scan must
+/// not change which override wins — kills a "first match wins" bug.
+#[tokio::test]
+async fn test_resolve_outstanding_override_floor_picks_highest_when_order_reversed() {
+    let sha_patch = "1".repeat(40);
+    let sha_major = "2".repeat(40);
+    let pr_patch = make_merged_feature_pr(30);
+    let pr_major = make_merged_feature_pr(40);
+    // Note: major-carrying commit is listed FIRST this time.
+    let github = TestGitHub::new()
+        .with_commits_between(vec![make_git_commit(&sha_major), make_git_commit(&sha_patch)])
+        .await
+        .with_commit_prs(sha_patch.clone(), vec![pr_patch.clone()])
+        .await
+        .with_commit_prs(sha_major.clone(), vec![pr_major.clone()])
+        .await
+        .with_pr_labels(pr_patch.number, vec![override_label("patch")])
+        .await
+        .with_pr_labels(pr_major.number, vec![override_label("major")])
+        .await;
+
+    let result =
+        resolve_outstanding_override_floor(&github, "acme", "app", "v1.0.0", "headsha")
+            .await
+            .unwrap();
+
+    assert_eq!(result, Some((BumpKind::Major, 40)));
+}
+
+/// A single commit resolving to multiple associated PRs (e.g. a squash of
+/// several branches) must still surface the highest override across all of
+/// them, not just the first PR returned.
+#[tokio::test]
+async fn test_resolve_outstanding_override_floor_multiple_prs_per_commit_takes_highest() {
+    let sha = "3".repeat(40);
+    let pr_low = make_merged_feature_pr(1);
+    let pr_high = make_merged_feature_pr(2);
+    let github = TestGitHub::new()
+        .with_commits_between(vec![make_git_commit(&sha)])
+        .await
+        .with_commit_prs(sha, vec![pr_low.clone(), pr_high.clone()])
+        .await
+        .with_pr_labels(pr_low.number, vec![override_label("patch")])
+        .await
+        .with_pr_labels(pr_high.number, vec![override_label("major")])
+        .await;
+
+    let result =
+        resolve_outstanding_override_floor(&github, "acme", "app", "v1.0.0", "headsha")
+            .await
+            .unwrap();
+
+    assert_eq!(result, Some((BumpKind::Major, 2)));
+}
+
+/// A transient GitHub API failure while resolving a commit's associated PR
+/// must propagate as an error rather than be silently swallowed into `None`
+/// — an override floor must never be silently dropped due to an API hiccup.
+#[tokio::test]
+async fn test_resolve_outstanding_override_floor_propagates_commit_pr_lookup_error() {
+    let sha = "4".repeat(40);
+    let github = TestGitHub::new()
+        .with_commits_between(vec![make_git_commit(&sha)])
+        .await
+        .with_fail_commit_prs_for_sha(sha)
+        .await;
+
+    let result =
+        resolve_outstanding_override_floor(&github, "acme", "app", "v1.0.0", "headsha").await;
+
+    assert!(
+        result.is_err(),
+        "expected Err when list_pull_requests_for_commit fails, got: {result:?}"
+    );
+}
+
+/// A transient GitHub API failure while reading a resolved PR's labels must
+/// likewise propagate rather than being swallowed.
+#[tokio::test]
+async fn test_resolve_outstanding_override_floor_propagates_label_lookup_error() {
+    let sha = "5".repeat(40);
+    let pr = make_merged_feature_pr(66);
+    let github = TestGitHub::new()
+        .with_commits_between(vec![make_git_commit(&sha)])
+        .await
+        .with_commit_prs(sha, vec![pr.clone()])
+        .await
+        .with_fail_list_labels_for_pr(pr.number)
+        .await;
+
+    let result =
+        resolve_outstanding_override_floor(&github, "acme", "app", "v1.0.0", "headsha").await;
+
+    assert!(
+        result.is_err(),
+        "expected Err when list_pr_labels fails, got: {result:?}"
+    );
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// `!set-version` override-floor guard (task #211, scenario 3)
+//
+// New Guard D in `handle_set_version`: before orchestrating, scan merged PRs
+// in the current release cycle for outstanding `rr:override-*` labels. If the
+// pinned version would be lower than the floor those labels imply, reject
+// with a self-contained comment naming the floor version, the originating
+// PR, and the corrective action. Existing Guards A/B/C are unaffected.
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// Exact wording match for the major-override rejection, reproducing the
+/// example given in GitHub issue #211 verbatim.
+#[tokio::test]
+async fn test_process_set_version_rejected_when_below_outstanding_major_override_floor() {
+    let sha = "6".repeat(40);
+    let overriding_pr = make_merged_feature_pr(55);
+    let github = TestGitHub::new()
+        .with_tags(vec![make_semver_tag("v1.0.0")])
+        .await
+        .with_pr(make_release_pr(42, "deadbeef"))
+        .await
+        .with_commits_between(vec![make_git_commit(&sha)])
+        .await
+        .with_commit_prs(sha, vec![overriding_pr.clone()])
+        .await
+        .with_pr_labels(overriding_pr.number, vec![override_label("major")])
+        .await;
+
+    let processor = CommentCommandProcessor::new(default_config(true), &github);
+    // 1.3.0 is strictly greater than the current released 1.0.0 (passes Guard
+    // B) but below the 2.0.0 floor implied by the outstanding override.
+    let event = test_event(42, "!set-version 1.3.0", "open");
+    let result = processor.process(&event).await;
+
+    assert!(result.is_ok(), "expected Ok (acknowledged), got: {result:?}");
+    let comments = github.issue_comments().await;
+    assert_eq!(comments.len(), 1, "expected one rejection comment, got {comments:?}");
+    assert_eq!(comments[0].0, 42);
+    assert_eq!(
+        comments[0].1,
+        "❌ **Release Regent**: `!set-version 1.3.0` was rejected — an \
+         `rr:override-major` label is outstanding on PR #55, which requires \
+         the release version to be at least `2.0.0`. Use `!set-version 2.0.0` \
+         or higher, or remove the `!release major` override first."
+    );
+    // The orchestrator must never have run.
+    assert!(
+        github.created_prs().await.is_empty(),
+        "orchestrator must not be called when rejected by the override-floor guard"
+    );
+}
+
+/// Same guard, minor-override wording and floor arithmetic.
+#[tokio::test]
+async fn test_process_set_version_rejected_when_below_outstanding_minor_override_floor() {
+    let sha = "7".repeat(40);
+    let overriding_pr = make_merged_feature_pr(77);
+    let github = TestGitHub::new()
+        .with_tags(vec![make_semver_tag("v1.0.0")])
+        .await
+        .with_pr(make_release_pr(42, "deadbeef"))
+        .await
+        .with_commits_between(vec![make_git_commit(&sha)])
+        .await
+        .with_commit_prs(sha, vec![overriding_pr.clone()])
+        .await
+        .with_pr_labels(overriding_pr.number, vec![override_label("minor")])
+        .await;
+
+    let processor = CommentCommandProcessor::new(default_config(true), &github);
+    // 1.0.5 > current (1.0.0) but below the 1.1.0 floor from the outstanding
+    // minor override.
+    let event = test_event(42, "!set-version 1.0.5", "open");
+    let result = processor.process(&event).await;
+
+    assert!(result.is_ok(), "expected Ok (acknowledged), got: {result:?}");
+    let comments = github.issue_comments().await;
+    assert_eq!(comments.len(), 1, "expected one rejection comment, got {comments:?}");
+    assert!(
+        comments[0].1.contains("`rr:override-minor` label is outstanding on PR #77"),
+        "rejection should name the overriding PR, got: {}",
+        comments[0].1
+    );
+    assert!(
+        comments[0].1.contains("at least `1.1.0`"),
+        "rejection should name the floor version, got: {}",
+        comments[0].1
+    );
+    assert!(
+        comments[0].1.contains("Use `!set-version 1.1.0` or higher"),
+        "rejection should name the corrective action, got: {}",
+        comments[0].1
+    );
+    assert!(
+        comments[0].1.contains("remove the `!release minor` override first"),
+        "rejection should name the alternative corrective action, got: {}",
+        comments[0].1
+    );
+    assert!(github.created_prs().await.is_empty());
+}
+
+/// Rejection comments must never leak internal implementation details (SHAs,
+/// internal error text, stack traces) — only business-level information.
+#[tokio::test]
+async fn test_process_set_version_override_floor_rejection_does_not_leak_internal_state() {
+    let sha = "8".repeat(40);
+    let overriding_pr = make_merged_feature_pr(55);
+    let github = TestGitHub::new()
+        .with_tags(vec![make_semver_tag("v1.0.0")])
+        .await
+        .with_pr(make_release_pr(42, "deadbeef"))
+        .await
+        .with_commits_between(vec![make_git_commit(&sha)])
+        .await
+        .with_commit_prs(sha.clone(), vec![overriding_pr.clone()])
+        .await
+        .with_pr_labels(overriding_pr.number, vec![override_label("major")])
+        .await;
+
+    let processor = CommentCommandProcessor::new(default_config(true), &github);
+    let event = test_event(42, "!set-version 1.3.0", "open");
+    processor.process(&event).await.unwrap();
+
+    let comments = github.issue_comments().await;
+    assert!(
+        !comments[0].1.contains(&sha),
+        "rejection comment must not leak the raw commit SHA, got: {}",
+        comments[0].1
+    );
+}
+
+/// Pinned version exactly at the floor must be accepted, not rejected.
+#[tokio::test]
+async fn test_process_set_version_accepted_when_exactly_at_outstanding_override_floor() {
+    let sha = "9".repeat(40);
+    let overriding_pr = make_merged_feature_pr(55);
+    let github = TestGitHub::new()
+        .with_tags(vec![make_semver_tag("v1.0.0")])
+        .await
+        .with_pr(make_release_pr(42, "deadbeef"))
+        .await
+        .with_commits_between(vec![make_git_commit(&sha)])
+        .await
+        .with_commit_prs(sha, vec![overriding_pr.clone()])
+        .await
+        .with_pr_labels(overriding_pr.number, vec![override_label("major")])
+        .await;
+
+    let processor = CommentCommandProcessor::new(default_config(true), &github);
+    let event = test_event(42, "!set-version 2.0.0", "open");
+    let result = processor.process(&event).await;
+
+    assert!(result.is_ok());
+    let comments = github.issue_comments().await;
+    assert_eq!(comments.len(), 1);
+    assert!(
+        comments[0].1.contains('✅'),
+        "expected acceptance confirmation at the floor boundary, got: {}",
+        comments[0].1
+    );
+    assert_eq!(github.created_prs().await.len(), 1);
+}
+
+/// Pinned version above the floor must also be accepted.
+#[tokio::test]
+async fn test_process_set_version_accepted_when_above_outstanding_override_floor() {
+    let sha = "0".repeat(40);
+    let overriding_pr = make_merged_feature_pr(55);
+    let github = TestGitHub::new()
+        .with_tags(vec![make_semver_tag("v1.0.0")])
+        .await
+        .with_pr(make_release_pr(42, "deadbeef"))
+        .await
+        .with_commits_between(vec![make_git_commit(&sha)])
+        .await
+        .with_commit_prs(sha, vec![overriding_pr.clone()])
+        .await
+        .with_pr_labels(overriding_pr.number, vec![override_label("major")])
+        .await;
+
+    let processor = CommentCommandProcessor::new(default_config(true), &github);
+    let event = test_event(42, "!set-version 2.5.0", "open");
+    let result = processor.process(&event).await;
+
+    assert!(result.is_ok());
+    let comments = github.issue_comments().await;
+    assert!(comments[0].1.contains('✅'));
+    assert_eq!(github.created_prs().await.len(), 1);
+}
+
+/// A `patch` override floor is the very next patch version after the current
+/// release, so Guard B (strictly greater than current) already forces any
+/// accepted pin to satisfy it. This boundary test locks in that the new
+/// guard does not spuriously reject a patch-satisfying pin.
+#[tokio::test]
+async fn test_process_set_version_patch_override_floor_satisfied_when_guard_b_satisfied() {
+    let sha = "a1".repeat(20);
+    let overriding_pr = make_merged_feature_pr(88);
+    let github = TestGitHub::new()
+        .with_tags(vec![make_semver_tag("v1.0.0")])
+        .await
+        .with_pr(make_release_pr(42, "deadbeef"))
+        .await
+        .with_commits_between(vec![make_git_commit(&sha)])
+        .await
+        .with_commit_prs(sha, vec![overriding_pr.clone()])
+        .await
+        .with_pr_labels(overriding_pr.number, vec![override_label("patch")])
+        .await;
+
+    let processor = CommentCommandProcessor::new(default_config(true), &github);
+    let event = test_event(42, "!set-version 1.0.1", "open");
+    let result = processor.process(&event).await;
+
+    assert!(result.is_ok());
+    let comments = github.issue_comments().await;
+    assert!(
+        comments[0].1.contains('✅'),
+        "expected acceptance, got: {}",
+        comments[0].1
+    );
+}
+
+/// Regression guard: when no `rr:override-*` labels are outstanding anywhere
+/// in history, behaviour must be identical to before this feature existed.
+#[tokio::test]
+async fn test_process_set_version_proceeds_normally_when_no_override_labels_outstanding_anywhere()
+{
+    let sha = "b2".repeat(20);
+    let unrelated_pr = make_merged_feature_pr(99);
+    let github = TestGitHub::new()
+        .with_tags(vec![make_semver_tag("v1.0.0")])
+        .await
+        .with_pr(make_release_pr(42, "deadbeef"))
+        .await
+        .with_commits_between(vec![make_git_commit(&sha)])
+        .await
+        .with_commit_prs(sha, vec![unrelated_pr.clone()])
+        .await;
+    // unrelated_pr intentionally carries no labels at all.
+
+    let processor = CommentCommandProcessor::new(default_config(true), &github);
+    let event = test_event(42, "!set-version 2.0.0", "open");
+    let result = processor.process(&event).await;
+
+    assert!(result.is_ok());
+    let comments = github.issue_comments().await;
+    assert_eq!(comments.len(), 1);
+    assert!(comments[0].1.contains('✅'));
+}
+
+/// Stub-killing test: a hardcoded `Ok(None)` implementation of the
+/// override-floor scan (e.g. skipping it entirely) would still pass the
+/// acceptance-path tests above by coincidence. This test asserts the scan
+/// machinery was *actually invoked* by checking the mock recorded real calls.
+#[tokio::test]
+async fn test_process_set_version_floor_guard_actually_queries_commit_history() {
+    let sha = "c3".repeat(20);
+    let overriding_pr = make_merged_feature_pr(55);
+    let github = TestGitHub::new()
+        .with_tags(vec![make_semver_tag("v1.0.0")])
+        .await
+        .with_pr(make_release_pr(42, "deadbeef"))
+        .await
+        .with_commits_between(vec![make_git_commit(&sha)])
+        .await
+        .with_commit_prs(sha.clone(), vec![overriding_pr.clone()])
+        .await
+        .with_pr_labels(overriding_pr.number, vec![override_label("major")])
+        .await;
+
+    let processor = CommentCommandProcessor::new(default_config(true), &github);
+    let event = test_event(42, "!set-version 1.3.0", "open");
+    processor.process(&event).await.unwrap();
+
+    assert!(
+        !github.get_commits_between_calls().await.is_empty(),
+        "expected the override-floor guard to call get_commits_between"
+    );
+    assert!(
+        github
+            .list_prs_for_commit_calls()
+            .await
+            .contains(&sha),
+        "expected the override-floor guard to resolve the commit's PR via \
+         list_pull_requests_for_commit"
+    );
+}
+
+/// A transient GitHub API failure while scanning for the override floor must
+/// propagate as an error (so the event loop can retry), not be silently
+/// swallowed into "no floor" — silently proceeding on a scan failure would
+/// let a `!set-version` command bypass an outstanding override undetected.
+#[tokio::test]
+async fn test_process_set_version_propagates_error_when_override_scan_fails() {
+    let sha = "d4".repeat(20);
+    let github = TestGitHub::new()
+        .with_tags(vec![make_semver_tag("v1.0.0")])
+        .await
+        .with_pr(make_release_pr(42, "deadbeef"))
+        .await
+        .with_commits_between(vec![make_git_commit(&sha)])
+        .await
+        .with_fail_commit_prs_for_sha(sha)
+        .await;
+
+    let processor = CommentCommandProcessor::new(default_config(true), &github);
+    let event = test_event(42, "!set-version 2.0.0", "open");
+    let result = processor.process(&event).await;
+
+    assert!(
+        result.is_err(),
+        "expected Err when the override-floor scan fails, got: {result:?}"
     );
 }
