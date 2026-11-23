@@ -2739,6 +2739,78 @@ async fn test_handle_merged_feature_pr_propagates_error_when_historical_pr_looku
     );
 }
 
+/// A transient GitHub API failure reading a historical commit's associated
+/// PR's *labels* (as opposed to failing to resolve the PR itself) must also
+/// propagate as an error through the full `process_feature_pr_merged` path,
+/// not just through the standalone `resolve_outstanding_override_floor`
+/// helper. The existing
+/// `test_handle_merged_feature_pr_propagates_error_when_historical_pr_lookup_fails`
+/// only exercises the `list_pull_requests_for_commit` failure mode; this
+/// test covers the second GitHub call in the same scan
+/// (`list_pr_labels`) end-to-end.
+#[tokio::test]
+async fn test_handle_merged_feature_pr_propagates_error_when_historical_label_lookup_fails() {
+    let tag = GitTag {
+        name: "v1.0.0".to_string(),
+        target_sha: "a".repeat(40),
+        tag_type: GitTagType::Lightweight,
+        message: None,
+        tagger: None,
+        created_at: None,
+    };
+    let historical_sha = "9".repeat(40);
+    let historical_pr = make_pr(50, "feat/earlier-feature", "feat: earlier feature");
+
+    // The just-merged PR (#61) carries no override label of its own, so the
+    // historical scan runs. The historical PR's own-label check (list_pr_labels
+    // for PR #50) is configured to fail — this must propagate, not silently
+    // resolve to "no floor".
+    let github = TestGitHubForLib::new_empty()
+        .with_tags(vec![tag])
+        .with_commits_between(vec![make_git_commit(&historical_sha)])
+        .with_commit_prs(historical_sha, vec![historical_pr.clone()])
+        .with_fail_list_labels_for_pr(50);
+
+    let config = TestConfigForLib;
+    let version_calc = TestVersionCalcForLib::returning("1.1.0");
+
+    let processor = ReleaseRegentProcessor::new(
+        github.clone(),
+        config,
+        version_calc,
+        SpyNotificationSender::new(),
+    );
+
+    let event = ProcessingEvent {
+        event_id: "evt-scan-9".into(),
+        correlation_id: "corr-scan-9".into(),
+        event_type: EventType::PullRequestMerged,
+        repository: RepositoryInfo {
+            owner: "acme".into(),
+            name: "app".into(),
+            default_branch: "main".into(),
+        },
+        payload: serde_json::json!({
+            "pull_request": {
+                "head": { "ref": "feat/newer-feature" },
+                "base": { "ref": "main" },
+                "number": 61,
+                "merge_commit_sha": "f1".repeat(20)
+            }
+        }),
+        received_at: Utc::now(),
+        source: EventSourceKind::Webhook,
+        installation_id: 0,
+    };
+
+    let result = processor.handle_merged_pull_request(&event).await;
+
+    assert!(
+        result.is_err(),
+        "expected Err when the historical-scan label lookup fails, got: {result:?}"
+    );
+}
+
 /// When a release PR is merged, stale `rr:override-*` labels on open feature
 /// PRs are removed and a cleanup comment is posted on each affected PR.
 #[tokio::test]

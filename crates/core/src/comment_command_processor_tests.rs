@@ -2099,6 +2099,48 @@ async fn test_resolve_outstanding_override_floor_multiple_prs_per_commit_takes_h
     assert_eq!(result, Some((BumpKind::Major, 2)));
 }
 
+/// When two historical PRs carry *equal*-severity overrides, the
+/// first-encountered PR during the commit scan must win — not the second.
+/// This is documented in `resolve_outstanding_override_floor`'s doc comment
+/// as an implementation detail (first-encountered-wins), implemented via a
+/// strict `>` comparison against the running `best`. A regression to a
+/// two-pass max-then-find implementation (which the docs explicitly warn
+/// against) would silently flip this to "last encountered wins" for ties
+/// without changing the floor *value* returned — only the reported PR
+/// number — so this behaviour needs its own direct assertion rather than
+/// relying on the highest-wins tests, which only ever use distinct
+/// severities.
+#[tokio::test]
+async fn test_resolve_outstanding_override_floor_tie_break_keeps_first_encountered_pr() {
+    let sha_first = "aa".repeat(20);
+    let sha_second = "bb".repeat(20);
+    let pr_first = make_merged_feature_pr(12);
+    let pr_second = make_merged_feature_pr(34);
+    let github = TestGitHub::new()
+        .with_commits_between(vec![make_git_commit(&sha_first), make_git_commit(&sha_second)])
+        .await
+        .with_commit_prs(sha_first, vec![pr_first.clone()])
+        .await
+        .with_commit_prs(sha_second, vec![pr_second.clone()])
+        .await
+        .with_pr_labels(pr_first.number, vec![override_label("major")])
+        .await
+        .with_pr_labels(pr_second.number, vec![override_label("major")])
+        .await;
+
+    let result =
+        resolve_outstanding_override_floor(&github, "acme", "app", "v1.0.0", "headsha")
+            .await
+            .unwrap();
+
+    assert_eq!(
+        result,
+        Some((BumpKind::Major, 12)),
+        "a tie between equal-severity overrides must resolve to the \
+         first-encountered PR (#12), got: {result:?}"
+    );
+}
+
 /// A transient GitHub API failure while resolving a commit's associated PR
 /// must propagate as an error rather than be silently swallowed into `None`
 /// — an override floor must never be silently dropped due to an API hiccup.
@@ -2456,5 +2498,38 @@ async fn test_process_set_version_propagates_error_when_override_scan_fails() {
     assert!(
         result.is_err(),
         "expected Err when the override-floor scan fails, got: {result:?}"
+    );
+}
+
+/// Same guard, but the failure occurs one step later in the scan — reading
+/// the resolved historical PR's *labels* rather than resolving the PR
+/// itself. `test_process_set_version_propagates_error_when_override_scan_fails`
+/// above only exercises the `list_pull_requests_for_commit` failure mode;
+/// this test covers the second GitHub call in the same scan end-to-end
+/// through `handle_set_version`, not just through the standalone
+/// `resolve_outstanding_override_floor` helper.
+#[tokio::test]
+async fn test_process_set_version_propagates_error_when_override_scan_label_lookup_fails() {
+    let sha = "e5".repeat(20);
+    let overriding_pr = make_merged_feature_pr(55);
+    let github = TestGitHub::new()
+        .with_tags(vec![make_semver_tag("v1.0.0")])
+        .await
+        .with_pr(make_release_pr(42, "deadbeef"))
+        .await
+        .with_commits_between(vec![make_git_commit(&sha)])
+        .await
+        .with_commit_prs(sha, vec![overriding_pr.clone()])
+        .await
+        .with_fail_list_labels_for_pr(overriding_pr.number)
+        .await;
+
+    let processor = CommentCommandProcessor::new(default_config(true), &github);
+    let event = test_event(42, "!set-version 2.0.0", "open");
+    let result = processor.process(&event).await;
+
+    assert!(
+        result.is_err(),
+        "expected Err when the override-floor scan's label lookup fails, got: {result:?}"
     );
 }

@@ -553,3 +553,193 @@ async fn test_search_pull_requests_null_repo_handled_gracefully() {
     assert_eq!(prs[0].number, 20);
     assert_eq!(prs[0].head.ref_name, "release/v1.0.0");
 }
+
+// ---------------------------------------------------------------------------
+// list_pull_requests_for_commit tests (task #211)
+//
+// Prior to these tests, `list_pull_requests_for_commit` had zero direct
+// coverage at the github_client crate level: every caller in
+// `release-regent-core` exercises it only through a hand-written fake
+// `GitHubOperations` implementation, which never runs the real HTTP request
+// construction, pagination loop, or JSON-to-`PullRequest` mapping this
+// function performs. These tests close that gap.
+// ---------------------------------------------------------------------------
+
+/// `list_pull_requests_for_commit` sends a GET to
+/// `/repos/{owner}/{repo}/commits/{sha}/pulls` and maps the returned PR list.
+#[tokio::test]
+async fn test_list_pull_requests_for_commit_returns_associated_prs() {
+    let mock_server = MockServer::start().await;
+    let sha = "a".repeat(40);
+
+    Mock::given(method("GET"))
+        .and(path(format!("/repos/owner/repo/commits/{sha}/pulls")))
+        .and(header("Authorization", "Bearer test-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([pr_json(
+            7,
+            "feat/associated",
+            "main",
+            "open"
+        ),])))
+        .mount(&mock_server)
+        .await;
+
+    let client = make_client(&mock_server, "test-token");
+    let prs = client
+        .list_pull_requests_for_commit("owner", "repo", &sha)
+        .await
+        .expect("list_pull_requests_for_commit should succeed");
+
+    assert_eq!(prs.len(), 1);
+    assert_eq!(prs[0].number, 7);
+}
+
+/// A commit with no associated pull requests returns an empty vec, not an error.
+#[tokio::test]
+async fn test_list_pull_requests_for_commit_returns_empty_when_no_associated_prs() {
+    let mock_server = MockServer::start().await;
+    let sha = "b".repeat(40);
+
+    Mock::given(method("GET"))
+        .and(path(format!("/repos/owner/repo/commits/{sha}/pulls")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+        .mount(&mock_server)
+        .await;
+
+    let client = make_client(&mock_server, "test-token");
+    let prs = client
+        .list_pull_requests_for_commit("owner", "repo", &sha)
+        .await
+        .expect("list_pull_requests_for_commit should succeed with no associated PRs");
+
+    assert!(prs.is_empty());
+}
+
+/// `list_pull_requests_for_commit` follows `Link` header pagination and
+/// combines results from both pages — mirroring `list_pull_requests`'s
+/// pagination contract.
+#[tokio::test]
+async fn test_list_pull_requests_for_commit_pagination_combines_all_pages() {
+    let mock_server = MockServer::start().await;
+    let sha = "c".repeat(40);
+
+    let link_header = format!(
+        r#"<{}repos/owner/repo/commits/{sha}/pulls?page=2>; rel="next""#,
+        mock_server.uri()
+    );
+    Mock::given(method("GET"))
+        .and(path(format!("/repos/owner/repo/commits/{sha}/pulls")))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Link", link_header)
+                .set_body_json(serde_json::json!([pr_json(1, "feat/first", "main", "open"),])),
+        )
+        .up_to_n_times(1)
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path(format!("/repos/owner/repo/commits/{sha}/pulls")))
+        .and(query_param("page", "2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([pr_json(
+            2,
+            "feat/second",
+            "main",
+            "open"
+        ),])))
+        .mount(&mock_server)
+        .await;
+
+    let client = make_client(&mock_server, "test-token");
+    let prs = client
+        .list_pull_requests_for_commit("owner", "repo", &sha)
+        .await
+        .expect("list_pull_requests_for_commit should follow pagination");
+
+    assert_eq!(prs.len(), 2, "should combine results from both pages");
+    let numbers: Vec<u64> = prs.iter().map(|p| p.number).collect();
+    assert_eq!(numbers, vec![1, 2]);
+}
+
+/// `list_pull_requests_for_commit` propagates a `CoreError::NotFound` when the
+/// commit SHA does not exist in the repository, rather than silently
+/// returning an empty vec — a missing commit must never be mistaken for a
+/// commit with no associated PRs.
+#[tokio::test]
+async fn test_list_pull_requests_for_commit_not_found_returns_error() {
+    let mock_server = MockServer::start().await;
+    let sha = "d".repeat(40);
+
+    Mock::given(method("GET"))
+        .and(path(format!("/repos/owner/repo/commits/{sha}/pulls")))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&mock_server)
+        .await;
+
+    let client = make_client(&mock_server, "test-token");
+    let result = client
+        .list_pull_requests_for_commit("owner", "repo", &sha)
+        .await;
+
+    assert!(
+        result.is_err(),
+        "expected an error for a 404 response, got: {result:?}"
+    );
+}
+
+/// A PR with a deleted fork (`head.repo = null`) in the associated-PRs
+/// response must be handled gracefully, same as `list_pull_requests` —
+/// this endpoint shares the same `ListPrItem` deserialization path.
+#[tokio::test]
+async fn test_list_pull_requests_for_commit_null_repo_handled_gracefully() {
+    let mock_server = MockServer::start().await;
+    let sha = "e".repeat(40);
+
+    let pr_deleted_fork = serde_json::json!({
+        "id": 30,
+        "node_id": "PR_30",
+        "number": 30,
+        "title": "PR from deleted fork",
+        "body": null,
+        "state": "open",
+        "user": { "login": "forker", "id": 2, "node_id": "U_2", "type": "User" },
+        "head": {
+            "ref": "feature/fork-branch",
+            "sha": "abc123",
+            "repo": null
+        },
+        "base": {
+            "ref": "main",
+            "sha": "def456",
+            "repo": { "id": 100, "name": "repo", "full_name": "owner/repo" }
+        },
+        "draft": false,
+        "merged": false,
+        "mergeable": null,
+        "merge_commit_sha": null,
+        "assignees": [],
+        "requested_reviewers": [],
+        "labels": [],
+        "milestone": null,
+        "created_at": "2024-01-01T00:00:00Z",
+        "updated_at": "2024-01-01T00:00:00Z",
+        "closed_at": null,
+        "merged_at": null,
+        "html_url": "https://github.com/owner/repo/pull/30"
+    });
+
+    Mock::given(method("GET"))
+        .and(path(format!("/repos/owner/repo/commits/{sha}/pulls")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([pr_deleted_fork])))
+        .mount(&mock_server)
+        .await;
+
+    let client = make_client(&mock_server, "test-token");
+    let prs = client
+        .list_pull_requests_for_commit("owner", "repo", &sha)
+        .await
+        .expect("null repo should not cause an error");
+
+    assert_eq!(prs.len(), 1);
+    assert_eq!(prs[0].head.repo.full_name, "");
+}
