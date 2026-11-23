@@ -4,6 +4,18 @@ Status: Accepted
 Date: 2026-04-01
 Owners: @pvandervelde
 
+**Amendment 2026-11-24:** Issue #211 extended the override floor beyond consumption at the
+labelled PR's own merge. The floor from an outstanding `rr:override-*` label is now also
+honored: (a) when a later PR merges without its own override label — a commit-history scan
+since the last release tag finds the highest outstanding override among PRs already merged in
+the current cycle (extends Q1/Q2's "specific PR" scope to a per-cycle scan, without changing
+the label's storage location or its removal condition); (b) as a guard on `!set-version`, which
+is now rejected if the pinned version falls below an outstanding override floor, revising Q4's
+"no precedence relationship to enforce at runtime" conclusion; and (c) when a release PR is
+deleted before merging and a new one is created by a later merge, so the override is not
+silently discarded. See `resolve_outstanding_override_floor` in
+`crates/core/src/comment_command_processor.rs` for the implementation.
+
 ## Context
 
 [ADR-003](ADR-003-pr-comment-commands.md) introduced PR comment commands, implementing

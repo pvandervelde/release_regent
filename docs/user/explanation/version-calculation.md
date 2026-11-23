@@ -46,6 +46,12 @@ If `versioning.allow_override = true` and a developer posted `!release major` (o
 The floor only applies to the single release cycle that consumed the label. It does not persist
 to future releases.
 
+The floor does not require the labelled PR to be the one that triggers the calculation. If a
+**later** PR (without its own override label) merges first, Release Regent scans the commits
+since the last release tag, finds the highest outstanding `rr:override-*` label among the PRs
+that have already merged in the current cycle, and still applies it as the floor — including
+when the release PR was deleted and a new one is created by that later merge.
+
 ## Step 3: apply the bump to the current version
 
 The bump is applied following semantic versioning rules:
