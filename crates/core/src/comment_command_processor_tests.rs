@@ -73,6 +73,10 @@ struct TestState {
     /// Every commit SHA passed to `list_pull_requests_for_commit`, in call
     /// order.
     list_prs_for_commit_calls: Vec<String>,
+    /// Every PR/issue number passed to `list_pr_labels`, in call order (task
+    /// #211 Fix C — used to assert the override-floor scan deduplicates label
+    /// lookups across commits that resolve to the same PR).
+    list_pr_labels_calls: Vec<u64>,
 }
 
 #[derive(Clone, Default)]
@@ -191,6 +195,11 @@ impl TestGitHub {
     /// Every commit SHA passed to `list_pull_requests_for_commit`, in call order.
     async fn list_prs_for_commit_calls(&self) -> Vec<String> {
         self.state.lock().await.list_prs_for_commit_calls.clone()
+    }
+
+    /// Every PR/issue number passed to `list_pr_labels`, in call order.
+    async fn list_pr_labels_calls(&self) -> Vec<u64> {
+        self.state.lock().await.list_pr_labels_calls.clone()
     }
 }
 
@@ -531,7 +540,8 @@ impl GitHubOperations for TestGitHub {
         _repo: &str,
         pr_number: u64,
     ) -> CoreResult<Vec<Label>> {
-        let st = self.state.lock().await;
+        let mut st = self.state.lock().await;
+        st.list_pr_labels_calls.push(pr_number);
         if st.fail_list_labels_for_pr == Some(pr_number) {
             return Err(CoreError::github(std::io::Error::new(
                 std::io::ErrorKind::Other,
@@ -2186,6 +2196,130 @@ async fn test_resolve_outstanding_override_floor_propagates_label_lookup_error()
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Fix A — merged-PR-only filter (code review follow-up on task #211)
+//
+// `GET /repos/{owner}/{repo}/commits/{sha}/pulls` returns ANY pull request
+// associated with a commit, including open and closed-but-unmerged PRs.
+// `resolve_outstanding_override_floor` must only consider PRs where
+// `merged_at.is_some()` — an open PR's override label must never be able to
+// inflate the floor.
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// A commit resolving to an open (unmerged) PR carrying `rr:override-major`
+/// must NOT have that label used as the floor, even though the same commit
+/// also resolves to a merged PR with no override label at all.
+#[tokio::test]
+async fn test_resolve_outstanding_override_floor_ignores_label_on_open_unmerged_pr() {
+    let sha = "aa11".repeat(10);
+    // Open PR: carries the override label, but is NOT merged.
+    let open_pr = make_open_pr(900, "basesha");
+    // Merged PR for the same commit: carries no override label.
+    let merged_pr = make_merged_feature_pr(901);
+
+    let github = TestGitHub::new()
+        .with_commits_between(vec![make_git_commit(&sha)])
+        .await
+        .with_commit_prs(sha, vec![open_pr.clone(), merged_pr.clone()])
+        .await
+        .with_pr_labels(open_pr.number, vec![override_label("major")])
+        .await;
+    // merged_pr carries no labels at all (list_pr_labels defaults to []).
+
+    let result = resolve_outstanding_override_floor(&github, "acme", "app", "v1.0.0", "headsha")
+        .await
+        .unwrap();
+
+    assert_eq!(
+        result, None,
+        "an override label on an open/unmerged PR must never be used as the \
+         floor, got: {result:?}"
+    );
+}
+
+/// The inverse of the above: a merged PR carrying an override label must
+/// still be found and used as the floor, even when an open PR for the same
+/// commit carries a *higher*-severity override label that must be ignored.
+#[tokio::test]
+async fn test_resolve_outstanding_override_floor_finds_label_on_merged_pr_ignoring_open_pr() {
+    let sha = "bb22".repeat(10);
+    // Open PR carries a HIGHER severity override (major) that must be ignored
+    // because it is not merged.
+    let open_pr = make_open_pr(910, "basesha");
+    // Merged PR carries a lower severity override (minor) that must win.
+    let merged_pr = make_merged_feature_pr(911);
+
+    let github = TestGitHub::new()
+        .with_commits_between(vec![make_git_commit(&sha)])
+        .await
+        .with_commit_prs(sha, vec![open_pr.clone(), merged_pr.clone()])
+        .await
+        .with_pr_labels(open_pr.number, vec![override_label("major")])
+        .await
+        .with_pr_labels(merged_pr.number, vec![override_label("minor")])
+        .await;
+
+    let result = resolve_outstanding_override_floor(&github, "acme", "app", "v1.0.0", "headsha")
+        .await
+        .unwrap();
+
+    assert_eq!(
+        result,
+        Some((BumpKind::Minor, merged_pr.number)),
+        "expected the merged PR's minor override to win, with the open PR's \
+         higher major override ignored entirely, got: {result:?}"
+    );
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Fix C — deduplicate PR label lookups across commits (code review follow-up
+// on task #211)
+//
+// When multiple commits in the scanned range resolve to the same PR number
+// (a multi-commit PR), `list_pr_labels` must be called at most once for that
+// PR number, not once per commit.
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// Three commits that all resolve to the same PR number must result in
+/// exactly one `list_pr_labels` call for that PR number — not three.
+#[tokio::test]
+async fn test_resolve_outstanding_override_floor_dedupes_label_lookup_for_multi_commit_pr() {
+    let sha_a = "cc33".repeat(10);
+    let sha_b = "cc34".repeat(10);
+    let sha_c = "cc35".repeat(10);
+    let shared_pr = make_merged_feature_pr(42);
+
+    let github = TestGitHub::new()
+        .with_commits_between(vec![
+            make_git_commit(&sha_a),
+            make_git_commit(&sha_b),
+            make_git_commit(&sha_c),
+        ])
+        .await
+        .with_commit_prs(sha_a, vec![shared_pr.clone()])
+        .await
+        .with_commit_prs(sha_b, vec![shared_pr.clone()])
+        .await
+        .with_commit_prs(sha_c, vec![shared_pr.clone()])
+        .await
+        .with_pr_labels(shared_pr.number, vec![override_label("minor")])
+        .await;
+
+    let result = resolve_outstanding_override_floor(&github, "acme", "app", "v1.0.0", "headsha")
+        .await
+        .unwrap();
+
+    assert_eq!(result, Some((BumpKind::Minor, 42)));
+
+    let label_calls = github.list_pr_labels_calls().await;
+    let calls_for_shared_pr = label_calls.iter().filter(|&&n| n == 42).count();
+    assert_eq!(
+        calls_for_shared_pr, 1,
+        "expected exactly 1 list_pr_labels call for PR #42 across 3 commits \
+         that all resolve to it, got {calls_for_shared_pr} calls: {label_calls:?}"
+    );
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // `!set-version` override-floor guard (task #211, scenario 3)
 //
 // New Guard D in `handle_set_version`: before orchestrating, scan merged PRs
@@ -2531,5 +2665,49 @@ async fn test_process_set_version_propagates_error_when_override_scan_label_look
     assert!(
         result.is_err(),
         "expected Err when the override-floor scan's label lookup fails, got: {result:?}"
+    );
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Fix B — skip the override-floor scan entirely when there is no prior
+// release tag (code review follow-up on task #211)
+//
+// Passing an empty string as `base` to `get_commits_between` would build an
+// invalid `/compare/...{head}` path against the real GitHub API. The
+// established convention elsewhere in this codebase (see
+// `github_version_calculator.rs`) is to skip commit-range API calls entirely
+// when there is no previous release tag, rather than ever passing "".
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// When no prior release tag exists (`resolve_current_version` returns
+/// `None`), Guard D's override-floor scan must be skipped entirely —
+/// `get_commits_between` must never be called — and the `!set-version`
+/// command must proceed exactly as if no floor were outstanding.
+#[tokio::test]
+async fn test_process_set_version_skips_override_scan_when_no_prior_release_tag() {
+    // No `.with_tags(...)` call: `list_tags` returns [] → current_version is
+    // None → there is nothing to scan "since the last release".
+    let github = TestGitHub::new().with_pr(make_release_pr(42, "deadbeef")).await;
+
+    let processor = CommentCommandProcessor::new(default_config(true), &github);
+    let event = test_event(42, "!set-version 1.0.0", "open");
+    let result = processor.process(&event).await;
+
+    assert!(result.is_ok(), "expected Ok (acknowledged), got: {result:?}");
+    assert!(
+        github.get_commits_between_calls().await.is_empty(),
+        "expected the override-floor scan to be skipped entirely (no \
+         get_commits_between call) when there is no prior release tag, got: {:?}",
+        github.get_commits_between_calls().await
+    );
+
+    // The command must proceed normally — accepted, not rejected.
+    let comments = github.issue_comments().await;
+    assert_eq!(comments.len(), 1, "expected one confirmation comment, got {comments:?}");
+    assert!(
+        comments[0].1.contains('✅'),
+        "expected !set-version to be accepted when there is no prior release \
+         tag (nothing to scan), got: {}",
+        comments[0].1
     );
 }

@@ -607,6 +607,41 @@ fn make_pr(number: u64, branch: &str, title: &str) -> PullRequest {
     }
 }
 
+/// Build a (now-merged and closed) pull request — used by task #211 Fix D
+/// tests to populate `list_pull_requests_for_commit` responses for the
+/// release-ship-time override-label cleanup scan, where only PRs with
+/// `merged_at.is_some()` may be considered (Fix A).
+fn make_merged_pr(number: u64, branch: &str, title: &str) -> PullRequest {
+    let repo = make_repo();
+    let user = GitUser {
+        email: "bot@example.com".into(),
+        login: Some("bot".into()),
+        name: "Bot".into(),
+    };
+    let now = Utc::now();
+    PullRequest {
+        base: PullRequestBranch {
+            ref_name: "main".into(),
+            repo: repo.clone(),
+            sha: "base000000000000000000000000000000000000".into(),
+        },
+        body: Some("## Changelog\n\nInitial entry.".into()),
+        created_at: now,
+        draft: false,
+        head: PullRequestBranch {
+            ref_name: branch.to_string(),
+            repo,
+            sha: "head000000000000000000000000000000000000".into(),
+        },
+        merged_at: Some(now),
+        number,
+        state: "closed".into(),
+        title: title.to_string(),
+        updated_at: now,
+        user,
+    }
+}
+
 fn make_git_commit(sha: &str) -> GitCommit {
     GitCommit {
         sha: sha.to_string(),
@@ -2054,13 +2089,17 @@ async fn test_handle_merged_feature_pr_with_override_major_label_applies_floor()
         audit.1
     );
 
-    // The consumed override label must be removed from the merged feature PR.
+    // Fix D (task #211 review follow-up): label removal is now deferred to
+    // release-ship time (`process_release_pr_merged`), not performed at
+    // feature-PR-merge time. The override label must still be present on the
+    // merged feature PR immediately after this call returns.
     let removed = github.removed_labels.lock().await;
     assert!(
-        removed
+        !removed
             .iter()
             .any(|(pr, label)| *pr == 7 && label == "rr:override-major"),
-        "expected rr:override-major to be removed from merged feature PR #7, got: {removed:?}"
+        "rr:override-major must NOT be removed from merged feature PR #7 at \
+         merge time — removal is deferred to release-ship time, got: {removed:?}"
     );
 }
 
@@ -2538,6 +2577,79 @@ async fn test_handle_merged_feature_pr_zero_commits_in_range_uses_calculated_ver
     }
 }
 
+/// Fix B (task #211 review follow-up): when there is no prior release tag at
+/// all (the very first release cycle), the historical-scan fallback must be
+/// skipped entirely rather than calling `get_commits_between` with an empty
+/// `base` string (which would build an invalid `/compare/...{head}` path
+/// against the real GitHub API). The merged PR carries no override label of
+/// its own, so without the skip this would normally trigger the fallback scan.
+#[tokio::test]
+async fn test_handle_merged_feature_pr_skips_historical_scan_when_no_prior_release_tag() {
+    let historical_sha = "ff".repeat(20);
+    // A commit+PR that WOULD supply a floor if the scan incorrectly ran
+    // despite there being no prior release tag.
+    let historical_pr = make_pr(120, "feat/would-be-floor", "feat: would be floor");
+    let github = TestGitHubForLib::new_empty()
+        // No `.with_tags(...)` call — zero tags means current_version is None.
+        .with_commits_between(vec![make_git_commit(&historical_sha)])
+        .with_commit_prs(historical_sha, vec![historical_pr.clone()])
+        .with_pr_labels(120, vec![override_label("major")]);
+
+    let config = TestConfigForLib;
+    let version_calc = TestVersionCalcForLib::returning("1.1.0");
+
+    let processor = ReleaseRegentProcessor::new(
+        github.clone(),
+        config,
+        version_calc,
+        SpyNotificationSender::new(),
+    );
+
+    let event = ProcessingEvent {
+        event_id: "evt-scan-no-tag".into(),
+        correlation_id: "corr-scan-no-tag".into(),
+        event_type: EventType::PullRequestMerged,
+        repository: RepositoryInfo {
+            owner: "acme".into(),
+            name: "app".into(),
+            default_branch: "main".into(),
+        },
+        payload: serde_json::json!({
+            "pull_request": {
+                "head": { "ref": "feat/first-ever-feature" },
+                "base": { "ref": "main" },
+                "number": 130,
+                "merge_commit_sha": "ab".repeat(20)
+            }
+        }),
+        received_at: Utc::now(),
+        source: EventSourceKind::Webhook,
+        installation_id: 0,
+    };
+
+    let result = processor.handle_merged_pull_request(&event).await.unwrap();
+
+    // The scan must never have run at all.
+    assert!(
+        github.get_commits_between_calls().await.is_empty(),
+        "expected the historical-scan fallback to be skipped entirely when \
+         there is no prior release tag, got calls: {:?}",
+        github.get_commits_between_calls().await
+    );
+
+    // No floor could have been applied; the calculated version (1.1.0) is used.
+    match &result {
+        release_orchestrator::OrchestratorResult::Created { branch_name, .. } => {
+            assert!(
+                branch_name.contains("1.1.0"),
+                "expected the unfloored calculated version 1.1.0 (scan \
+                 skipped), got: {branch_name}"
+            );
+        }
+        other => panic!("expected Created, got {other:?}"),
+    }
+}
+
 /// A commit in the scan range that resolves to no associated PR must be
 /// skipped gracefully; a later commit's override must still be found.
 #[tokio::test]
@@ -2905,6 +3017,291 @@ async fn test_handle_merged_release_pr_clears_stale_override_labels_from_open_pr
     );
 }
 
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Fix D — defer override-label removal to release-ship time (task #211
+// review follow-up: re-architecture).
+//
+// A merged feature PR's own `rr:override-*` label is no longer removed by
+// `process_feature_pr_merged` (see the flipped assertions above). Instead,
+// when the release that incorporates it actually ships
+// (`process_release_pr_merged`), commits between the *previous* release tag
+// and the new release's target commit are scanned; every merged PR among
+// them that still carries an `rr:override-*` label has that label removed
+// and a cleanup comment posted — reusing the same cleanup-comment wording as
+// the existing open-PR cleanup path.
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// Scenario 2 (Fix D): a feature PR (#7) merged earlier in the release cycle
+/// carrying `rr:override-major` — per Fix D its label was left in place at
+/// merge time. When the release PR for that cycle later merges, the
+/// release-ship cleanup scan must find PR #7 (via the commit range between
+/// the previous release tag and the new release's target commit) and remove
+/// its override label, posting a cleanup comment on PR #7.
+#[tokio::test]
+async fn test_handle_merged_release_pr_removes_override_label_from_previously_merged_feature_pr() {
+    let prior_tag = GitTag {
+        name: "v1.0.0".to_string(),
+        target_sha: "a".repeat(40),
+        tag_type: GitTagType::Lightweight,
+        message: None,
+        tagger: None,
+        created_at: None,
+    };
+    let historical_sha = "dd11".repeat(10);
+    // PR #7 merged earlier in the cycle, still carrying its override label
+    // (Fix D: never removed at feature-PR-merge time).
+    let merged_feature_pr = make_merged_pr(7, "feat/cool-feature", "feat: cool feature");
+    let release_merge_sha = "ee22".repeat(10);
+
+    let github = TestGitHubForLib::new_empty()
+        .with_tags(vec![prior_tag])
+        .with_commits_between(vec![make_git_commit(&historical_sha)])
+        .with_commit_prs(historical_sha, vec![merged_feature_pr.clone()])
+        .with_pr_labels(7, vec![override_label("major")]);
+
+    let config = TestConfigForLib;
+    let version_calc = TestVersionCalcForLib::returning("2.0.0");
+    let processor = ReleaseRegentProcessor::new(
+        github.clone(),
+        config,
+        version_calc,
+        SpyNotificationSender::new(),
+    );
+
+    let event = ProcessingEvent {
+        event_id: "evt-ship-cleanup-1".into(),
+        correlation_id: "corr-ship-cleanup-1".into(),
+        event_type: EventType::PullRequestMerged,
+        repository: RepositoryInfo {
+            owner: "acme".into(),
+            name: "app".into(),
+            default_branch: "main".into(),
+        },
+        payload: serde_json::json!({
+            "pull_request": {
+                "head": { "ref": "release/v2.0.0" },
+                "base": { "ref": "main" },
+                "number": 200,
+                "merge_commit_sha": release_merge_sha
+            }
+        }),
+        received_at: Utc::now(),
+        source: EventSourceKind::Webhook,
+        installation_id: 0,
+    };
+
+    let result = processor.handle_merged_pull_request(&event).await.unwrap();
+    assert!(
+        matches!(
+            result,
+            release_orchestrator::OrchestratorResult::TaggedRelease
+        ),
+        "expected TaggedRelease (automator path), got: {result:?}"
+    );
+
+    // The scan must have walked the commit range from the PRE-release tag
+    // (v1.0.0) up to the new release's target commit (the merge SHA) — not
+    // some other arbitrary range — proving the Coder actually wired
+    // `release.target_commitish` through, not a hardcoded/incorrect value.
+    let scan_calls = github.get_commits_between_calls().await;
+    assert!(
+        scan_calls
+            .iter()
+            .any(|(base, head)| base == "v1.0.0" && head == &release_merge_sha),
+        "expected a get_commits_between(\"v1.0.0\", \"{release_merge_sha}\") \
+         call during release-ship cleanup, got: {scan_calls:?}"
+    );
+
+    // PR #7's override label must now be removed.
+    let removed = github.removed_labels.lock().await;
+    assert!(
+        removed
+            .iter()
+            .any(|(pr, label)| *pr == 7 && label == "rr:override-major"),
+        "expected rr:override-major to be removed from previously-merged PR \
+         #7 once the release ships, got: {removed:?}"
+    );
+
+    // A cleanup comment (matching the open-PR cleanup wording) must be posted on PR #7.
+    let comments = github.issue_comments.lock().await;
+    let cleanup_comments: Vec<_> = comments
+        .iter()
+        .filter(|(pr, body)| {
+            *pr == 7 && body.contains("cleared because a new release was published")
+        })
+        .collect();
+    assert_eq!(
+        cleanup_comments.len(),
+        1,
+        "expected exactly 1 cleanup comment on previously-merged PR #7, got: {cleanup_comments:?}"
+    );
+}
+
+/// Scenario 4 (Fix D): a release ships that incorporates TWO previously
+/// merged PRs, each carrying a *different* override label. Both must have
+/// their labels removed and both must receive a cleanup comment.
+#[tokio::test]
+async fn test_handle_merged_release_pr_removes_labels_from_multiple_previously_merged_prs() {
+    let prior_tag = GitTag {
+        name: "v1.0.0".to_string(),
+        target_sha: "a".repeat(40),
+        tag_type: GitTagType::Lightweight,
+        message: None,
+        tagger: None,
+        created_at: None,
+    };
+    let sha_a = "11aa".repeat(10);
+    let sha_b = "22bb".repeat(10);
+    let pr_10 = make_merged_pr(10, "feat/ten", "feat: pr ten");
+    let pr_15 = make_merged_pr(15, "feat/fifteen", "feat: pr fifteen");
+    let release_merge_sha = "33cc".repeat(10);
+
+    let github = TestGitHubForLib::new_empty()
+        .with_tags(vec![prior_tag])
+        .with_commits_between(vec![make_git_commit(&sha_a), make_git_commit(&sha_b)])
+        .with_commit_prs(sha_a, vec![pr_10.clone()])
+        .with_commit_prs(sha_b, vec![pr_15.clone()])
+        .with_pr_labels(10, vec![override_label("minor")])
+        .with_pr_labels(15, vec![override_label("major")]);
+
+    let config = TestConfigForLib;
+    let version_calc = TestVersionCalcForLib::returning("2.0.0");
+    let processor = ReleaseRegentProcessor::new(
+        github.clone(),
+        config,
+        version_calc,
+        SpyNotificationSender::new(),
+    );
+
+    let event = ProcessingEvent {
+        event_id: "evt-ship-cleanup-2".into(),
+        correlation_id: "corr-ship-cleanup-2".into(),
+        event_type: EventType::PullRequestMerged,
+        repository: RepositoryInfo {
+            owner: "acme".into(),
+            name: "app".into(),
+            default_branch: "main".into(),
+        },
+        payload: serde_json::json!({
+            "pull_request": {
+                "head": { "ref": "release/v2.0.0" },
+                "base": { "ref": "main" },
+                "number": 201,
+                "merge_commit_sha": release_merge_sha
+            }
+        }),
+        received_at: Utc::now(),
+        source: EventSourceKind::Webhook,
+        installation_id: 0,
+    };
+
+    processor.handle_merged_pull_request(&event).await.unwrap();
+
+    let removed = github.removed_labels.lock().await;
+    assert!(
+        removed
+            .iter()
+            .any(|(pr, label)| *pr == 10 && label == "rr:override-minor"),
+        "expected rr:override-minor to be removed from PR #10, got: {removed:?}"
+    );
+    assert!(
+        removed
+            .iter()
+            .any(|(pr, label)| *pr == 15 && label == "rr:override-major"),
+        "expected rr:override-major to be removed from PR #15, got: {removed:?}"
+    );
+
+    let comments = github.issue_comments.lock().await;
+    let has_cleanup_for = |pr_number: u64| {
+        comments.iter().any(|(pr, body)| {
+            *pr == pr_number && body.contains("cleared because a new release was published")
+        })
+    };
+    assert!(has_cleanup_for(10), "expected a cleanup comment on PR #10, got: {comments:?}");
+    assert!(has_cleanup_for(15), "expected a cleanup comment on PR #15, got: {comments:?}");
+}
+
+/// Scenario 5 (Fix D + Fix B combined): when there is NO prior release tag
+/// (the very first release ever), the release-ship merged-PR commit-range
+/// scan must be skipped entirely (`get_commits_between` must never be
+/// called) — but the existing open-PR cleanup path must still run normally.
+/// Seeds commit/PR data that WOULD produce a spurious label removal on PR
+/// #200 if the scan incorrectly ran despite having no prior tag to scan from.
+#[tokio::test]
+async fn test_handle_merged_release_pr_skips_merged_pr_scan_when_no_prior_release_tag() {
+    let stale_open_pr = make_pr(99, "feat/stale-feature", "feat: stale work");
+    let unrelated_merged_pr = make_merged_pr(200, "feat/unrelated", "feat: unrelated work");
+    let historical_sha = "44dd".repeat(10);
+
+    let github = TestGitHubForLib::new_empty()
+        // No `.with_tags(...)` call — zero tags means current_version is None.
+        .with_existing_prs(vec![stale_open_pr])
+        .with_pr_labels(99, vec![override_label("major")])
+        // Seeded data for a PR that must NEVER be touched because the
+        // merged-PR scan must be skipped entirely when there is no prior tag.
+        .with_commits_between(vec![make_git_commit(&historical_sha)])
+        .with_commit_prs(historical_sha, vec![unrelated_merged_pr.clone()])
+        .with_pr_labels(200, vec![override_label("minor")]);
+
+    let config = TestConfigForLib;
+    let version_calc = TestVersionCalcForLib::returning("1.0.0");
+    let processor = ReleaseRegentProcessor::new(
+        github.clone(),
+        config,
+        version_calc,
+        SpyNotificationSender::new(),
+    );
+
+    let event = ProcessingEvent {
+        event_id: "evt-ship-cleanup-first-release".into(),
+        correlation_id: "corr-ship-cleanup-first-release".into(),
+        event_type: EventType::PullRequestMerged,
+        repository: RepositoryInfo {
+            owner: "acme".into(),
+            name: "app".into(),
+            default_branch: "main".into(),
+        },
+        payload: serde_json::json!({
+            "pull_request": {
+                "head": { "ref": "release/v1.0.0" },
+                "base": { "ref": "main" },
+                "number": 202,
+                "merge_commit_sha": "55ee".repeat(10)
+            }
+        }),
+        received_at: Utc::now(),
+        source: EventSourceKind::Webhook,
+        installation_id: 0,
+    };
+
+    processor.handle_merged_pull_request(&event).await.unwrap();
+
+    // The merged-PR commit-range scan must never have run.
+    assert!(
+        github.get_commits_between_calls().await.is_empty(),
+        "expected the release-ship merged-PR scan to be skipped entirely \
+         when there is no prior release tag, got calls: {:?}",
+        github.get_commits_between_calls().await
+    );
+
+    let removed = github.removed_labels.lock().await;
+    // The existing open-PR cleanup path must still have run normally.
+    assert!(
+        removed
+            .iter()
+            .any(|(pr, label)| *pr == 99 && label == "rr:override-major"),
+        "expected the existing open-PR cleanup to still remove rr:override-major \
+         from PR #99, got: {removed:?}"
+    );
+    // PR #200 was never reachable through the (skipped) merged-PR scan and
+    // is not in `existing_prs`, so the open-PR cleanup path cannot see it
+    // either — it must not have been touched.
+    assert!(
+        !removed.iter().any(|(pr, _)| *pr == 200),
+        "PR #200 must not be touched when the merged-PR scan is skipped, got: {removed:?}"
+    );
+}
+
 /// After a release PR merges the processor must invoke the release automator
 /// (creating a tag + GitHub release) instead of the release orchestrator
 /// (which would create a new release branch and PR).
@@ -3200,19 +3597,23 @@ async fn test_handle_merged_feature_pr_with_override_minor_label_applies_floor()
         other => panic!("expected Created, got {other:?}"),
     }
 
-    // The consumed rr:override-minor label must be removed from PR #10 (task 9.20.5).
+    // Fix D (task #211 review follow-up): removal is deferred to
+    // release-ship time; rr:override-minor must still be present on PR #10
+    // immediately after the merge event is processed.
     let removed = github.removed_labels.lock().await;
     assert!(
-        removed
+        !removed
             .iter()
             .any(|(pr, label)| *pr == 10 && label == "rr:override-minor"),
-        "expected rr:override-minor to be removed from merged PR #10, got: {removed:?}"
+        "rr:override-minor must NOT be removed from merged PR #10 at merge \
+         time — removal is deferred to release-ship time, got: {removed:?}"
     );
 }
 
 /// When the merged feature PR has `rr:override-patch` and the calculated version
 /// is already a minor bump (which exceeds the patch floor), the calculated version
-/// is used unchanged and the label is still removed.
+/// is used unchanged. The label is NOT removed at merge time regardless (Fix D:
+/// removal is deferred to release-ship time).
 #[tokio::test]
 async fn test_handle_merged_feature_pr_with_patch_floor_no_effect_when_calculated_exceeds() {
     // Current released tag: v1.2.3  →  current_version = Some(1.2.3)
@@ -3291,13 +3692,17 @@ async fn test_handle_merged_feature_pr_with_patch_floor_no_effect_when_calculate
         "no audit comment should be posted when floor has no effect"
     );
 
-    // Even though the floor had no effect, the label must still be removed (task 9.20.5).
+    // Fix D (task #211 review follow-up): even though the floor had no
+    // effect, the label must NOT be removed at merge time — removal is
+    // deferred to release-ship time regardless of whether the floor changed
+    // the effective version.
     let removed = github.removed_labels.lock().await;
     assert!(
-        removed
+        !removed
             .iter()
             .any(|(pr, label)| *pr == 11 && label == "rr:override-patch"),
-        "expected rr:override-patch to be removed from merged PR #11, got: {removed:?}"
+        "rr:override-patch must NOT be removed from merged PR #11 at merge \
+         time — removal is deferred to release-ship time, got: {removed:?}"
     );
 }
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
