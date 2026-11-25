@@ -99,14 +99,18 @@ escape hatch for situations such as:
 ## Label persistence (how override floors survive PR merges)
 
 When `!release major` is posted on a PR, Release Regent adds a GitHub label such as
-`release-regent:bump:major` to that PR. The label persists until the PR is merged.
+`rr:override-major` to that PR. The label persists until the release that incorporates
+the PR's commits actually ships.
 
 When Release Regent processes the merge event, it:
 
-1. Reads all open-and-recently-closed labels on the PR.
-2. Extracts any `release-regent:bump:*` labels.
+1. Reads all labels on the PR (and, if the PR carries none of its own, on earlier
+   merged PRs in the same release cycle).
+2. Extracts any `rr:override-*` labels.
 3. Uses the highest bump level found as the floor for the calculation described above.
-4. Removes the label after applying it.
+4. Removes the label once the release that incorporates it has shipped — not at the
+   moment the PR merges, since at that point it is not yet known which release will
+   ultimately carry the floor.
 
 Labels are stored on GitHub rather than in a database or file, which means they survive server
 restarts and are visible to anyone with repository access.

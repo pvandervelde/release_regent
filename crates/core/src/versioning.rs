@@ -164,13 +164,13 @@ pub enum BumpKind {
 impl BumpKind {
     /// Numeric severity rank used to implement [`Ord`]/[`PartialOrd`].
     ///
-    /// Higher is more severe. This intentionally does **not** match the
-    /// enum's declaration order (`Major, Minor, Patch`) — a naive
-    /// `#[derive(PartialOrd, Ord)]` would rank variants by declaration
-    /// order, which happens to coincide with severity here only by
-    /// coincidence of how the variants are listed. Defining an explicit
-    /// rank keeps the ordering correct and self-documenting even if
-    /// variants are reordered in the future.
+    /// Higher is more severe (`Major` > `Minor` > `Patch`). This is the
+    /// **opposite** of what a naive `#[derive(PartialOrd, Ord)]` would
+    /// produce: deriving would rank variants by declaration position
+    /// (`Major, Minor, Patch`), making `Major` the *smallest* value —
+    /// exactly backwards from its actual severity. Defining an explicit
+    /// rank keeps the ordering correct and self-documenting regardless of
+    /// how the variants happen to be declared.
     const fn rank(&self) -> u8 {
         match self {
             BumpKind::Patch => 0,
