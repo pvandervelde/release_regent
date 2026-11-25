@@ -2209,7 +2209,9 @@ async fn test_handle_merged_feature_pr_without_own_label_applies_floor_from_comm
         created_at: None,
     };
     let historical_sha = "c".repeat(40);
-    let historical_pr = make_pr(50, "feat/earlier-feature", "feat: earlier feature");
+    // The commit is already on the base branch, so the PR that introduced it
+    // must have been merged (Fix A's merged-only filter requires merged_at.is_some()).
+    let historical_pr = make_merged_pr(50, "feat/earlier-feature", "feat: earlier feature");
 
     // The just-merged PR (#60) carries no override label of its own.
     let github = TestGitHubForLib::new_empty()
@@ -2295,8 +2297,10 @@ async fn test_handle_merged_feature_pr_picks_highest_override_across_multiple_hi
     };
     let sha_patch = "1".repeat(40);
     let sha_minor = "2".repeat(40);
-    let pr_patch = make_pr(30, "feat/patch-work", "fix: small fix");
-    let pr_minor = make_pr(40, "feat/minor-work", "feat: medium feature");
+    // Both commits are already on the base branch, so the PRs that
+    // introduced them must have been merged (Fix A's merged-only filter).
+    let pr_patch = make_merged_pr(30, "feat/patch-work", "fix: small fix");
+    let pr_minor = make_merged_pr(40, "feat/minor-work", "feat: medium feature");
 
     let github = TestGitHubForLib::new_empty()
         .with_tags(vec![tag])
@@ -2452,7 +2456,8 @@ async fn test_handle_merged_feature_pr_recreates_release_pr_honoring_historical_
         created_at: None,
     };
     let historical_sha = "4".repeat(40);
-    let historical_pr = make_pr(70, "feat/pre-deletion-feature", "feat: pre-deletion work");
+    // Already on the base branch, so must have been merged (Fix A).
+    let historical_pr = make_merged_pr(70, "feat/pre-deletion-feature", "feat: pre-deletion work");
 
     // No existing_prs / search_results configured → simulates a deleted
     // release PR: search_for_existing_release_pr will find none.
@@ -2664,7 +2669,8 @@ async fn test_handle_merged_feature_pr_skips_commits_with_no_associated_pr() {
     };
     let sha_orphan = "7".repeat(40);
     let sha_with_pr = "8".repeat(40);
-    let pr_with_override = make_pr(80, "feat/with-override", "feat: with override");
+    // Already on the base branch, so must have been merged (Fix A).
+    let pr_with_override = make_merged_pr(80, "feat/with-override", "feat: with override");
 
     // sha_orphan is in the scan range but has no configured commit_prs entry
     // → list_pull_requests_for_commit returns [] for it.
@@ -2737,7 +2743,8 @@ async fn test_handle_merged_feature_pr_scan_still_runs_when_merged_pr_number_is_
         created_at: None,
     };
     let historical_sha = "b".repeat(40);
-    let historical_pr = make_pr(85, "feat/historical-85", "feat: historical 85");
+    // Already on the base branch, so must have been merged (Fix A).
+    let historical_pr = make_merged_pr(85, "feat/historical-85", "feat: historical 85");
 
     let github = TestGitHubForLib::new_empty()
         .with_tags(vec![tag])
@@ -2871,7 +2878,8 @@ async fn test_handle_merged_feature_pr_propagates_error_when_historical_label_lo
         created_at: None,
     };
     let historical_sha = "9".repeat(40);
-    let historical_pr = make_pr(50, "feat/earlier-feature", "feat: earlier feature");
+    // Already on the base branch, so must have been merged (Fix A).
+    let historical_pr = make_merged_pr(50, "feat/earlier-feature", "feat: earlier feature");
 
     // The just-merged PR (#61) carries no override label of its own, so the
     // historical scan runs. The historical PR's own-label check (list_pr_labels

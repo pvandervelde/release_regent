@@ -47,7 +47,10 @@ use crate::{
         event_source::ProcessingEvent, git_operations::GetCommitsOptions,
         github_operations::GitHubOperations,
     },
-    versioning::{apply_bump_floor, resolve_current_version, SemanticVersion, VersionCalculator},
+    versioning::{
+        apply_bump_floor, highest_bump_kind, resolve_current_version, SemanticVersion,
+        VersionCalculator,
+    },
     CoreResult,
 };
 
@@ -507,21 +510,29 @@ impl<'a, G: GitHubOperations + Send + Sync> CommentCommandProcessor<'a, G> {
         // Guard D: reject a pinned version that falls below an outstanding
         // `rr:override-*` bump-floor still recorded on a merged PR in the
         // current release cycle (task #211). The scan covers commits from
-        // the last release tag (or the repository root when no release has
-        // been made yet) up to this release PR's base SHA.
-        let override_floor_base = current_version
-            .as_ref()
-            .map(|v| format!("{}{v}", self.config.orchestrator_config.version_prefix))
-            .unwrap_or_default();
-        if let Some((floor_kind, floor_pr_number)) = resolve_outstanding_override_floor(
-            self.github,
-            owner,
-            repo,
-            &override_floor_base,
-            &pr.base.sha,
-        )
-        .await?
-        {
+        // the last release tag up to this release PR's base SHA. When there
+        // is no prior release tag (the very first release cycle) there is
+        // nothing to scan "since the last release", so the scan is skipped
+        // entirely (Fix B — code review follow-up) rather than passing an
+        // empty `base` to `resolve_outstanding_override_floor`, which would
+        // build an invalid comparison range against the real GitHub API.
+        let outstanding_floor = if let Some(ref current) = current_version {
+            let override_floor_base = format!(
+                "{}{current}",
+                self.config.orchestrator_config.version_prefix
+            );
+            resolve_outstanding_override_floor(
+                self.github,
+                owner,
+                repo,
+                &override_floor_base,
+                &pr.base.sha,
+            )
+            .await?
+        } else {
+            None
+        };
+        if let Some((floor_kind, floor_pr_number)) = outstanding_floor {
             let floor_baseline = current_version.clone().unwrap_or(SemanticVersion {
                 major: 0,
                 minor: 0,
@@ -725,33 +736,121 @@ where
         .get_commits_between(owner, repo, base, head, GetCommitsOptions::default())
         .await?;
 
-    // Tracks the highest-severity override seen so far together with the PR
-    // it came from. Updated with a strict `>` comparison (rather than two
-    // passes of max-then-find) so that a tie in severity leaves the
-    // first-encountered PR in place — see the function docs' tie-break note.
-    let mut best: Option<(BumpKind, u64)> = None;
+    // Every `(BumpKind, pr_number)` found during the scan, in encounter
+    // order. Collected rather than reduced inline so that
+    // `versioning::highest_bump_kind` (a plain `Iterator::max`) can be reused
+    // to pick the severity, while a separate lookup finds the
+    // first-encountered PR at that severity — preserving the tie-break
+    // documented above without a hand-rolled fold.
+    let mut found: Vec<(BumpKind, u64)> = Vec::new();
+
+    // Tracks which PR numbers have already had `list_pr_labels` called, so a
+    // PR spanning multiple commits in the scanned range only triggers one
+    // lookup (Fix C — code review follow-up on task #211).
+    let mut seen_pr_numbers: std::collections::HashSet<u64> = std::collections::HashSet::new();
 
     for commit in &commits {
         let prs = github
             .list_pull_requests_for_commit(owner, repo, &commit.sha)
             .await?;
 
-        for pr in &prs {
+        // Only merged pull requests may contribute to the override floor — an
+        // open or closed-but-unmerged PR's label must never be able to
+        // inflate it (Fix A — code review follow-up on task #211).
+        // `GET /repos/{owner}/{repo}/commits/{sha}/pulls` returns any PR
+        // associated with the commit, not just merged ones.
+        for pr in prs.iter().filter(|pr| pr.merged_at.is_some()) {
+            if !seen_pr_numbers.insert(pr.number) {
+                continue;
+            }
             let labels = github.list_pr_labels(owner, repo, pr.number).await?;
-            let kind = labels.iter().find_map(|l| label_name_to_bump_kind(&l.name));
-            if let Some(kind) = kind {
-                let is_new_high = match &best {
-                    Some((best_kind, _)) => kind > *best_kind,
-                    None => true,
-                };
-                if is_new_high {
-                    best = Some((kind, pr.number));
-                }
+            if let Some(kind) = labels.iter().find_map(|l| label_name_to_bump_kind(&l.name)) {
+                found.push((kind, pr.number));
             }
         }
     }
 
+    let highest = highest_bump_kind(found.iter().map(|(kind, _)| kind.clone()));
+    let best = highest.and_then(|highest_kind| {
+        found
+            .iter()
+            .find(|(kind, _)| *kind == highest_kind)
+            .cloned()
+    });
+
     Ok(best)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// collect_merged_prs_with_override_labels — free function (task #211 Fix D)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Scan commits in the range `base..head` for merged pull requests that carry
+/// one or more `rr:override-*` labels.
+///
+/// Used by the release-ship-time cleanup path (Fix D — code review follow-up
+/// on task #211): once a release has shipped, every `rr:override-*` label on
+/// a pull request whose commits are included in that release must be
+/// removed, since the floor those labels represent has already been baked
+/// into the released version. This differs from
+/// [`resolve_outstanding_override_floor`], which only returns the single
+/// highest-severity override — the cleanup path needs *every* override label
+/// on *every* qualifying PR so each one can be removed.
+///
+/// Reuses the same merged-PR-only filter (Fix A) and per-PR-number
+/// deduplication (Fix C) as `resolve_outstanding_override_floor`, applied to
+/// the same `get_commits_between` → `list_pull_requests_for_commit` →
+/// `list_pr_labels` walk.
+///
+/// Returns `(pr_number, override_label_names)` pairs, one per qualifying PR,
+/// in first-encountered order. PRs with no `rr:override-*` label are omitted.
+///
+/// # Errors
+///
+/// Propagates any [`crate::CoreError`] returned by `get_commits_between`,
+/// `list_pull_requests_for_commit`, or `list_pr_labels`.
+#[allow(clippy::result_large_err)]
+pub(crate) async fn collect_merged_prs_with_override_labels<G>(
+    github: &G,
+    owner: &str,
+    repo: &str,
+    base: &str,
+    head: &str,
+) -> CoreResult<Vec<(u64, Vec<String>)>>
+where
+    G: GitHubOperations + Send + Sync,
+{
+    let commits = github
+        .get_commits_between(owner, repo, base, head, GetCommitsOptions::default())
+        .await?;
+
+    let mut found: Vec<(u64, Vec<String>)> = Vec::new();
+    let mut seen_pr_numbers: std::collections::HashSet<u64> = std::collections::HashSet::new();
+
+    for commit in &commits {
+        let prs = github
+            .list_pull_requests_for_commit(owner, repo, &commit.sha)
+            .await?;
+
+        // Only merged pull requests qualify (Fix A) — see
+        // `resolve_outstanding_override_floor` for rationale.
+        for pr in prs.iter().filter(|pr| pr.merged_at.is_some()) {
+            if !seen_pr_numbers.insert(pr.number) {
+                continue;
+            }
+            let labels = github.list_pr_labels(owner, repo, pr.number).await?;
+            let override_names: Vec<String> = labels
+                .iter()
+                .filter(|l| ALL_OVERRIDE_LABELS.contains(&l.name.as_str()))
+                .map(|l| l.name.clone())
+                .collect();
+            if !override_names.is_empty() {
+                found.push((pr.number, override_names));
+            }
+        }
+    }
+
+    Ok(found)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

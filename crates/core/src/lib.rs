@@ -1424,7 +1424,7 @@ where
         repo_config: &config::ReleaseRegentConfig,
         event: &traits::event_source::ProcessingEvent,
     ) -> CoreResult<release_orchestrator::OrchestratorResult> {
-        use release_automator::{AutomatorConfig, ReleaseAutomator};
+        use release_automator::{AutomatorConfig, AutomatorResult, ReleaseAutomator};
 
         tracing::info!(
             owner = %owner,
@@ -1446,9 +1446,49 @@ where
             error_handling: repo_config.error_handling.clone(),
         };
 
-        ReleaseAutomator::new(config, &self.github_operations.scoped_to(installation_id))
+        let scoped_github = self.github_operations.scoped_to(installation_id);
+
+        // Capture the previously-released version BEFORE automate() runs,
+        // since automate() creates the new release tag as a side effect —
+        // calling resolve_current_version afterwards would see the
+        // just-created tag instead of the prior one (task #211 Fix D).
+        let previous_version =
+            versioning::resolve_current_version(&scoped_github, owner, repo, false).await?;
+
+        let automator_result = ReleaseAutomator::new(config, &scoped_github)
             .automate(owner, repo, event, correlation_id)
             .await?;
+
+        // Now that the release has shipped, any `rr:override-*` label still
+        // outstanding on a merged feature PR whose commits are included in
+        // this release has been consumed — the floor it represented is
+        // already baked into the released version. Remove those labels here
+        // (deferred from feature-PR-merge time; task #211 Fix D) rather than
+        // when the feature PR itself merged, since at that point it was not
+        // yet known which release would ultimately ship the floor.
+        //
+        // Skipped entirely when there is no prior release tag (the very
+        // first release cycle) — there is nothing to scan "since the last
+        // release" (Fix B's convention).
+        //
+        // `AutomatorResult` has exactly one variant, so this destructure is
+        // irrefutable — not an `if let` — but is still named `result` rather
+        // than inlined so the field access below stays readable.
+        let AutomatorResult::Created {
+            release: new_release,
+        } = automator_result;
+        if let Some(ref previous) = previous_version {
+            let base = format!("{}{previous}", repo_config.core.version_prefix);
+            self.clear_override_labels_from_merged_prs_in_range(
+                owner,
+                repo,
+                installation_id,
+                correlation_id,
+                &base,
+                &new_release.target_commitish,
+            )
+            .await;
+        }
 
         // After the release is published, clear stale rr:override-* labels from
         // any open feature PRs.  These overrides were scoped to this release cycle.
@@ -1461,6 +1501,79 @@ where
         .await;
 
         Ok(release_orchestrator::OrchestratorResult::TaggedRelease)
+    }
+
+    /// Remove outstanding `rr:override-*` labels from merged pull requests
+    /// whose commits are included in the commit range `base..head`, posting
+    /// one cleanup comment per affected PR (task #211 Fix D).
+    ///
+    /// Scans via [`comment_command_processor::collect_merged_prs_with_override_labels`],
+    /// which reuses the merged-PR-only filter (Fix A) and per-PR-number
+    /// deduplication (Fix C). All errors are logged as warnings and this
+    /// function never propagates failures to callers — it is intentionally
+    /// best-effort, matching the sibling
+    /// [`Self::clear_stale_override_labels_after_release`].
+    async fn clear_override_labels_from_merged_prs_in_range(
+        &self,
+        owner: &str,
+        repo: &str,
+        installation_id: u64,
+        correlation_id: &str,
+        base: &str,
+        head: &str,
+    ) {
+        use comment_command_processor::collect_merged_prs_with_override_labels;
+
+        let scoped_github = self.github_operations.scoped_to(installation_id);
+
+        let prs_with_labels =
+            match collect_merged_prs_with_override_labels(&scoped_github, owner, repo, base, head)
+                .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        owner,
+                        repo,
+                        correlation_id = %correlation_id,
+                        "Failed to scan merged PRs for outstanding override labels \
+                         at release-ship time; skipping"
+                    );
+                    return;
+                }
+            };
+
+        for (pr_number, labels) in prs_with_labels {
+            for label in &labels {
+                if let Err(e) = scoped_github
+                    .remove_label(owner, repo, pr_number, label)
+                    .await
+                {
+                    tracing::warn!(
+                        error = %e,
+                        pr = pr_number,
+                        label = %label,
+                        correlation_id = %correlation_id,
+                        "Failed to remove consumed override label at release-ship \
+                         time; continuing"
+                    );
+                }
+            }
+
+            let cleanup_body = build_override_cleanup_comment(&labels);
+            if let Err(e) = scoped_github
+                .create_issue_comment(owner, repo, pr_number, &cleanup_body)
+                .await
+            {
+                tracing::warn!(
+                    error = %e,
+                    pr = pr_number,
+                    correlation_id = %correlation_id,
+                    "Failed to post release-ship override cleanup comment; continuing"
+                );
+            }
+        }
     }
 
     /// Clear stale bump-override labels from open feature PRs after a release.
@@ -1557,35 +1670,8 @@ where
 
             // Post exactly one cleanup comment per PR, listing every kind that
             // was removed.  This avoids duplicate comments when a PR carried
-            // more than one override label.  Use the plural form and list each
-            // command individually when multiple labels were removed so the
-            // copy is grammatically correct and each label is a valid command.
-            let cleanup_body = if stale_overrides.len() == 1 {
-                let kind = stale_overrides[0]
-                    .strip_prefix("rr:override-")
-                    .unwrap_or(&stale_overrides[0]);
-                format!(
-                    "ℹ️ **Release Regent**: The `!release {kind}` override on \
-                     this PR has been cleared because a new release was published \
-                     before this PR merged. If the work in this PR still warrants \
-                     a minimum bump for the next release, please re-post your \
-                     `!release` command."
-                )
-            } else {
-                let commands = stale_overrides
-                    .iter()
-                    .filter_map(|l| l.strip_prefix("rr:override-"))
-                    .map(|kind| format!("`!release {kind}`"))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                format!(
-                    "ℹ️ **Release Regent**: The {commands} overrides on \
-                     this PR have been cleared because a new release was published \
-                     before this PR merged. If the work in this PR still warrants \
-                     a minimum bump for the next release, please re-post your \
-                     `!release` command."
-                )
-            };
+            // more than one override label.
+            let cleanup_body = build_override_cleanup_comment(&stale_overrides);
             if let Err(e) = scoped_github
                 .create_issue_comment(owner, repo, pr.number, &cleanup_body)
                 .await
@@ -1622,7 +1708,7 @@ where
         version_prefix: &str,
     ) -> CoreResult<release_orchestrator::OrchestratorResult> {
         use comment_command_processor::{
-            label_name_to_bump_kind, resolve_outstanding_override_floor, ALL_OVERRIDE_LABELS,
+            label_name_to_bump_kind, resolve_outstanding_override_floor,
         };
         use versioning::BumpKind;
 
@@ -1645,12 +1731,6 @@ where
 
         let mut floor_kind: Option<BumpKind> =
             labels.iter().find_map(|l| label_name_to_bump_kind(&l.name));
-        // Tracks whether the floor (if any) originated from the merged PR's
-        // own label, as opposed to the commit-history fallback below. Only
-        // an own label should be "consumed" (removed) from the merged PR in
-        // step 7 — a historical floor belongs to a different, earlier PR
-        // that this merge event has no business modifying.
-        let own_label_present = floor_kind.is_some();
 
         // The just-merged PR's own label always wins. Only when it carries no
         // override of its own do we fall back to scanning commit history —
@@ -1659,28 +1739,34 @@ where
         // release cycle (task #211, scenarios 2 & 4). This covers cases where
         // the overriding PR merged earlier in the cycle, possibly before the
         // release PR was created or after it was deleted and must be recreated.
+        // When there is no prior release tag (the very first release cycle)
+        // there is nothing to scan "since the last release", so the scan is
+        // skipped entirely (Fix B — code review follow-up on task #211)
+        // rather than passing an empty `base` to
+        // `resolve_outstanding_override_floor`, which would build an invalid
+        // comparison range against the real GitHub API.
         if floor_kind.is_none() {
-            let scan_base = current_version
-                .map(|v| format!("{version_prefix}{v}"))
-                .unwrap_or_default();
-            if let Some((historical_kind, historical_pr)) = resolve_outstanding_override_floor(
-                &scoped_github,
-                owner,
-                repo,
-                &scan_base,
-                base_sha,
-            )
-            .await?
-            {
-                tracing::debug!(
-                    owner = %owner,
-                    repo = %repo,
-                    historical_pr,
-                    floor = ?historical_kind,
-                    correlation_id = %correlation_id,
-                    "Applying bump-override floor found via commit-history scan"
-                );
-                floor_kind = Some(historical_kind);
+            if let Some(current) = current_version {
+                let scan_base = format!("{version_prefix}{current}");
+                if let Some((historical_kind, historical_pr)) = resolve_outstanding_override_floor(
+                    &scoped_github,
+                    owner,
+                    repo,
+                    &scan_base,
+                    base_sha,
+                )
+                .await?
+                {
+                    tracing::debug!(
+                        owner = %owner,
+                        repo = %repo,
+                        historical_pr,
+                        floor = ?historical_kind,
+                        correlation_id = %correlation_id,
+                        "Applying bump-override floor found via commit-history scan"
+                    );
+                    floor_kind = Some(historical_kind);
+                }
             }
         }
 
@@ -1760,27 +1846,13 @@ where
             }
         }
 
-        // Consume override label: remove from the now-merged feature PR.
-        // This is idempotent (remove_label treats 404 as Ok) and runs only
-        // when the floor came from the merged PR's own label — a floor
-        // sourced from the commit-history scan belongs to a different,
-        // earlier PR whose label must be left alone (task #211).
-        if own_label_present {
-            for &label in ALL_OVERRIDE_LABELS {
-                if let Err(e) = scoped_github
-                    .remove_label(owner, repo, merged_pr_number, label)
-                    .await
-                {
-                    tracing::warn!(
-                        error = %e,
-                        merged_pr = merged_pr_number,
-                        label,
-                        correlation_id = %correlation_id,
-                        "Failed to remove consumed override label; continuing"
-                    );
-                }
-            }
-        }
+        // Note: the override label is intentionally NOT removed from the
+        // merged feature PR here. Removal is deferred to release-ship time
+        // (`process_release_pr_merged` / `clear_override_labels_from_merged_prs_in_range`)
+        // — task #211 Fix D — since at feature-PR-merge time it is not yet
+        // known which release will ultimately ship the floor this label
+        // represents (the release PR may be retargeted, superseded by a
+        // higher `!set-version`, or the branch recreated before it merges).
 
         Ok(orch_result)
     }
@@ -2067,6 +2139,44 @@ where
                 );
             }
         }
+    }
+}
+
+/// Build the cleanup notification comment for one or more removed
+/// `rr:override-*` labels.
+///
+/// Shared by [`ReleaseRegentProcessor::clear_stale_override_labels_after_release`]
+/// (open-PR cleanup) and the release-ship-time cleanup path (Fix D — code
+/// review follow-up on task #211) so both sites use identical wording. Uses
+/// the plural form and lists each command individually when multiple labels
+/// are removed so the copy is grammatically correct and each label is a
+/// valid command.
+fn build_override_cleanup_comment(removed_labels: &[String]) -> String {
+    if removed_labels.len() == 1 {
+        let kind = removed_labels[0]
+            .strip_prefix("rr:override-")
+            .unwrap_or(&removed_labels[0]);
+        format!(
+            "ℹ️ **Release Regent**: The `!release {kind}` override on \
+             this PR has been cleared because a new release was published \
+             before this PR merged. If the work in this PR still warrants \
+             a minimum bump for the next release, please re-post your \
+             `!release` command."
+        )
+    } else {
+        let commands = removed_labels
+            .iter()
+            .filter_map(|l| l.strip_prefix("rr:override-"))
+            .map(|kind| format!("`!release {kind}`"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(
+            "ℹ️ **Release Regent**: The {commands} overrides on \
+             this PR have been cleared because a new release was published \
+             before this PR merged. If the work in this PR still warrants \
+             a minimum bump for the next release, please re-post your \
+             `!release` command."
+        )
     }
 }
 
