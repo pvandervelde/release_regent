@@ -3130,12 +3130,14 @@ async fn test_handle_merged_release_pr_removes_override_label_from_previously_me
          #7 once the release ships, got: {removed:?}"
     );
 
-    // A cleanup comment (matching the open-PR cleanup wording) must be posted on PR #7.
+    // A cleanup comment (confirming the override was honored because PR #7's
+    // commits shipped in this release, not the stale open-PR wording) must
+    // be posted on PR #7.
     let comments = github.issue_comments.lock().await;
     let cleanup_comments: Vec<_> = comments
         .iter()
         .filter(|(pr, body)| {
-            *pr == 7 && body.contains("cleared because a new release was published")
+            *pr == 7 && body.contains("commits are included in the release that just shipped")
         })
         .collect();
     assert_eq!(
@@ -3222,7 +3224,8 @@ async fn test_handle_merged_release_pr_removes_labels_from_multiple_previously_m
     let comments = github.issue_comments.lock().await;
     let has_cleanup_for = |pr_number: u64| {
         comments.iter().any(|(pr, body)| {
-            *pr == pr_number && body.contains("cleared because a new release was published")
+            *pr == pr_number
+                && body.contains("commits are included in the release that just shipped")
         })
     };
     assert!(has_cleanup_for(10), "expected a cleanup comment on PR #10, got: {comments:?}");

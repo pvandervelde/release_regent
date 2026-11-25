@@ -1561,7 +1561,7 @@ where
                 }
             }
 
-            let cleanup_body = build_override_cleanup_comment(&labels);
+            let cleanup_body = build_override_consumed_comment(&labels);
             if let Err(e) = scoped_github
                 .create_issue_comment(owner, repo, pr_number, &cleanup_body)
                 .await
@@ -2143,14 +2143,16 @@ where
 }
 
 /// Build the cleanup notification comment for one or more removed
-/// `rr:override-*` labels.
+/// `rr:override-*` labels on a PR whose override is **stale** — a different
+/// release shipped without incorporating this (still-open) PR's commits.
 ///
-/// Shared by [`ReleaseRegentProcessor::clear_stale_override_labels_after_release`]
-/// (open-PR cleanup) and the release-ship-time cleanup path (Fix D — code
-/// review follow-up on task #211) so both sites use identical wording. Uses
-/// the plural form and lists each command individually when multiple labels
-/// are removed so the copy is grammatically correct and each label is a
-/// valid command.
+/// Used by [`ReleaseRegentProcessor::clear_stale_override_labels_after_release`]
+/// (open-PR cleanup). Distinct from [`build_override_consumed_comment`],
+/// which covers the opposite case: a merged PR whose commits *are* included
+/// in the release that just shipped, i.e. the override was honored rather
+/// than superseded. Uses the plural form and lists each command individually
+/// when multiple labels are removed so the copy is grammatically correct and
+/// each label is a valid command.
 fn build_override_cleanup_comment(removed_labels: &[String]) -> String {
     if removed_labels.len() == 1 {
         let kind = removed_labels[0]
@@ -2176,6 +2178,40 @@ fn build_override_cleanup_comment(removed_labels: &[String]) -> String {
              before this PR merged. If the work in this PR still warrants \
              a minimum bump for the next release, please re-post your \
              `!release` command."
+        )
+    }
+}
+
+/// Builds the cleanup comment posted on a PR whose `rr:override-*` label(s)
+/// have been removed because the release that just shipped already
+/// incorporates this PR's commits — the override was honored, not
+/// superseded. Distinct from [`build_override_cleanup_comment`], which is for
+/// the opposite case: a still-open PR whose override is stale because a
+/// different release shipped without it.
+///
+/// Used by [`ReleaseRegentProcessor::clear_override_labels_from_merged_prs_in_range`]
+/// (release-ship-time cleanup for already-merged PRs, task #211 Fix D).
+fn build_override_consumed_comment(removed_labels: &[String]) -> String {
+    if removed_labels.len() == 1 {
+        let kind = removed_labels[0]
+            .strip_prefix("rr:override-")
+            .unwrap_or(&removed_labels[0]);
+        format!(
+            "✅ **Release Regent**: The `!release {kind}` override on \
+             this PR has been applied — this PR's commits are included in \
+             the release that just shipped, so the label has been removed."
+        )
+    } else {
+        let commands = removed_labels
+            .iter()
+            .filter_map(|l| l.strip_prefix("rr:override-"))
+            .map(|kind| format!("`!release {kind}`"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(
+            "✅ **Release Regent**: The {commands} overrides on \
+             this PR have been applied — this PR's commits are included in \
+             the release that just shipped, so the labels have been removed."
         )
     }
 }
