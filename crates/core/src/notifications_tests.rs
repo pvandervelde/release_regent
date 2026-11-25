@@ -424,6 +424,15 @@ impl GitHubOperations for TestGitHubOps {
         Ok(vec![])
     }
 
+    async fn list_pull_requests_for_commit(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _commit_sha: &str,
+    ) -> CoreResult<Vec<PullRequest>> {
+        Ok(vec![])
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn list_pull_requests(
         &self,

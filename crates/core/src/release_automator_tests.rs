@@ -347,6 +347,15 @@ impl GitHubOperations for TestGitHub {
         Ok(vec![])
     }
 
+    async fn list_pull_requests_for_commit(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _commit_sha: &str,
+    ) -> CoreResult<Vec<PullRequest>> {
+        Ok(vec![])
+    }
+
     async fn list_pull_requests(
         &self,
         _owner: &str,

@@ -389,13 +389,12 @@ pub trait GitHubOperations: GitOperations + Send + Sync {
     /// was cherry-picked, or the same commit reached `main` via more than one
     /// PR). Implementations should return all associated pull requests.
     ///
-    /// # Default implementation
+    /// # Required override
     ///
-    /// Returns an empty vector. This default exists so that the many existing
-    /// `GitHubOperations` implementors across the workspace do not need to be
-    /// updated individually; only implementations that need to support the
-    /// override-floor historical scan (currently [`crate`]'s GitHub client)
-    /// must override it.
+    /// There is **no default implementation**. Every `GitHubOperations`
+    /// implementor must provide this method explicitly. Implementations that
+    /// do not need to support the override-floor historical scan (task #211)
+    /// may simply return `Ok(vec![])`.
     ///
     /// # Parameters
     /// - `owner`: Repository owner name
@@ -416,12 +415,10 @@ pub trait GitHubOperations: GitOperations + Send + Sync {
     /// ```
     async fn list_pull_requests_for_commit(
         &self,
-        _owner: &str,
-        _repo: &str,
-        _commit_sha: &str,
-    ) -> CoreResult<Vec<PullRequest>> {
-        Ok(vec![])
-    }
+        owner: &str,
+        repo: &str,
+        commit_sha: &str,
+    ) -> CoreResult<Vec<PullRequest>>;
 
     /// List all comments on an issue or pull request.
     ///

@@ -1288,6 +1288,14 @@ mod cross_calculator_consistency {
         async fn list_pr_labels(&self, _: &str, _: &str, _: u64) -> crate::CoreResult<Vec<Label>> {
             Ok(vec![])
         }
+        async fn list_pull_requests_for_commit(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+        ) -> crate::CoreResult<Vec<PullRequest>> {
+            Ok(vec![])
+        }
         async fn list_pull_requests(
             &self,
             _: &str,
