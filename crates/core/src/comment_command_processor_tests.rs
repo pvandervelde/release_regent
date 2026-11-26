@@ -1990,10 +1990,9 @@ async fn test_resolve_outstanding_override_floor_finds_single_override_label() {
         .with_pr_labels(pr.number, vec![override_label("major")])
         .await;
 
-    let result =
-        resolve_outstanding_override_floor(&github, "acme", "app", "v1.0.0", "headsha")
-            .await
-            .unwrap();
+    let result = resolve_outstanding_override_floor(&github, "acme", "app", "v1.0.0", "headsha")
+        .await
+        .unwrap();
 
     assert_eq!(result, Some((BumpKind::Major, 55)));
 }
@@ -2017,10 +2016,9 @@ async fn test_resolve_outstanding_override_floor_ignores_non_override_labels_alo
         .with_pr_labels(pr.number, vec![unrelated_label, override_label("minor")])
         .await;
 
-    let result =
-        resolve_outstanding_override_floor(&github, "acme", "app", "v1.0.0", "headsha")
-            .await
-            .unwrap();
+    let result = resolve_outstanding_override_floor(&github, "acme", "app", "v1.0.0", "headsha")
+        .await
+        .unwrap();
 
     assert_eq!(result, Some((BumpKind::Minor, 21)));
 }
@@ -2035,7 +2033,10 @@ async fn test_resolve_outstanding_override_floor_picks_highest_across_multiple_p
     let pr_patch = make_merged_feature_pr(10);
     let pr_major = make_merged_feature_pr(20);
     let github = TestGitHub::new()
-        .with_commits_between(vec![make_git_commit(&sha_patch), make_git_commit(&sha_major)])
+        .with_commits_between(vec![
+            make_git_commit(&sha_patch),
+            make_git_commit(&sha_major),
+        ])
         .await
         .with_commit_prs(sha_patch.clone(), vec![pr_patch.clone()])
         .await
@@ -2046,10 +2047,9 @@ async fn test_resolve_outstanding_override_floor_picks_highest_across_multiple_p
         .with_pr_labels(pr_major.number, vec![override_label("major")])
         .await;
 
-    let result =
-        resolve_outstanding_override_floor(&github, "acme", "app", "v1.0.0", "headsha")
-            .await
-            .unwrap();
+    let result = resolve_outstanding_override_floor(&github, "acme", "app", "v1.0.0", "headsha")
+        .await
+        .unwrap();
 
     assert_eq!(result, Some((BumpKind::Major, 20)));
 }
@@ -2064,7 +2064,10 @@ async fn test_resolve_outstanding_override_floor_picks_highest_when_order_revers
     let pr_major = make_merged_feature_pr(40);
     // Note: major-carrying commit is listed FIRST this time.
     let github = TestGitHub::new()
-        .with_commits_between(vec![make_git_commit(&sha_major), make_git_commit(&sha_patch)])
+        .with_commits_between(vec![
+            make_git_commit(&sha_major),
+            make_git_commit(&sha_patch),
+        ])
         .await
         .with_commit_prs(sha_patch.clone(), vec![pr_patch.clone()])
         .await
@@ -2075,10 +2078,9 @@ async fn test_resolve_outstanding_override_floor_picks_highest_when_order_revers
         .with_pr_labels(pr_major.number, vec![override_label("major")])
         .await;
 
-    let result =
-        resolve_outstanding_override_floor(&github, "acme", "app", "v1.0.0", "headsha")
-            .await
-            .unwrap();
+    let result = resolve_outstanding_override_floor(&github, "acme", "app", "v1.0.0", "headsha")
+        .await
+        .unwrap();
 
     assert_eq!(result, Some((BumpKind::Major, 40)));
 }
@@ -2101,10 +2103,9 @@ async fn test_resolve_outstanding_override_floor_multiple_prs_per_commit_takes_h
         .with_pr_labels(pr_high.number, vec![override_label("major")])
         .await;
 
-    let result =
-        resolve_outstanding_override_floor(&github, "acme", "app", "v1.0.0", "headsha")
-            .await
-            .unwrap();
+    let result = resolve_outstanding_override_floor(&github, "acme", "app", "v1.0.0", "headsha")
+        .await
+        .unwrap();
 
     assert_eq!(result, Some((BumpKind::Major, 2)));
 }
@@ -2127,7 +2128,10 @@ async fn test_resolve_outstanding_override_floor_tie_break_keeps_first_encounter
     let pr_first = make_merged_feature_pr(12);
     let pr_second = make_merged_feature_pr(34);
     let github = TestGitHub::new()
-        .with_commits_between(vec![make_git_commit(&sha_first), make_git_commit(&sha_second)])
+        .with_commits_between(vec![
+            make_git_commit(&sha_first),
+            make_git_commit(&sha_second),
+        ])
         .await
         .with_commit_prs(sha_first, vec![pr_first.clone()])
         .await
@@ -2138,10 +2142,9 @@ async fn test_resolve_outstanding_override_floor_tie_break_keeps_first_encounter
         .with_pr_labels(pr_second.number, vec![override_label("major")])
         .await;
 
-    let result =
-        resolve_outstanding_override_floor(&github, "acme", "app", "v1.0.0", "headsha")
-            .await
-            .unwrap();
+    let result = resolve_outstanding_override_floor(&github, "acme", "app", "v1.0.0", "headsha")
+        .await
+        .unwrap();
 
     assert_eq!(
         result,
@@ -2353,9 +2356,16 @@ async fn test_process_set_version_rejected_when_below_outstanding_major_override
     let event = test_event(42, "!set-version 1.3.0", "open");
     let result = processor.process(&event).await;
 
-    assert!(result.is_ok(), "expected Ok (acknowledged), got: {result:?}");
+    assert!(
+        result.is_ok(),
+        "expected Ok (acknowledged), got: {result:?}"
+    );
     let comments = github.issue_comments().await;
-    assert_eq!(comments.len(), 1, "expected one rejection comment, got {comments:?}");
+    assert_eq!(
+        comments.len(),
+        1,
+        "expected one rejection comment, got {comments:?}"
+    );
     assert_eq!(comments[0].0, 42);
     assert_eq!(
         comments[0].1,
@@ -2394,11 +2404,20 @@ async fn test_process_set_version_rejected_when_below_outstanding_minor_override
     let event = test_event(42, "!set-version 1.0.5", "open");
     let result = processor.process(&event).await;
 
-    assert!(result.is_ok(), "expected Ok (acknowledged), got: {result:?}");
-    let comments = github.issue_comments().await;
-    assert_eq!(comments.len(), 1, "expected one rejection comment, got {comments:?}");
     assert!(
-        comments[0].1.contains("`rr:override-minor` label is outstanding on PR #77"),
+        result.is_ok(),
+        "expected Ok (acknowledged), got: {result:?}"
+    );
+    let comments = github.issue_comments().await;
+    assert_eq!(
+        comments.len(),
+        1,
+        "expected one rejection comment, got {comments:?}"
+    );
+    assert!(
+        comments[0]
+            .1
+            .contains("`rr:override-minor` label is outstanding on PR #77"),
         "rejection should name the overriding PR, got: {}",
         comments[0].1
     );
@@ -2413,7 +2432,9 @@ async fn test_process_set_version_rejected_when_below_outstanding_minor_override
         comments[0].1
     );
     assert!(
-        comments[0].1.contains("remove the `!release minor` override first"),
+        comments[0]
+            .1
+            .contains("remove the `!release minor` override first"),
         "rejection should name the alternative corrective action, got: {}",
         comments[0].1
     );
@@ -2545,8 +2566,7 @@ async fn test_process_set_version_patch_override_floor_satisfied_when_guard_b_sa
 /// Regression guard: when no `rr:override-*` labels are outstanding anywhere
 /// in history, behaviour must be identical to before this feature existed.
 #[tokio::test]
-async fn test_process_set_version_proceeds_normally_when_no_override_labels_outstanding_anywhere()
-{
+async fn test_process_set_version_proceeds_normally_when_no_override_labels_outstanding_anywhere() {
     let sha = "b2".repeat(20);
     let unrelated_pr = make_merged_feature_pr(99);
     let github = TestGitHub::new()
@@ -2599,10 +2619,7 @@ async fn test_process_set_version_floor_guard_actually_queries_commit_history() 
         "expected the override-floor guard to call get_commits_between"
     );
     assert!(
-        github
-            .list_prs_for_commit_calls()
-            .await
-            .contains(&sha),
+        github.list_prs_for_commit_calls().await.contains(&sha),
         "expected the override-floor guard to resolve the commit's PR via \
          list_pull_requests_for_commit"
     );
@@ -2687,13 +2704,18 @@ async fn test_process_set_version_propagates_error_when_override_scan_label_look
 async fn test_process_set_version_skips_override_scan_when_no_prior_release_tag() {
     // No `.with_tags(...)` call: `list_tags` returns [] → current_version is
     // None → there is nothing to scan "since the last release".
-    let github = TestGitHub::new().with_pr(make_release_pr(42, "deadbeef")).await;
+    let github = TestGitHub::new()
+        .with_pr(make_release_pr(42, "deadbeef"))
+        .await;
 
     let processor = CommentCommandProcessor::new(default_config(true), &github);
     let event = test_event(42, "!set-version 1.0.0", "open");
     let result = processor.process(&event).await;
 
-    assert!(result.is_ok(), "expected Ok (acknowledged), got: {result:?}");
+    assert!(
+        result.is_ok(),
+        "expected Ok (acknowledged), got: {result:?}"
+    );
     assert!(
         github.get_commits_between_calls().await.is_empty(),
         "expected the override-floor scan to be skipped entirely (no \
@@ -2703,7 +2725,11 @@ async fn test_process_set_version_skips_override_scan_when_no_prior_release_tag(
 
     // The command must proceed normally — accepted, not rejected.
     let comments = github.issue_comments().await;
-    assert_eq!(comments.len(), 1, "expected one confirmation comment, got {comments:?}");
+    assert_eq!(
+        comments.len(),
+        1,
+        "expected one confirmation comment, got {comments:?}"
+    );
     assert!(
         comments[0].1.contains('✅'),
         "expected !set-version to be accepted when there is no prior release \

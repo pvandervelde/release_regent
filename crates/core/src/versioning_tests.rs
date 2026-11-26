@@ -1664,7 +1664,10 @@ mod bump_kind_ordering_tests {
     /// element back.
     #[test]
     fn test_highest_bump_kind_single_element_returns_itself() {
-        assert_eq!(highest_bump_kind(vec![BumpKind::Patch]), Some(BumpKind::Patch));
+        assert_eq!(
+            highest_bump_kind(vec![BumpKind::Patch]),
+            Some(BumpKind::Patch)
+        );
     }
 
     /// Duplicate highest-ranked entries must not panic or produce a spurious

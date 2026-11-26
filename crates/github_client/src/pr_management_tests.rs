@@ -575,12 +575,14 @@ async fn test_list_pull_requests_for_commit_returns_associated_prs() {
     Mock::given(method("GET"))
         .and(path(format!("/repos/owner/repo/commits/{sha}/pulls")))
         .and(header("Authorization", "Bearer test-token"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([pr_json(
-            7,
-            "feat/associated",
-            "main",
-            "open"
-        ),])))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!([pr_json(
+                7,
+                "feat/associated",
+                "main",
+                "open"
+            ),])),
+        )
         .mount(&mock_server)
         .await;
 
@@ -632,7 +634,12 @@ async fn test_list_pull_requests_for_commit_pagination_combines_all_pages() {
         .respond_with(
             ResponseTemplate::new(200)
                 .insert_header("Link", link_header)
-                .set_body_json(serde_json::json!([pr_json(1, "feat/first", "main", "open"),])),
+                .set_body_json(serde_json::json!([pr_json(
+                    1,
+                    "feat/first",
+                    "main",
+                    "open"
+                ),])),
         )
         .up_to_n_times(1)
         .mount(&mock_server)
@@ -641,12 +648,14 @@ async fn test_list_pull_requests_for_commit_pagination_combines_all_pages() {
     Mock::given(method("GET"))
         .and(path(format!("/repos/owner/repo/commits/{sha}/pulls")))
         .and(query_param("page", "2"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([pr_json(
-            2,
-            "feat/second",
-            "main",
-            "open"
-        ),])))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!([pr_json(
+                2,
+                "feat/second",
+                "main",
+                "open"
+            ),])),
+        )
         .mount(&mock_server)
         .await;
 
@@ -730,7 +739,9 @@ async fn test_list_pull_requests_for_commit_null_repo_handled_gracefully() {
 
     Mock::given(method("GET"))
         .and(path(format!("/repos/owner/repo/commits/{sha}/pulls")))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([pr_deleted_fork])))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!([pr_deleted_fork])),
+        )
         .mount(&mock_server)
         .await;
 

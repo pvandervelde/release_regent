@@ -1206,11 +1206,7 @@ impl GitHubOperations for TestGitHubForLib {
                 format!("Simulated list_pull_requests_for_commit failure for sha {commit_sha}"),
             )));
         }
-        Ok(self
-            .commit_prs
-            .get(commit_sha)
-            .cloned()
-            .unwrap_or_default())
+        Ok(self.commit_prs.get(commit_sha).cloned().unwrap_or_default())
     }
 
     async fn create_issue(
@@ -3351,8 +3347,14 @@ async fn test_handle_merged_release_pr_removes_labels_from_multiple_previously_m
                 && body.contains("commits are included in the release that just shipped")
         })
     };
-    assert!(has_cleanup_for(10), "expected a cleanup comment on PR #10, got: {comments:?}");
-    assert!(has_cleanup_for(15), "expected a cleanup comment on PR #15, got: {comments:?}");
+    assert!(
+        has_cleanup_for(10),
+        "expected a cleanup comment on PR #10, got: {comments:?}"
+    );
+    assert!(
+        has_cleanup_for(15),
+        "expected a cleanup comment on PR #15, got: {comments:?}"
+    );
 }
 
 /// Scenario 5 (Fix D + Fix B combined): when there is NO prior release tag
