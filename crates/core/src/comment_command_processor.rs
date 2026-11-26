@@ -527,6 +527,7 @@ impl<'a, G: GitHubOperations + Send + Sync> CommentCommandProcessor<'a, G> {
                 repo,
                 &override_floor_base,
                 &pr.base.sha,
+                &pr.base.ref_name,
             )
             .await?
         } else {
@@ -541,6 +542,11 @@ impl<'a, G: GitHubOperations + Send + Sync> CommentCommandProcessor<'a, G> {
                 build: None,
             });
             let floor_version = apply_bump_floor(&floor_baseline, pinned_version, &floor_kind);
+            // `apply_bump_floor` returns a version different from
+            // `pinned_version` only when `pinned_version` is below the floor
+            // (otherwise it returns `pinned_version` unchanged), so this
+            // inequality check is exactly "was the pin raised by the floor,
+            // i.e. was it too low."
             if floor_version.compare_precedence(pinned_version) != Ordering::Equal {
                 let kind_str = floor_kind.as_str();
                 let rejection = format!(
@@ -710,6 +716,14 @@ impl<'a, G: GitHubOperations + Send + Sync> CommentCommandProcessor<'a, G> {
 /// Returns `Ok(None)` when no commits are in range, no commit resolves to an
 /// associated PR, or no associated PR carries an `rr:override-*` label.
 ///
+/// `expected_base_branch` must be the release's actual target branch. A PR
+/// only qualifies when it was merged *into that branch* — `GET
+/// /repos/{owner}/{repo}/commits/{sha}/pulls` can return a merged PR whose
+/// own base is some other branch (e.g. a maintenance branch) that happens to
+/// share a commit SHA with this branch's history; such a PR's override label
+/// must not be able to raise the floor (round 3 review follow-up on task
+/// #211).
+///
 /// When more than one PR carries the highest-severity override (a tie), the
 /// PR returned is whichever is encountered first during iteration — this is
 /// an implementation detail, not a documented guarantee, since callers only
@@ -728,6 +742,7 @@ pub(crate) async fn resolve_outstanding_override_floor<G>(
     repo: &str,
     base: &str,
     head: &str,
+    expected_base_branch: &str,
 ) -> CoreResult<Option<(BumpKind, u64)>>
 where
     G: GitHubOperations + Send + Sync,
@@ -758,8 +773,16 @@ where
         // open or closed-but-unmerged PR's label must never be able to
         // inflate it (Fix A — code review follow-up on task #211).
         // `GET /repos/{owner}/{repo}/commits/{sha}/pulls` returns any PR
-        // associated with the commit, not just merged ones.
-        for pr in prs.iter().filter(|pr| pr.merged_at.is_some()) {
+        // associated with the commit, not just merged ones. It also does not
+        // guarantee the PR was merged into the expected release branch — a
+        // merged PR that happens to share a commit SHA with this branch's
+        // history but whose own base was some other branch (e.g. a
+        // maintenance branch) must not be able to raise the floor (round 3
+        // review follow-up on task #211).
+        for pr in prs
+            .iter()
+            .filter(|pr| pr.merged_at.is_some() && pr.base.ref_name == expected_base_branch)
+        {
             if !seen_pr_numbers.insert(pr.number) {
                 continue;
             }
@@ -797,10 +820,12 @@ where
 /// highest-severity override — the cleanup path needs *every* override label
 /// on *every* qualifying PR so each one can be removed.
 ///
-/// Reuses the same merged-PR-only filter (Fix A) and per-PR-number
-/// deduplication (Fix C) as `resolve_outstanding_override_floor`, applied to
-/// the same `get_commits_between` → `list_pull_requests_for_commit` →
-/// `list_pr_labels` walk.
+/// Reuses the same merged-PR-only filter (Fix A), expected-base-branch
+/// filter (round 3 review follow-up), and per-PR-number deduplication
+/// (Fix C) as `resolve_outstanding_override_floor`, applied to the same
+/// `get_commits_between` → `list_pull_requests_for_commit` → `list_pr_labels`
+/// walk. See `resolve_outstanding_override_floor`'s doc comment for why
+/// `expected_base_branch` is required.
 ///
 /// Returns `(pr_number, override_label_names)` pairs, one per qualifying PR,
 /// in first-encountered order. PRs with no `rr:override-*` label are omitted.
@@ -816,6 +841,7 @@ pub(crate) async fn collect_merged_prs_with_override_labels<G>(
     repo: &str,
     base: &str,
     head: &str,
+    expected_base_branch: &str,
 ) -> CoreResult<Vec<(u64, Vec<String>)>>
 where
     G: GitHubOperations + Send + Sync,
@@ -832,9 +858,13 @@ where
             .list_pull_requests_for_commit(owner, repo, &commit.sha)
             .await?;
 
-        // Only merged pull requests qualify (Fix A) — see
+        // Only merged pull requests qualify (Fix A) and only when merged into
+        // the expected release branch (round 3 review follow-up) — see
         // `resolve_outstanding_override_floor` for rationale.
-        for pr in prs.iter().filter(|pr| pr.merged_at.is_some()) {
+        for pr in prs
+            .iter()
+            .filter(|pr| pr.merged_at.is_some() && pr.base.ref_name == expected_base_branch)
+        {
             if !seen_pr_numbers.insert(pr.number) {
                 continue;
             }

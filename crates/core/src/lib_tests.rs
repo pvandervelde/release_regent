@@ -3162,6 +3162,97 @@ async fn test_handle_merged_release_pr_removes_override_label_from_previously_me
     );
 }
 
+/// Round 3 code review follow-up on task #211: `GET
+/// /repos/{owner}/{repo}/commits/{sha}/pulls` can return a merged PR whose
+/// own base branch is something OTHER than the release's actual target
+/// branch (e.g. a maintenance branch) that happens to share a commit SHA
+/// with the release branch's history. Such a PR's `rr:override-*` label must
+/// NOT be removed by the release-ship cleanup scan — it was never part of
+/// this release's floor in the first place, since it was not merged into the
+/// branch this release actually ships from.
+#[tokio::test]
+async fn test_handle_merged_release_pr_does_not_remove_override_label_from_pr_with_wrong_base_branch(
+) {
+    let prior_tag = GitTag {
+        name: "v1.0.0".to_string(),
+        target_sha: "a".repeat(40),
+        tag_type: GitTagType::Lightweight,
+        message: None,
+        tagger: None,
+        created_at: None,
+    };
+    let historical_sha = "dd33".repeat(10);
+    // Merged PR that otherwise looks like a legitimate historical
+    // override-carrying PR, but whose base branch is `maintenance/v1`, not
+    // `main` (the repo's configured release target branch).
+    let mut wrong_base_pr = make_merged_pr(8, "feat/other-feature", "feat: other feature");
+    wrong_base_pr.base.ref_name = "maintenance/v1".to_string();
+    let release_merge_sha = "ee44".repeat(10);
+
+    let github = TestGitHubForLib::new_empty()
+        .with_tags(vec![prior_tag])
+        .with_commits_between(vec![make_git_commit(&historical_sha)])
+        .with_commit_prs(historical_sha, vec![wrong_base_pr.clone()])
+        .with_pr_labels(8, vec![override_label("major")]);
+
+    let config = TestConfigForLib;
+    let version_calc = TestVersionCalcForLib::returning("2.0.0");
+    let processor = ReleaseRegentProcessor::new(
+        github.clone(),
+        config,
+        version_calc,
+        SpyNotificationSender::new(),
+    );
+
+    let event = ProcessingEvent {
+        event_id: "evt-ship-cleanup-wrong-base".into(),
+        correlation_id: "corr-ship-cleanup-wrong-base".into(),
+        event_type: EventType::PullRequestMerged,
+        repository: RepositoryInfo {
+            owner: "acme".into(),
+            name: "app".into(),
+            default_branch: "main".into(),
+        },
+        payload: serde_json::json!({
+            "pull_request": {
+                "head": { "ref": "release/v2.0.0" },
+                "base": { "ref": "main" },
+                "number": 201,
+                "merge_commit_sha": release_merge_sha
+            }
+        }),
+        received_at: Utc::now(),
+        source: EventSourceKind::Webhook,
+        installation_id: 0,
+    };
+
+    let result = processor.handle_merged_pull_request(&event).await.unwrap();
+    assert!(
+        matches!(
+            result,
+            release_orchestrator::OrchestratorResult::TaggedRelease
+        ),
+        "expected TaggedRelease (automator path), got: {result:?}"
+    );
+
+    // PR #8's override label must NOT have been removed — it was merged into
+    // `maintenance/v1`, not the release's actual target branch `main`.
+    let removed = github.removed_labels.lock().await;
+    assert!(
+        !removed.iter().any(|(pr, _)| *pr == 8),
+        "expected rr:override-major to be left alone on PR #8, since it was \
+         merged into a branch other than the release's target branch, got: \
+         {removed:?}"
+    );
+
+    // No cleanup comment should have been posted on PR #8 either.
+    let comments = github.issue_comments.lock().await;
+    assert!(
+        !comments.iter().any(|(pr, _)| *pr == 8),
+        "expected no cleanup comment on PR #8, got: {comments:?}"
+    );
+}
+
 /// Manual-review item (task #211 Fix D ordering requirement):
 /// `process_release_pr_merged` must resolve the previous release version
 /// (`resolve_current_version`, which calls `list_tags`) BEFORE invoking

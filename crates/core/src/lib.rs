@@ -1486,6 +1486,7 @@ where
                 correlation_id,
                 &base,
                 &new_release.target_commitish,
+                &repo_config.core.branches.main,
             )
             .await;
         }
@@ -1508,11 +1509,14 @@ where
     /// one cleanup comment per affected PR (task #211 Fix D).
     ///
     /// Scans via [`comment_command_processor::collect_merged_prs_with_override_labels`],
-    /// which reuses the merged-PR-only filter (Fix A) and per-PR-number
-    /// deduplication (Fix C). All errors are logged as warnings and this
-    /// function never propagates failures to callers — it is intentionally
-    /// best-effort, matching the sibling
-    /// [`Self::clear_stale_override_labels_after_release`].
+    /// which reuses the merged-PR-only filter (Fix A), the expected-base-branch
+    /// filter (round 3 review follow-up on task #211 — `expected_base_branch`
+    /// must be the release's actual target branch, e.g.
+    /// `repo_config.core.branches.main`), and per-PR-number deduplication
+    /// (Fix C). All errors are logged as warnings and this function never
+    /// propagates failures to callers — it is intentionally best-effort,
+    /// matching the sibling [`Self::clear_stale_override_labels_after_release`].
+    #[allow(clippy::too_many_arguments)] // owner/repo/installation_id/correlation_id/base/head/expected_base_branch is minimal
     async fn clear_override_labels_from_merged_prs_in_range(
         &self,
         owner: &str,
@@ -1521,28 +1525,35 @@ where
         correlation_id: &str,
         base: &str,
         head: &str,
+        expected_base_branch: &str,
     ) {
         use comment_command_processor::collect_merged_prs_with_override_labels;
 
         let scoped_github = self.github_operations.scoped_to(installation_id);
 
-        let prs_with_labels =
-            match collect_merged_prs_with_override_labels(&scoped_github, owner, repo, base, head)
-                .await
-            {
-                Ok(v) => v,
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        owner,
-                        repo,
-                        correlation_id = %correlation_id,
-                        "Failed to scan merged PRs for outstanding override labels \
-                         at release-ship time; skipping"
-                    );
-                    return;
-                }
-            };
+        let prs_with_labels = match collect_merged_prs_with_override_labels(
+            &scoped_github,
+            owner,
+            repo,
+            base,
+            head,
+            expected_base_branch,
+        )
+        .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    owner,
+                    repo,
+                    correlation_id = %correlation_id,
+                    "Failed to scan merged PRs for outstanding override labels \
+                     at release-ship time; skipping"
+                );
+                return;
+            }
+        };
 
         for (pr_number, labels) in prs_with_labels {
             for label in &labels {
@@ -1754,6 +1765,7 @@ where
                     repo,
                     &scan_base,
                     base_sha,
+                    base_branch,
                 )
                 .await?
                 {

@@ -1911,6 +1911,7 @@ async fn test_process_release_bump_same_override_reposted_shows_rererecorded_con
 //     repo: &str,
 //     base: &str,
 //     head: &str,
+//     expected_base_branch: &str,
 // ) -> CoreResult<Option<(BumpKind, u64)>>
 // where
 //     G: GitHubOperations + Send + Sync;
@@ -1928,7 +1929,8 @@ async fn test_resolve_outstanding_override_floor_returns_none_when_no_commits_in
     let github = TestGitHub::new().with_commits_between(vec![]).await;
 
     let result =
-        resolve_outstanding_override_floor(&github, "acme", "app", "v1.0.0", "headsha").await;
+        resolve_outstanding_override_floor(&github, "acme", "app", "v1.0.0", "headsha", "main")
+            .await;
 
     assert_eq!(result.unwrap(), None);
 }
@@ -1945,7 +1947,8 @@ async fn test_resolve_outstanding_override_floor_returns_none_when_commit_has_no
     // returns an empty vec for it.
 
     let result =
-        resolve_outstanding_override_floor(&github, "acme", "app", "v1.0.0", "headsha").await;
+        resolve_outstanding_override_floor(&github, "acme", "app", "v1.0.0", "headsha", "main")
+            .await;
 
     assert_eq!(result.unwrap(), None);
 }
@@ -1971,7 +1974,8 @@ async fn test_resolve_outstanding_override_floor_returns_none_when_pr_has_no_ove
         .await;
 
     let result =
-        resolve_outstanding_override_floor(&github, "acme", "app", "v1.0.0", "headsha").await;
+        resolve_outstanding_override_floor(&github, "acme", "app", "v1.0.0", "headsha", "main")
+            .await;
 
     assert_eq!(result.unwrap(), None);
 }
@@ -1990,9 +1994,10 @@ async fn test_resolve_outstanding_override_floor_finds_single_override_label() {
         .with_pr_labels(pr.number, vec![override_label("major")])
         .await;
 
-    let result = resolve_outstanding_override_floor(&github, "acme", "app", "v1.0.0", "headsha")
-        .await
-        .unwrap();
+    let result =
+        resolve_outstanding_override_floor(&github, "acme", "app", "v1.0.0", "headsha", "main")
+            .await
+            .unwrap();
 
     assert_eq!(result, Some((BumpKind::Major, 55)));
 }
@@ -2016,9 +2021,10 @@ async fn test_resolve_outstanding_override_floor_ignores_non_override_labels_alo
         .with_pr_labels(pr.number, vec![unrelated_label, override_label("minor")])
         .await;
 
-    let result = resolve_outstanding_override_floor(&github, "acme", "app", "v1.0.0", "headsha")
-        .await
-        .unwrap();
+    let result =
+        resolve_outstanding_override_floor(&github, "acme", "app", "v1.0.0", "headsha", "main")
+            .await
+            .unwrap();
 
     assert_eq!(result, Some((BumpKind::Minor, 21)));
 }
@@ -2047,9 +2053,10 @@ async fn test_resolve_outstanding_override_floor_picks_highest_across_multiple_p
         .with_pr_labels(pr_major.number, vec![override_label("major")])
         .await;
 
-    let result = resolve_outstanding_override_floor(&github, "acme", "app", "v1.0.0", "headsha")
-        .await
-        .unwrap();
+    let result =
+        resolve_outstanding_override_floor(&github, "acme", "app", "v1.0.0", "headsha", "main")
+            .await
+            .unwrap();
 
     assert_eq!(result, Some((BumpKind::Major, 20)));
 }
@@ -2078,9 +2085,10 @@ async fn test_resolve_outstanding_override_floor_picks_highest_when_order_revers
         .with_pr_labels(pr_major.number, vec![override_label("major")])
         .await;
 
-    let result = resolve_outstanding_override_floor(&github, "acme", "app", "v1.0.0", "headsha")
-        .await
-        .unwrap();
+    let result =
+        resolve_outstanding_override_floor(&github, "acme", "app", "v1.0.0", "headsha", "main")
+            .await
+            .unwrap();
 
     assert_eq!(result, Some((BumpKind::Major, 40)));
 }
@@ -2103,9 +2111,10 @@ async fn test_resolve_outstanding_override_floor_multiple_prs_per_commit_takes_h
         .with_pr_labels(pr_high.number, vec![override_label("major")])
         .await;
 
-    let result = resolve_outstanding_override_floor(&github, "acme", "app", "v1.0.0", "headsha")
-        .await
-        .unwrap();
+    let result =
+        resolve_outstanding_override_floor(&github, "acme", "app", "v1.0.0", "headsha", "main")
+            .await
+            .unwrap();
 
     assert_eq!(result, Some((BumpKind::Major, 2)));
 }
@@ -2142,9 +2151,10 @@ async fn test_resolve_outstanding_override_floor_tie_break_keeps_first_encounter
         .with_pr_labels(pr_second.number, vec![override_label("major")])
         .await;
 
-    let result = resolve_outstanding_override_floor(&github, "acme", "app", "v1.0.0", "headsha")
-        .await
-        .unwrap();
+    let result =
+        resolve_outstanding_override_floor(&github, "acme", "app", "v1.0.0", "headsha", "main")
+            .await
+            .unwrap();
 
     assert_eq!(
         result,
@@ -2167,7 +2177,8 @@ async fn test_resolve_outstanding_override_floor_propagates_commit_pr_lookup_err
         .await;
 
     let result =
-        resolve_outstanding_override_floor(&github, "acme", "app", "v1.0.0", "headsha").await;
+        resolve_outstanding_override_floor(&github, "acme", "app", "v1.0.0", "headsha", "main")
+            .await;
 
     assert!(
         result.is_err(),
@@ -2190,7 +2201,8 @@ async fn test_resolve_outstanding_override_floor_propagates_label_lookup_error()
         .await;
 
     let result =
-        resolve_outstanding_override_floor(&github, "acme", "app", "v1.0.0", "headsha").await;
+        resolve_outstanding_override_floor(&github, "acme", "app", "v1.0.0", "headsha", "main")
+            .await;
 
     assert!(
         result.is_err(),
@@ -2228,9 +2240,10 @@ async fn test_resolve_outstanding_override_floor_ignores_label_on_open_unmerged_
         .await;
     // merged_pr carries no labels at all (list_pr_labels defaults to []).
 
-    let result = resolve_outstanding_override_floor(&github, "acme", "app", "v1.0.0", "headsha")
-        .await
-        .unwrap();
+    let result =
+        resolve_outstanding_override_floor(&github, "acme", "app", "v1.0.0", "headsha", "main")
+            .await
+            .unwrap();
 
     assert_eq!(
         result, None,
@@ -2261,9 +2274,10 @@ async fn test_resolve_outstanding_override_floor_finds_label_on_merged_pr_ignori
         .with_pr_labels(merged_pr.number, vec![override_label("minor")])
         .await;
 
-    let result = resolve_outstanding_override_floor(&github, "acme", "app", "v1.0.0", "headsha")
-        .await
-        .unwrap();
+    let result =
+        resolve_outstanding_override_floor(&github, "acme", "app", "v1.0.0", "headsha", "main")
+            .await
+            .unwrap();
 
     assert_eq!(
         result,
@@ -2307,9 +2321,10 @@ async fn test_resolve_outstanding_override_floor_dedupes_label_lookup_for_multi_
         .with_pr_labels(shared_pr.number, vec![override_label("minor")])
         .await;
 
-    let result = resolve_outstanding_override_floor(&github, "acme", "app", "v1.0.0", "headsha")
-        .await
-        .unwrap();
+    let result =
+        resolve_outstanding_override_floor(&github, "acme", "app", "v1.0.0", "headsha", "main")
+            .await
+            .unwrap();
 
     assert_eq!(result, Some((BumpKind::Minor, 42)));
 
@@ -2319,6 +2334,83 @@ async fn test_resolve_outstanding_override_floor_dedupes_label_lookup_for_multi_
         calls_for_shared_pr, 1,
         "expected exactly 1 list_pr_labels call for PR #42 across 3 commits \
          that all resolve to it, got {calls_for_shared_pr} calls: {label_calls:?}"
+    );
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Expected-base-branch filter (round 3 code review follow-up on task #211)
+//
+// `GET /repos/{owner}/{repo}/commits/{sha}/pulls` can, in principle, return a
+// merged PR whose own `base.ref_name` is some OTHER branch (e.g. a
+// maintenance/staging branch) that happens to share a commit SHA with the
+// release branch's history. Such a PR's override label must never be able to
+// raise the floor just because it was merged (into the wrong branch).
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// A merged PR carrying `rr:override-major` whose base branch is
+/// `maintenance/v1` — NOT the expected release branch `main` — must not be
+/// picked up as the outstanding floor, even though it is otherwise a
+/// legitimate, merged, override-carrying PR associated with a commit in the
+/// scanned range.
+#[tokio::test]
+async fn test_resolve_outstanding_override_floor_ignores_merged_pr_with_wrong_base_branch() {
+    let sha = "dd44".repeat(10);
+    let mut wrong_base_pr = make_merged_feature_pr(930);
+    wrong_base_pr.base.ref_name = "maintenance/v1".to_string();
+
+    let github = TestGitHub::new()
+        .with_commits_between(vec![make_git_commit(&sha)])
+        .await
+        .with_commit_prs(sha, vec![wrong_base_pr.clone()])
+        .await
+        .with_pr_labels(wrong_base_pr.number, vec![override_label("major")])
+        .await;
+
+    let result =
+        resolve_outstanding_override_floor(&github, "acme", "app", "v1.0.0", "headsha", "main")
+            .await
+            .unwrap();
+
+    assert_eq!(
+        result, None,
+        "a merged PR's override label must not raise the floor when the PR \
+         was merged into a branch other than the expected release branch, \
+         got: {result:?}"
+    );
+}
+
+/// The inverse of the above: a merged PR whose base branch IS the expected
+/// release branch must still be found and used as the floor, even when
+/// another merged PR for the same commit was merged into a different branch
+/// and carries a higher-severity override that must be ignored.
+#[tokio::test]
+async fn test_resolve_outstanding_override_floor_finds_label_on_pr_with_matching_base_branch() {
+    let sha = "ee55".repeat(10);
+    let mut wrong_base_pr = make_merged_feature_pr(931);
+    wrong_base_pr.base.ref_name = "maintenance/v1".to_string();
+    let matching_pr = make_merged_feature_pr(932);
+
+    let github = TestGitHub::new()
+        .with_commits_between(vec![make_git_commit(&sha)])
+        .await
+        .with_commit_prs(sha, vec![wrong_base_pr.clone(), matching_pr.clone()])
+        .await
+        .with_pr_labels(wrong_base_pr.number, vec![override_label("major")])
+        .await
+        .with_pr_labels(matching_pr.number, vec![override_label("minor")])
+        .await;
+
+    let result =
+        resolve_outstanding_override_floor(&github, "acme", "app", "v1.0.0", "headsha", "main")
+            .await
+            .unwrap();
+
+    assert_eq!(
+        result,
+        Some((BumpKind::Minor, matching_pr.number)),
+        "expected the PR merged into the matching base branch to win, with \
+         the wrong-base-branch PR's higher override ignored entirely, got: \
+         {result:?}"
     );
 }
 
