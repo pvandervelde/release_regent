@@ -719,6 +719,14 @@ struct TestGitHubForLib {
     get_commits_between_calls: Arc<Mutex<Vec<(String, String)>>>,
     /// Every commit SHA passed to `list_pull_requests_for_commit`, in call order.
     list_prs_for_commit_calls: Arc<Mutex<Vec<String>>>,
+    /// Records the name of every `list_tags`, `create_tag`, and
+    /// `create_release` call, in call order. Used to verify that
+    /// `process_release_pr_merged` resolves the previous release version
+    /// (via `list_tags`) BEFORE invoking `ReleaseAutomator::automate` (which
+    /// calls `create_tag` / `create_release`) — task #211 Fix D ordering
+    /// requirement. If these calls were reordered, the override-floor scan
+    /// would see the newly-created tag instead of the previous one.
+    call_log: Arc<Mutex<Vec<&'static str>>>,
 }
 
 impl TestGitHubForLib {
@@ -745,6 +753,7 @@ impl TestGitHubForLib {
             fail_list_prs_for_commit: None,
             get_commits_between_calls: Arc::new(Mutex::new(vec![])),
             list_prs_for_commit_calls: Arc::new(Mutex::new(vec![])),
+            call_log: Arc::new(Mutex::new(vec![])),
         }
     }
 
@@ -844,6 +853,12 @@ impl TestGitHubForLib {
     async fn list_prs_for_commit_calls(&self) -> Vec<String> {
         self.list_prs_for_commit_calls.lock().await.clone()
     }
+
+    /// The call-order log of `list_tags` / `create_tag` / `create_release`
+    /// invocations (task #211 Fix D ordering requirement).
+    async fn call_log(&self) -> Vec<&'static str> {
+        self.call_log.lock().await.clone()
+    }
 }
 
 #[async_trait]
@@ -873,6 +888,7 @@ impl GitOperations for TestGitHubForLib {
         _repo: &str,
         _options: ListTagsOptions,
     ) -> CoreResult<Vec<GitTag>> {
+        self.call_log.lock().await.push("list_tags");
         Ok(self.tags.clone())
     }
 
@@ -931,6 +947,7 @@ impl GitHubOperations for TestGitHubForLib {
         _repo: &str,
         params: CreateReleaseParams,
     ) -> CoreResult<Release> {
+        self.call_log.lock().await.push("create_release");
         let release = Release {
             id: 1,
             tag_name: params.tag_name,
@@ -962,6 +979,7 @@ impl GitHubOperations for TestGitHubForLib {
         _message: Option<String>,
         _tagger: Option<GitUser>,
     ) -> CoreResult<Tag> {
+        self.call_log.lock().await.push("create_tag");
         Ok(Tag {
             name: tag_name.to_string(),
             commit_sha: sha.to_string(),
@@ -1312,6 +1330,7 @@ impl GitHubOperations for TestGitHubForLib {
             fail_list_prs_for_commit: self.fail_list_prs_for_commit.clone(),
             get_commits_between_calls: Arc::clone(&self.get_commits_between_calls),
             list_prs_for_commit_calls: Arc::clone(&self.list_prs_for_commit_calls),
+            call_log: Arc::clone(&self.call_log),
         }
     }
 }
@@ -3147,6 +3166,110 @@ async fn test_handle_merged_release_pr_removes_override_label_from_previously_me
     );
 }
 
+/// Manual-review item (task #211 Fix D ordering requirement):
+/// `process_release_pr_merged` must resolve the previous release version
+/// (`resolve_current_version`, which calls `list_tags`) BEFORE invoking
+/// `ReleaseAutomator::automate` (which calls `create_tag` then
+/// `create_release`). If these two calls were reordered, `list_tags` would
+/// run *after* the new tag had already been created, so the "previous"
+/// version resolved would actually be the just-shipped version — producing
+/// an empty/wrong `new_tag..new_tag` scan range instead of
+/// `previous_tag..new_release_commit`.
+///
+/// This is asserted directly via a call-order log on the test double, rather
+/// than relying on the scan-range assertion in the sibling test above: the
+/// test double's `list_tags` returns a fixed, never-mutated `Vec<GitTag>`
+/// (set once via `with_tags`), so asserting on the *scan range* alone cannot
+/// distinguish "resolved before automate" from "resolved after automate" —
+/// both would observe the same stale `v1.0.0` tag list either way. Only a
+/// call-order assertion actually exercises the ordering.
+#[tokio::test]
+async fn test_handle_merged_release_pr_resolves_previous_version_before_automate() {
+    let prior_tag = GitTag {
+        name: "v1.0.0".to_string(),
+        target_sha: "a".repeat(40),
+        tag_type: GitTagType::Lightweight,
+        message: None,
+        tagger: None,
+        created_at: None,
+    };
+
+    let github = TestGitHubForLib::new_empty().with_tags(vec![prior_tag]);
+
+    let config = TestConfigForLib;
+    let version_calc = TestVersionCalcForLib::returning("2.0.0");
+    let processor = ReleaseRegentProcessor::new(
+        github.clone(),
+        config,
+        version_calc,
+        SpyNotificationSender::new(),
+    );
+
+    let event = ProcessingEvent {
+        event_id: "evt-ship-order-1".into(),
+        correlation_id: "corr-ship-order-1".into(),
+        event_type: EventType::PullRequestMerged,
+        repository: RepositoryInfo {
+            owner: "acme".into(),
+            name: "app".into(),
+            default_branch: "main".into(),
+        },
+        payload: serde_json::json!({
+            "pull_request": {
+                "head": { "ref": "release/v2.0.0" },
+                "base": { "ref": "main" },
+                "number": 203,
+                "merge_commit_sha": "66ff".repeat(10)
+            }
+        }),
+        received_at: Utc::now(),
+        source: EventSourceKind::Webhook,
+        installation_id: 0,
+    };
+
+    let result = processor.handle_merged_pull_request(&event).await.unwrap();
+    assert!(
+        matches!(
+            result,
+            release_orchestrator::OrchestratorResult::TaggedRelease
+        ),
+        "expected TaggedRelease, got: {result:?}"
+    );
+
+    let log = github.call_log().await;
+    let list_tags_pos = log.iter().position(|c| *c == "list_tags");
+    let create_tag_pos = log.iter().position(|c| *c == "create_tag");
+    let create_release_pos = log.iter().position(|c| *c == "create_release");
+
+    assert!(
+        list_tags_pos.is_some(),
+        "expected at least one list_tags call, got log: {log:?}"
+    );
+    assert!(
+        create_tag_pos.is_some() || create_release_pos.is_some(),
+        "expected automate() to call create_tag or create_release, got log: {log:?}"
+    );
+
+    if let Some(ct) = create_tag_pos {
+        assert!(
+            list_tags_pos.unwrap() < ct,
+            "expected list_tags (previous-version resolution) to happen \
+             BEFORE create_tag (automate's tag creation) — if reordered, the \
+             previous-version resolution would observe the newly-created tag \
+             instead of the prior one; log: {log:?}"
+        );
+    }
+    if let Some(cr) = create_release_pos {
+        assert!(
+            list_tags_pos.unwrap() < cr,
+            "expected list_tags (previous-version resolution) to happen \
+             BEFORE create_release (automate's release creation) — if \
+             reordered, the previous-version resolution would observe the \
+             newly-created tag instead of the prior one; log: {log:?}"
+        );
+    }
+}
+
 /// Scenario 4 (Fix D): a release ships that incorporates TWO previously
 /// merged PRs, each carrying a *different* override label. Both must have
 /// their labels removed and both must receive a cleanup comment.
@@ -3310,6 +3433,99 @@ async fn test_handle_merged_release_pr_skips_merged_pr_scan_when_no_prior_releas
     assert!(
         !removed.iter().any(|(pr, _)| *pr == 200),
         "PR #200 must not be touched when the merged-PR scan is skipped, got: {removed:?}"
+    );
+}
+
+/// Manual-review item (task #211 Fix D error-handling requirement):
+/// `clear_override_labels_from_merged_prs_in_range` is documented as
+/// best-effort, "never propagates failures" — mirroring its sibling
+/// `clear_stale_override_labels_after_release`. When the underlying scan
+/// (`collect_merged_prs_with_override_labels`) fails — here because
+/// `list_pull_requests_for_commit` errors for the historical commit — the
+/// failure must be swallowed (logged as a warning) and the overall
+/// `ReleasePrMerged` / `PullRequestMerged` event must still return
+/// `Ok(TaggedRelease)`, since the release itself was already created
+/// successfully by `automate()` before this best-effort cleanup scan runs.
+///
+/// The existing error-injection tests for this code path
+/// (`test_handle_merged_release_pr_list_labels_failure_for_one_pr_continues`,
+/// `..._remove_label_failure_...`, `..._cleanup_comment_failure_...`) all
+/// exercise the *open*-PR cleanup path (`clear_stale_override_labels_after_release`
+/// via `with_existing_prs`); none of them inject a failure into the *merged*-PR
+/// commit-range scan added by Fix D, which is exercised here.
+#[tokio::test]
+async fn test_handle_merged_release_pr_merged_pr_scan_failure_is_swallowed() {
+    let prior_tag = GitTag {
+        name: "v1.0.0".to_string(),
+        target_sha: "a".repeat(40),
+        tag_type: GitTagType::Lightweight,
+        message: None,
+        tagger: None,
+        created_at: None,
+    };
+    let historical_sha = "77aa".repeat(10);
+
+    let github = TestGitHubForLib::new_empty()
+        .with_tags(vec![prior_tag])
+        .with_commits_between(vec![make_git_commit(&historical_sha)])
+        // list_pull_requests_for_commit fails for this sha during the
+        // release-ship merged-PR scan.
+        .with_fail_list_prs_for_commit(historical_sha);
+
+    let config = TestConfigForLib;
+    let version_calc = TestVersionCalcForLib::returning("2.0.0");
+    let processor = ReleaseRegentProcessor::new(
+        github.clone(),
+        config,
+        version_calc,
+        SpyNotificationSender::new(),
+    );
+
+    let event = ProcessingEvent {
+        event_id: "evt-ship-scan-fail".into(),
+        correlation_id: "corr-ship-scan-fail".into(),
+        event_type: EventType::PullRequestMerged,
+        repository: RepositoryInfo {
+            owner: "acme".into(),
+            name: "app".into(),
+            default_branch: "main".into(),
+        },
+        payload: serde_json::json!({
+            "pull_request": {
+                "head": { "ref": "release/v2.0.0" },
+                "base": { "ref": "main" },
+                "number": 204,
+                "merge_commit_sha": "88bb".repeat(10)
+            }
+        }),
+        received_at: Utc::now(),
+        source: EventSourceKind::Webhook,
+        installation_id: 0,
+    };
+
+    let result = processor.handle_merged_pull_request(&event).await;
+
+    assert!(
+        result.is_ok(),
+        "expected Ok(TaggedRelease) even when the release-ship merged-PR \
+         scan fails — the cleanup scan is documented best-effort and must \
+         never cause the overall (already-successful) release event to be \
+         treated as a failure; got: {result:?}"
+    );
+    assert!(
+        matches!(
+            result.unwrap(),
+            release_orchestrator::OrchestratorResult::TaggedRelease
+        ),
+        "expected TaggedRelease despite the merged-PR scan failure"
+    );
+
+    // No labels can have been removed via the (failed) merged-PR scan.
+    let removed = github.removed_labels.lock().await;
+    assert!(
+        removed.is_empty(),
+        "expected no label removals when the merged-PR scan itself failed, \
+         got: {removed:?}"
     );
 }
 
@@ -5396,5 +5612,75 @@ async fn test_merged_release_pr_via_pull_request_merged_threads_releases_draft_c
          the created Release even when the release PR merge arrives as a \
          PullRequestMerged event; got draft = {}",
         releases[0].draft
+    );
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// build_override_cleanup_comment / build_override_consumed_comment —
+// direct unit tests (mutation-audit kill tests, task #211 remediation audit)
+//
+// All prior coverage of these two message-builder functions was indirect,
+// via full `handle_merged_pull_request` integration tests that only assert
+// a substring common to BOTH the singular and plural branches (e.g.
+// "commits are included in the release that just shipped" appears in both
+// `build_override_consumed_comment`'s singular and plural wording). This
+// let a `removed_labels.len() == 1` → `!= 1` mutation survive: the branch
+// selection flips, but the common substring assertion still passes because
+// the substring is present in both branches' text. These tests assert the
+// exact rendered string for both the single-label and multi-label cases so
+// that a flipped branch-selection condition produces a visible mismatch.
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+#[test]
+fn test_build_override_cleanup_comment_single_label_uses_singular_wording() {
+    let body = build_override_cleanup_comment(&["rr:override-major".to_string()]);
+    assert_eq!(
+        body,
+        "ℹ️ **Release Regent**: The `!release major` override on \
+         this PR has been cleared because a new release was published \
+         before this PR merged. If the work in this PR still warrants \
+         a minimum bump for the next release, please re-post your \
+         `!release` command."
+    );
+}
+
+#[test]
+fn test_build_override_cleanup_comment_multiple_labels_uses_plural_wording() {
+    let body = build_override_cleanup_comment(&[
+        "rr:override-major".to_string(),
+        "rr:override-minor".to_string(),
+    ]);
+    assert_eq!(
+        body,
+        "ℹ️ **Release Regent**: The `!release major`, `!release minor` overrides on \
+         this PR have been cleared because a new release was published \
+         before this PR merged. If the work in this PR still warrants \
+         a minimum bump for the next release, please re-post your \
+         `!release` command."
+    );
+}
+
+#[test]
+fn test_build_override_consumed_comment_single_label_uses_singular_wording() {
+    let body = build_override_consumed_comment(&["rr:override-patch".to_string()]);
+    assert_eq!(
+        body,
+        "✅ **Release Regent**: The `!release patch` override on \
+         this PR has been applied — this PR's commits are included in \
+         the release that just shipped, so the label has been removed."
+    );
+}
+
+#[test]
+fn test_build_override_consumed_comment_multiple_labels_uses_plural_wording() {
+    let body = build_override_consumed_comment(&[
+        "rr:override-major".to_string(),
+        "rr:override-minor".to_string(),
+    ]);
+    assert_eq!(
+        body,
+        "✅ **Release Regent**: The `!release major`, `!release minor` overrides on \
+         this PR have been applied — this PR's commits are included in \
+         the release that just shipped, so the labels have been removed."
     );
 }
