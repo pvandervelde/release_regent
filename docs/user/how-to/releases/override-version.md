@@ -41,6 +41,20 @@ Release Regent updates the release PR title, branch name, and changelog heading 
 !!! note
     `!set-version` only works on release PRs. Posting it on a regular feature PR has no effect.
 
+### Minimum version enforced by outstanding overrides
+
+If an `rr:override-*` label is still outstanding on a merged PR in the current release cycle,
+`!set-version` will not let you pin below the floor that label requires. A pinned version below
+the floor is rejected with a comment naming the required minimum version, the PR the override
+came from, and what to do next:
+
+> ❌ **Release Regent**: `!set-version 1.3.0` was rejected — an `rr:override-major` label is
+> outstanding on PR #55, which requires the release version to be at least `2.0.0`. Use
+> `!set-version 2.0.0` or higher, or remove the `!release major` override first.
+
+Either pin to the required floor version (or higher), or remove the `rr:override-*` label from
+the originating PR first if the override no longer applies.
+
 ## Raise the version floor on a feature PR
 
 Post a comment on a **regular feature PR** (before it is merged to `main`):
@@ -65,6 +79,17 @@ the comment at any time while the PR is open.
 When the feature PR is merged, Release Regent reads the stored label and applies the floor
 during version calculation. The label is consumed — it does not persist to future release
 cycles.
+
+### The floor still applies if a different PR merges first
+
+You do not need the labelled PR to be the one that triggers the release PR update. If a
+**later** feature PR (one without its own override label) merges while the override is still
+outstanding, Release Regent scans the commit history for the current release cycle, finds the
+highest `rr:override-*` label among the PRs that have already merged, and still applies it as
+the floor. This also covers the case where the release PR was deleted before merging and a new
+one is created by that later merge — the new release PR's version honors the outstanding
+override instead of being recalculated from scratch. The label itself is only removed once the
+PR that carries it is merged.
 
 ## Examples
 
@@ -91,6 +116,30 @@ cycles.
    ```
 
 4. Release Regent updates the PR and renames the branch to `release/v2.0.0`.
+
+### Keep an override after a different PR merges first
+
+1. Post `!release major` on feature PR #55 (not yet merged). Release Regent labels PR #55 with
+   `rr:override-major`.
+2. PR #56, an unrelated minor feature with no override label, merges before #55 does. Release
+   Regent scans the commit history, finds the outstanding `rr:override-major` label on #55, and
+   still applies it as the floor when creating or updating the release PR.
+3. When #55 itself merges later, the floor is applied again (no change to the release PR
+   version) and the `rr:override-major` label is removed from #55.
+
+### `!set-version` rejected below an outstanding override
+
+1. `!release major` is posted on feature PR #55 (not yet merged). From the current base version,
+   the outstanding floor requires at least `2.0.0`.
+2. Someone posts `!set-version 1.3.0` on the open release PR.
+3. Release Regent rejects the command instead of pinning the version:
+
+   > ❌ **Release Regent**: `!set-version 1.3.0` was rejected — an `rr:override-major` label is
+   > outstanding on PR #55, which requires the release version to be at least `2.0.0`. Use
+   > `!set-version 2.0.0` or higher, or remove the `!release major` override first.
+
+4. Post `!set-version 2.0.0` (or higher) instead, or remove the `rr:override-major` label from
+   PR #55 first if the override no longer applies.
 
 ---
 

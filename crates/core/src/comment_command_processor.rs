@@ -43,8 +43,14 @@ pub use crate::versioning::BumpKind;
 use crate::{
     release_orchestrator::{OrchestratorConfig, ReleaseOrchestrator},
     retry::retry_with_backoff,
-    traits::{event_source::ProcessingEvent, github_operations::GitHubOperations},
-    versioning::{resolve_current_version, SemanticVersion, VersionCalculator},
+    traits::{
+        event_source::ProcessingEvent, git_operations::GetCommitsOptions,
+        github_operations::GitHubOperations,
+    },
+    versioning::{
+        apply_bump_floor, highest_bump_kind, resolve_current_version, SemanticVersion,
+        VersionCalculator,
+    },
     CoreResult,
 };
 
@@ -64,6 +70,21 @@ pub const ALL_OVERRIDE_LABELS: &[&str] = &[
     OVERRIDE_LABEL_MINOR,
     OVERRIDE_LABEL_PATCH,
 ];
+
+/// Map a GitHub label name to the [`BumpKind`] it represents, or `None` when
+/// `name` is not one of the `rr:override-*` labels.
+///
+/// Shared by every site that needs to resolve an override floor from a PR's
+/// labels (task #211): the merged-PR label check and the commit-history
+/// fallback scan both call this instead of duplicating the match arms.
+pub(crate) fn label_name_to_bump_kind(name: &str) -> Option<BumpKind> {
+    match name {
+        OVERRIDE_LABEL_MAJOR => Some(BumpKind::Major),
+        OVERRIDE_LABEL_MINOR => Some(BumpKind::Minor),
+        OVERRIDE_LABEL_PATCH => Some(BumpKind::Patch),
+        _ => None,
+    }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Public types
@@ -376,11 +397,7 @@ impl<'a, G: GitHubOperations + Send + Sync> CommentCommandProcessor<'a, G> {
         );
 
         // Post a confirmation comment.
-        let kind_str = match kind {
-            BumpKind::Major => "major",
-            BumpKind::Minor => "minor",
-            BumpKind::Patch => "patch",
-        };
+        let kind_str = kind.as_str();
         let body = if let Some(old_label) = replaced_kind {
             let old_kind = old_label.strip_prefix("rr:override-").unwrap_or(old_label);
             if old_label == new_label {
@@ -488,6 +505,67 @@ impl<'a, G: GitHubOperations + Send + Sync> CommentCommandProcessor<'a, G> {
                 "Rejecting !set-version: version is below minimum (0.0.1)"
             );
             return self.post_comment(owner, repo, pr_number, &rejection).await;
+        }
+
+        // Guard D: reject a pinned version that falls below an outstanding
+        // `rr:override-*` bump-floor still recorded on a merged PR in the
+        // current release cycle (task #211). The scan covers commits from
+        // the last release tag up to this release PR's base SHA. When there
+        // is no prior release tag (the very first release cycle) there is
+        // nothing to scan "since the last release", so the scan is skipped
+        // entirely (Fix B — code review follow-up) rather than passing an
+        // empty `base` to `resolve_outstanding_override_floor`, which would
+        // build an invalid comparison range against the real GitHub API.
+        let outstanding_floor = if let Some(ref current) = current_version {
+            let override_floor_base = format!(
+                "{}{current}",
+                self.config.orchestrator_config.version_prefix
+            );
+            resolve_outstanding_override_floor(
+                self.github,
+                owner,
+                repo,
+                &override_floor_base,
+                &pr.base.sha,
+                &pr.base.ref_name,
+            )
+            .await?
+        } else {
+            None
+        };
+        if let Some((floor_kind, floor_pr_number)) = outstanding_floor {
+            let floor_baseline = current_version.clone().unwrap_or(SemanticVersion {
+                major: 0,
+                minor: 0,
+                patch: 0,
+                prerelease: None,
+                build: None,
+            });
+            let floor_version = apply_bump_floor(&floor_baseline, pinned_version, &floor_kind);
+            // `apply_bump_floor` returns a version different from
+            // `pinned_version` only when `pinned_version` is below the floor
+            // (otherwise it returns `pinned_version` unchanged), so this
+            // inequality check is exactly "was the pin raised by the floor,
+            // i.e. was it too low."
+            if floor_version.compare_precedence(pinned_version) != Ordering::Equal {
+                let kind_str = floor_kind.as_str();
+                let rejection = format!(
+                    "❌ **Release Regent**: `!set-version {pinned_version}` was rejected — an \
+                     `rr:override-{kind_str}` label is outstanding on PR #{floor_pr_number}, \
+                     which requires the release version to be at least `{floor_version}`. Use \
+                     `!set-version {floor_version}` or higher, or remove the `!release \
+                     {kind_str}` override first."
+                );
+                warn!(
+                    pr_number,
+                    pinned = %pinned_version,
+                    floor = %floor_version,
+                    floor_pr = floor_pr_number,
+                    correlation_id,
+                    "Rejecting !set-version: below outstanding override floor"
+                );
+                return self.post_comment(owner, repo, pr_number, &rejection).await;
+            }
         }
 
         info!(
@@ -619,6 +697,190 @@ impl<'a, G: GitHubOperations + Send + Sync> CommentCommandProcessor<'a, G> {
         }
         Ok(())
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// resolve_outstanding_override_floor — free function (task #211)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Scan commits in the range `base..head` for an outstanding `rr:override-*`
+/// bump-floor label on any pull request associated with those commits.
+///
+/// For each commit returned by [`crate::traits::GitOperations::get_commits_between`],
+/// every pull request associated with it (via
+/// [`GitHubOperations::list_pull_requests_for_commit`]) is inspected for
+/// `rr:override-*` labels (via [`GitHubOperations::list_pr_labels`]). The
+/// highest-severity [`BumpKind`] found across all commits/PRs is returned
+/// together with the PR number it originated from.
+///
+/// Returns `Ok(None)` when no commits are in range, no commit resolves to an
+/// associated PR, or no associated PR carries an `rr:override-*` label.
+///
+/// `expected_base_branch` must be the release's actual target branch. A PR
+/// only qualifies when it was merged *into that branch* — `GET
+/// /repos/{owner}/{repo}/commits/{sha}/pulls` can return a merged PR whose
+/// own base is some other branch (e.g. a maintenance branch) that happens to
+/// share a commit SHA with this branch's history; such a PR's override label
+/// must not be able to raise the floor (round 3 review follow-up on task
+/// #211).
+///
+/// When more than one PR carries the highest-severity override (a tie), the
+/// PR returned is whichever is encountered first during iteration — this is
+/// an implementation detail, not a documented guarantee, since callers only
+/// care about the floor value.
+///
+/// # Errors
+///
+/// Propagates any [`crate::CoreError`] returned by `get_commits_between`,
+/// `list_pull_requests_for_commit`, or `list_pr_labels` — a transient GitHub
+/// API failure must never be silently treated as "no floor outstanding".
+// CoreError is intentionally large; this is the established pattern throughout the codebase.
+#[allow(clippy::result_large_err)]
+pub(crate) async fn resolve_outstanding_override_floor<G>(
+    github: &G,
+    owner: &str,
+    repo: &str,
+    base: &str,
+    head: &str,
+    expected_base_branch: &str,
+) -> CoreResult<Option<(BumpKind, u64)>>
+where
+    G: GitHubOperations + Send + Sync,
+{
+    let commits = github
+        .get_commits_between(owner, repo, base, head, GetCommitsOptions::default())
+        .await?;
+
+    // Every `(BumpKind, pr_number)` found during the scan, in encounter
+    // order. Collected rather than reduced inline so that
+    // `versioning::highest_bump_kind` (a plain `Iterator::max`) can be reused
+    // to pick the severity, while a separate lookup finds the
+    // first-encountered PR at that severity — preserving the tie-break
+    // documented above without a hand-rolled fold.
+    let mut found: Vec<(BumpKind, u64)> = Vec::new();
+
+    // Tracks which PR numbers have already had `list_pr_labels` called, so a
+    // PR spanning multiple commits in the scanned range only triggers one
+    // lookup (Fix C — code review follow-up on task #211).
+    let mut seen_pr_numbers: std::collections::HashSet<u64> = std::collections::HashSet::new();
+
+    for commit in &commits {
+        let prs = github
+            .list_pull_requests_for_commit(owner, repo, &commit.sha)
+            .await?;
+
+        // Only merged pull requests may contribute to the override floor — an
+        // open or closed-but-unmerged PR's label must never be able to
+        // inflate it (Fix A — code review follow-up on task #211).
+        // `GET /repos/{owner}/{repo}/commits/{sha}/pulls` returns any PR
+        // associated with the commit, not just merged ones. It also does not
+        // guarantee the PR was merged into the expected release branch — a
+        // merged PR that happens to share a commit SHA with this branch's
+        // history but whose own base was some other branch (e.g. a
+        // maintenance branch) must not be able to raise the floor (round 3
+        // review follow-up on task #211).
+        for pr in prs
+            .iter()
+            .filter(|pr| pr.merged_at.is_some() && pr.base.ref_name == expected_base_branch)
+        {
+            if !seen_pr_numbers.insert(pr.number) {
+                continue;
+            }
+            let labels = github.list_pr_labels(owner, repo, pr.number).await?;
+            if let Some(kind) = labels.iter().find_map(|l| label_name_to_bump_kind(&l.name)) {
+                found.push((kind, pr.number));
+            }
+        }
+    }
+
+    let highest = highest_bump_kind(found.iter().map(|(kind, _)| kind.clone()));
+    let best = highest.and_then(|highest_kind| {
+        found
+            .iter()
+            .find(|(kind, _)| *kind == highest_kind)
+            .cloned()
+    });
+
+    Ok(best)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// collect_merged_prs_with_override_labels — free function (task #211 Fix D)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Scan commits in the range `base..head` for merged pull requests that carry
+/// one or more `rr:override-*` labels.
+///
+/// Used by the release-ship-time cleanup path (Fix D — code review follow-up
+/// on task #211): once a release has shipped, every `rr:override-*` label on
+/// a pull request whose commits are included in that release must be
+/// removed, since the floor those labels represent has already been baked
+/// into the released version. This differs from
+/// [`resolve_outstanding_override_floor`], which only returns the single
+/// highest-severity override — the cleanup path needs *every* override label
+/// on *every* qualifying PR so each one can be removed.
+///
+/// Reuses the same merged-PR-only filter (Fix A), expected-base-branch
+/// filter (round 3 review follow-up), and per-PR-number deduplication
+/// (Fix C) as `resolve_outstanding_override_floor`, applied to the same
+/// `get_commits_between` → `list_pull_requests_for_commit` → `list_pr_labels`
+/// walk. See `resolve_outstanding_override_floor`'s doc comment for why
+/// `expected_base_branch` is required.
+///
+/// Returns `(pr_number, override_label_names)` pairs, one per qualifying PR,
+/// in first-encountered order. PRs with no `rr:override-*` label are omitted.
+///
+/// # Errors
+///
+/// Propagates any [`crate::CoreError`] returned by `get_commits_between`,
+/// `list_pull_requests_for_commit`, or `list_pr_labels`.
+#[allow(clippy::result_large_err)]
+pub(crate) async fn collect_merged_prs_with_override_labels<G>(
+    github: &G,
+    owner: &str,
+    repo: &str,
+    base: &str,
+    head: &str,
+    expected_base_branch: &str,
+) -> CoreResult<Vec<(u64, Vec<String>)>>
+where
+    G: GitHubOperations + Send + Sync,
+{
+    let commits = github
+        .get_commits_between(owner, repo, base, head, GetCommitsOptions::default())
+        .await?;
+
+    let mut found: Vec<(u64, Vec<String>)> = Vec::new();
+    let mut seen_pr_numbers: std::collections::HashSet<u64> = std::collections::HashSet::new();
+
+    for commit in &commits {
+        let prs = github
+            .list_pull_requests_for_commit(owner, repo, &commit.sha)
+            .await?;
+
+        // Only merged pull requests qualify (Fix A) and only when merged into
+        // the expected release branch (round 3 review follow-up) — see
+        // `resolve_outstanding_override_floor` for rationale.
+        for pr in prs
+            .iter()
+            .filter(|pr| pr.merged_at.is_some() && pr.base.ref_name == expected_base_branch)
+        {
+            if !seen_pr_numbers.insert(pr.number) {
+                continue;
+            }
+            let labels = github.list_pr_labels(owner, repo, pr.number).await?;
+            let override_names: Vec<String> = labels
+                .iter()
+                .filter(|l| ALL_OVERRIDE_LABELS.contains(&l.name.as_str()))
+                .map(|l| l.name.clone())
+                .collect();
+            if !override_names.is_empty() {
+                found.push((pr.number, override_names));
+            }
+        }
+    }
+
+    Ok(found)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -4,6 +4,28 @@ Status: Accepted
 Date: 2026-04-01
 Owners: @pvandervelde
 
+**Amendment 2026-11-24:** Issue #211 extended the override floor beyond consumption at the
+labelled PR's own merge. The floor from an outstanding `rr:override-*` label is now also
+honored: (a) when a later PR merges without its own override label — a commit-history scan
+since the last release tag finds the highest outstanding override among PRs already merged in
+the current cycle (extends Q1/Q2's "specific PR" scope to a per-cycle scan); (b) as a guard on
+`!set-version`, which is now rejected if the pinned version falls below an outstanding override
+floor, revising Q4's "no precedence relationship to enforce at runtime" conclusion; and (c) when
+a release PR is deleted before merging and a new one is created by a later merge, so the
+override is not silently discarded. The label's removal condition DID change as part of this
+work: a labelled PR's `rr:override-*` label is no longer removed when that PR itself merges —
+it is removed at release-ship time instead, once the commit range for the release that actually
+incorporates it has been scanned (see Fix D, `clear_override_labels_from_merged_prs_in_range`
+in `crates/core/src/lib.rs`). This is what makes the per-cycle historical scan in (a) possible:
+the label must still exist, on the originating PR, for the scan to find it. One consequence of
+removal being deferred to release-ship time is that the historical scan only recovers an
+override while its label still exists on the originating PR — in practice this covers
+missed-webhook recovery and recreated-release-PR scenarios, not every theoretically possible
+"release PR deleted after the override already shipped" case, since by the time a release
+ships, the label is gone (removed as part of that same release-ship cleanup). See
+`resolve_outstanding_override_floor` in `crates/core/src/comment_command_processor.rs` for the
+implementation.
+
 ## Context
 
 [ADR-003](ADR-003-pr-comment-commands.md) introduced PR comment commands, implementing

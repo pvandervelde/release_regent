@@ -378,6 +378,48 @@ pub trait GitHubOperations: GitOperations + Send + Sync {
         issue_number: u64,
     ) -> CoreResult<Vec<Label>>;
 
+    /// List all pull requests associated with a specific commit SHA.
+    ///
+    /// Used by the `rr:override-*` label historical scan (task #211) to walk
+    /// commits since the last release and discover which pull request(s)
+    /// introduced them, so their labels can be inspected for an outstanding
+    /// bump-override.
+    ///
+    /// A commit can be associated with more than one pull request (e.g. if it
+    /// was cherry-picked, or the same commit reached `main` via more than one
+    /// PR). Implementations should return all associated pull requests.
+    ///
+    /// # Required override
+    ///
+    /// There is **no default implementation**. Every `GitHubOperations`
+    /// implementor must provide this method explicitly. Implementations that
+    /// do not need to support the override-floor historical scan (task #211)
+    /// may simply return `Ok(vec![])`.
+    ///
+    /// # Parameters
+    /// - `owner`: Repository owner name
+    /// - `repo`: Repository name
+    /// - `commit_sha`: The commit SHA to resolve associated pull requests for
+    ///
+    /// # Returns
+    /// All pull requests associated with `commit_sha`, or an empty vector if
+    /// none are found.
+    ///
+    /// # Errors
+    /// - `CoreError::GitHub` — the API call failed
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// let prs = github.list_pull_requests_for_commit("owner", "repo", "abc123").await?;
+    /// ```
+    async fn list_pull_requests_for_commit(
+        &self,
+        owner: &str,
+        repo: &str,
+        commit_sha: &str,
+    ) -> CoreResult<Vec<PullRequest>>;
+
     /// List all comments on an issue or pull request.
     ///
     /// Returns comments in creation order (oldest first).

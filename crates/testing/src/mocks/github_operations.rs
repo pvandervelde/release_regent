@@ -1494,6 +1494,15 @@ impl GitHubOperations for MockGitHubOperations {
         Ok(labels)
     }
 
+    async fn list_pull_requests_for_commit(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _commit_sha: &str,
+    ) -> CoreResult<Vec<PullRequest>> {
+        Ok(vec![])
+    }
+
     async fn list_issue_comments(
         &self,
         owner: &str,

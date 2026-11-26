@@ -67,6 +67,12 @@ git push origin --delete release/v1.2.3
 Then redeliver the original feature PR merged event from GitHub App settings. Release Regent
 will recreate the release branch and open a new PR.
 
+!!! note
+    If any `rr:override-*` labels are still outstanding on merged PRs in the current release
+    cycle (see [Override the version](override-version.md)), Release Regent re-discovers them
+    from the commit history and applies them to the recreated release PR — the override is not
+    lost when the branch and PR have to be recreated.
+
 ## Scenario 3: Release PR was merged but no GitHub release was created
 
 **Symptom**: The `release/v*` branch is gone (or the PR is closed), but no GitHub release

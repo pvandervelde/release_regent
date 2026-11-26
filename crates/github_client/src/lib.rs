@@ -1014,6 +1014,64 @@ impl GitHubOperations for GitHubClient {
         Ok(labels)
     }
 
+    /// Note: this implementation always fetches all pages and returns a
+    /// complete result set.
+    #[instrument(skip(self))]
+    async fn list_pull_requests_for_commit(
+        &self,
+        owner: &str,
+        repo: &str,
+        commit_sha: &str,
+    ) -> CoreResult<Vec<PullRequest>> {
+        info!(owner, repo, commit_sha, "Listing pull requests for commit");
+
+        // Use the raw HTTP endpoint instead of the SDK helper, matching
+        // list_pull_requests's rationale: the SDK's `PullRequest.head.repo` /
+        // `.base.repo` fields are required (non-Option), but GitHub returns
+        // `null` when a fork's repository has been deleted.
+        let installation = self.installation().await?;
+        let mut all_prs: Vec<PullRequest> = Vec::new();
+        let mut page: Option<u32> = None;
+
+        loop {
+            let path = match page {
+                Some(p) => format!(
+                    "/repos/{owner}/{repo}/commits/{commit_sha}/pulls?per_page=100&page={p}"
+                ),
+                None => format!("/repos/{owner}/{repo}/commits/{commit_sha}/pulls?per_page=100"),
+            };
+
+            let response = installation.get(&path).await.map_err(map_sdk_error)?;
+
+            let next_page = response
+                .headers()
+                .get("Link")
+                .and_then(|h| h.to_str().ok())
+                .and_then(parse_next_page_from_link_header);
+
+            let items: Vec<ListPrItem> = response
+                .json()
+                .await
+                .map_err(|e| CoreError::network(format!("GitHub HTTP client error: {e}")))?;
+
+            all_prs.extend(items.into_iter().map(list_pr_item_to_release_regent_pr));
+
+            match next_page {
+                Some(next) => page = Some(next),
+                None => break,
+            }
+        }
+
+        debug!(
+            owner,
+            repo,
+            commit_sha,
+            count = all_prs.len(),
+            "list_pull_requests_for_commit complete"
+        );
+        Ok(all_prs)
+    }
+
     #[instrument(skip(self))]
     async fn list_issue_comments(
         &self,

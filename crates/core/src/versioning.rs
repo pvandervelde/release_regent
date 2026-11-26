@@ -161,6 +161,51 @@ pub enum BumpKind {
     Patch,
 }
 
+impl BumpKind {
+    /// Numeric severity rank used to implement [`Ord`]/[`PartialOrd`].
+    ///
+    /// Higher is more severe (`Major` > `Minor` > `Patch`). This is the
+    /// **opposite** of what a naive `#[derive(PartialOrd, Ord)]` would
+    /// produce: deriving would rank variants by declaration position
+    /// (`Major, Minor, Patch`), making `Major` the *smallest* value —
+    /// exactly backwards from its actual severity. Defining an explicit
+    /// rank keeps the ordering correct and self-documenting regardless of
+    /// how the variants happen to be declared.
+    const fn rank(&self) -> u8 {
+        match self {
+            BumpKind::Patch => 0,
+            BumpKind::Minor => 1,
+            BumpKind::Major => 2,
+        }
+    }
+
+    /// Lower-case command-word representation (`"major"`, `"minor"`,
+    /// `"patch"`), matching the `!release <kind>` command syntax.
+    ///
+    /// Used wherever a [`BumpKind`] needs to be rendered into user-facing
+    /// text (e.g. rejection or audit comments) without the
+    /// `rr:override-` label prefix.
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            BumpKind::Major => "major",
+            BumpKind::Minor => "minor",
+            BumpKind::Patch => "patch",
+        }
+    }
+}
+
+impl PartialOrd for BumpKind {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for BumpKind {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.rank().cmp(&other.rank())
+    }
+}
+
 /// Conventional commit information
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConventionalCommit {
@@ -773,6 +818,30 @@ pub fn apply_bump_floor(
         Ordering::Less => floor_version,
         _ => calculated.clone(),
     }
+}
+
+/// Returns the highest-severity [`BumpKind`] among `kinds`, or `None` if the
+/// iterator is empty.
+///
+/// Severity ordering is `Major > Minor > Patch` (see [`BumpKind`]'s `Ord`
+/// implementation). The result is independent of input order: ties resolve
+/// to that same kind regardless of how many lower-severity entries surround
+/// it.
+///
+/// # Examples
+///
+/// ```
+/// use release_regent_core::versioning::{highest_bump_kind, BumpKind};
+///
+/// let kinds = vec![BumpKind::Minor, BumpKind::Major, BumpKind::Patch];
+/// assert_eq!(highest_bump_kind(kinds), Some(BumpKind::Major));
+///
+/// let empty: Vec<BumpKind> = vec![];
+/// assert_eq!(highest_bump_kind(empty), None);
+/// ```
+#[must_use]
+pub fn highest_bump_kind<I: IntoIterator<Item = BumpKind>>(kinds: I) -> Option<BumpKind> {
+    kinds.into_iter().max()
 }
 
 /// Compare two semver pre-release strings following the semver 2.0 specification (§11.4).
