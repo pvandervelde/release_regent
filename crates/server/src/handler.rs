@@ -437,6 +437,19 @@ fn matches_any(patterns: &[glob::Pattern], subject: &str) -> bool {
     patterns.iter().any(|p| p.matches_with(subject, options))
 }
 
+/// Name of the per-organisation metadata repository that holds Release Regent
+/// policy files (see `docs/user/explanation/configuration-hierarchy.md`).
+pub const METADATA_REPO_NAME: &str = ".release-regent";
+
+/// Return `true` if `full_name` is the metadata repository (`{owner}/.release-regent`)
+/// of `owner`. Comparison is ASCII case-insensitive, as GitHub repository
+/// names are case-insensitive.
+fn is_metadata_repo(owner: &str, full_name: &str) -> bool {
+    full_name.split_once('/').is_some_and(|(o, name)| {
+        o.eq_ignore_ascii_case(owner) && name.eq_ignore_ascii_case(METADATA_REPO_NAME)
+    })
+}
+
 #[async_trait]
 impl WebhookHandler for ReleaseRegentWebhookHandler {
     async fn handle_event(
@@ -444,6 +457,18 @@ impl WebhookHandler for ReleaseRegentWebhookHandler {
         envelope: &EventEnvelope,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let full_name = &envelope.repository.full_name;
+
+        // The GitHub App must be installed on the metadata repository to read
+        // its policy files, so GitHub also delivers its events. Drop them
+        // before the allow-list check so no user configuration is needed.
+        if is_metadata_repo(&envelope.repository.owner.login, full_name) {
+            debug!(
+                repository = %full_name,
+                event_id = %envelope.event_id,
+                "Event originates from the metadata repository; dropping automatically"
+            );
+            return Ok(());
+        }
 
         if !self.is_allowed(full_name) {
             let lowered = full_name.to_lowercase();

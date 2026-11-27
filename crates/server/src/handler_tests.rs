@@ -1406,3 +1406,104 @@ mod property_tests {
         }
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// handle_event — metadata repository auto-drop (#212)
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+#[traced_test]
+async fn test_handle_event_metadata_repo_is_dropped_with_wildcard_allow_list() {
+    // The metadata repository must never produce processing events, even when
+    // the allow-list would otherwise admit it.
+    let (tx, mut rx) = mpsc::channel(4);
+    let handler = ReleaseRegentWebhookHandler::new(
+        tx,
+        pats(&["*"]),
+        vec![],
+        "release".to_string(),
+        "v".to_string(),
+    );
+
+    let envelope =
+        make_envelope_for_repo("pull_request", "myorg/.release-regent", merged_pr_payload());
+    let result = handler.handle_event(&envelope).await;
+
+    assert!(
+        result.is_ok(),
+        "handle_event must return Ok(()) when dropping"
+    );
+    assert!(
+        rx.try_recv().is_err(),
+        "metadata repository event must never reach the processing channel"
+    );
+    assert!(
+        logs_contain("metadata repository"),
+        "drop must be logged mentioning the metadata repository"
+    );
+    assert!(
+        !logs_contain("not in allow-list"),
+        "metadata drop must happen before the allow-list check"
+    );
+}
+
+#[tokio::test]
+async fn test_handle_event_metadata_repo_is_dropped_case_insensitively() {
+    let (tx, mut rx) = mpsc::channel(4);
+    let handler = ReleaseRegentWebhookHandler::new(
+        tx,
+        pats(&["*"]),
+        vec![],
+        "release".to_string(),
+        "v".to_string(),
+    );
+
+    let envelope =
+        make_envelope_for_repo("pull_request", "MyOrg/.Release-Regent", merged_pr_payload());
+    handler.handle_event(&envelope).await.expect("must be Ok");
+
+    assert!(rx.try_recv().is_err(), "event must be dropped");
+}
+
+#[tokio::test]
+async fn test_handle_event_other_repo_in_same_org_is_not_dropped_as_metadata() {
+    let (tx, mut rx) = mpsc::channel(4);
+    let handler = ReleaseRegentWebhookHandler::new(
+        tx,
+        pats(&["*"]),
+        vec![],
+        "release".to_string(),
+        "v".to_string(),
+    );
+
+    let envelope = make_envelope_for_repo("pull_request", "myorg/service-api", merged_pr_payload());
+    handler.handle_event(&envelope).await.expect("must be Ok");
+
+    assert!(rx.try_recv().is_ok(), "non-metadata repo must be forwarded");
+}
+
+#[tokio::test]
+async fn test_handle_event_similarly_named_repo_is_not_dropped_as_metadata() {
+    // A repo merely containing the metadata name, or a metadata-named repo
+    // that is not `.release-regent`, must not be treated as the metadata repo.
+    let (tx, mut rx) = mpsc::channel(4);
+    let handler = ReleaseRegentWebhookHandler::new(
+        tx,
+        pats(&["*"]),
+        vec![],
+        "release".to_string(),
+        "v".to_string(),
+    );
+
+    let envelope = make_envelope_for_repo(
+        "pull_request",
+        "myorg/.release-regent-fork",
+        merged_pr_payload(),
+    );
+    handler.handle_event(&envelope).await.expect("must be Ok");
+
+    assert!(
+        rx.try_recv().is_ok(),
+        "similarly named repo must be forwarded"
+    );
+}
