@@ -88,6 +88,15 @@ myorg/.release-regent/
     data-platform.toml
 ```
 
+### Events from the metadata repository are ignored
+
+Because the App installation includes `{org}/.release-regent`, GitHub also delivers that
+repository's webhook events (for example, pushes when you edit policy files). Release Regent
+automatically drops every event whose repository is `{owner}/.release-regent` (matched
+case-insensitively), before the `ALLOWED_REPOS` / `EXCLUDED_REPOS` check, and logs the drop at
+`debug` level. No configuration is required, and you do **not** need to add `.release-regent`
+to `EXCLUDED_REPOS` or leave it out of `ALLOWED_REPOS`.
+
 ### How the GitHub App finds it
 
 Release Regent uses the GitHub App installation API to discover whether the App is installed
