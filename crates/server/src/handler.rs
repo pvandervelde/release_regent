@@ -10,8 +10,8 @@
 //! - [`convert_envelope`] — converts an SDK [`EventEnvelope`] into a domain
 //!   [`ProcessingEvent`].
 //! - [`ReleaseRegentWebhookHandler`] — implements the SDK's [`WebhookHandler`]
-//!   trait; performs allow-list/exclude-list filtering and forwards events on an
-//!   `mpsc` channel.
+//!   trait; drops events from the metadata repository, performs
+//!   allow-list/exclude-list filtering, and forwards events on an `mpsc` channel.
 //! - [`WebhookEventSource`] — implements the core [`EventSource`] trait by reading
 //!   from the same `mpsc` channel; consumed by `run_event_loop` (task 4.0).
 //! - [`create_webhook_components`] — convenience factory that creates a matched
@@ -25,6 +25,13 @@
 //! **Canonical location.** `compile_repo_patterns` lives in this module (not a
 //! separate `repo_scope` module) and is reachable as `handler::compile_repo_patterns`.
 //! It is the single place raw pattern strings become [`glob::Pattern`]s.
+//!
+//! **Metadata repository drop runs first.** Events from `{owner}/.release-regent`
+//! are discarded at the top of `handle_event`, before the allow-list/exclude-list
+//! check and `convert_envelope`. The GitHub App must be installed on that
+//! repository to read policy files, so GitHub delivers its events too. The drop
+//! is unconditional: `ALLOWED_REPOS` cannot re-admit it. It is logged at `debug!`
+//! because it is expected behaviour, not a misconfiguration.
 //!
 //! **Case-insensitivity.** Both the configured patterns and the incoming
 //! `owner/repo` are lowercased before matching (BA-70, BA-73). Lowercasing the
@@ -439,7 +446,7 @@ fn matches_any(patterns: &[glob::Pattern], subject: &str) -> bool {
 
 /// Name of the per-organisation metadata repository that holds Release Regent
 /// policy files (see `docs/user/explanation/configuration-hierarchy.md`).
-pub const METADATA_REPO_NAME: &str = ".release-regent";
+pub(crate) const METADATA_REPO_NAME: &str = ".release-regent";
 
 /// Return `true` if `full_name` is the metadata repository (`{owner}/.release-regent`)
 /// of `owner`. Comparison is ASCII case-insensitive, as GitHub repository
