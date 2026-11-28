@@ -1406,3 +1406,247 @@ mod property_tests {
         }
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// handle_event — metadata repository auto-drop (#212)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Build a handler with the given allow/exclude globs and a receiver for forwarded events.
+fn metadata_handler(
+    allowed: &[&str],
+    excluded: &[&str],
+) -> (ReleaseRegentWebhookHandler, mpsc::Receiver<ProcessingEvent>) {
+    let (tx, rx) = mpsc::channel(4);
+    let handler = ReleaseRegentWebhookHandler::new(
+        tx,
+        pats(allowed),
+        pats(excluded),
+        "release".to_string(),
+        "v".to_string(),
+    );
+    (handler, rx)
+}
+
+#[tokio::test]
+#[traced_test]
+async fn test_handle_event_metadata_repo_is_dropped_with_wildcard_allow_list() {
+    // The metadata repository must never produce processing events, even when
+    // the allow-list would otherwise admit it.
+    let (handler, mut rx) = metadata_handler(&["*"], &[]);
+
+    let envelope =
+        make_envelope_for_repo("pull_request", "myorg/.release-regent", merged_pr_payload());
+    let result = handler.handle_event(&envelope).await;
+
+    assert!(
+        result.is_ok(),
+        "handle_event must return Ok(()) when dropping"
+    );
+    assert!(
+        rx.try_recv().is_err(),
+        "metadata repository event must never reach the processing channel"
+    );
+    assert!(
+        logs_contain("metadata repository"),
+        "drop must be logged mentioning the metadata repository"
+    );
+    assert!(
+        !logs_contain("not in allow-list"),
+        "metadata drop must happen before the allow-list check"
+    );
+}
+
+#[tokio::test]
+async fn test_handle_event_metadata_repo_is_dropped_case_insensitively() {
+    let (handler, mut rx) = metadata_handler(&["*"], &[]);
+
+    let envelope =
+        make_envelope_for_repo("pull_request", "MyOrg/.Release-Regent", merged_pr_payload());
+    handler.handle_event(&envelope).await.expect("must be Ok");
+
+    assert!(rx.try_recv().is_err(), "event must be dropped");
+}
+
+#[tokio::test]
+async fn test_handle_event_other_repo_in_same_org_is_not_dropped_as_metadata() {
+    let (handler, mut rx) = metadata_handler(&["*"], &[]);
+
+    let envelope = make_envelope_for_repo("pull_request", "myorg/service-api", merged_pr_payload());
+    handler.handle_event(&envelope).await.expect("must be Ok");
+
+    assert!(rx.try_recv().is_ok(), "non-metadata repo must be forwarded");
+}
+
+#[tokio::test]
+async fn test_handle_event_similarly_named_repo_is_not_dropped_as_metadata() {
+    // A repo merely containing the metadata name, or a metadata-named repo
+    // that is not `.release-regent`, must not be treated as the metadata repo.
+    let (handler, mut rx) = metadata_handler(&["*"], &[]);
+
+    let envelope = make_envelope_for_repo(
+        "pull_request",
+        "myorg/.release-regent-fork",
+        merged_pr_payload(),
+    );
+    handler.handle_event(&envelope).await.expect("must be Ok");
+
+    assert!(
+        rx.try_recv().is_ok(),
+        "similarly named repo must be forwarded"
+    );
+}
+
+#[tokio::test]
+#[traced_test]
+async fn test_handle_event_metadata_repo_drop_is_logged_at_debug_not_warn() {
+    let (handler, mut rx) = metadata_handler(&["*"], &[]);
+    let envelope =
+        make_envelope_for_repo("pull_request", "myorg/.release-regent", merged_pr_payload());
+    handler.handle_event(&envelope).await.expect("must be Ok");
+
+    assert!(rx.try_recv().is_err());
+    logs_assert(|lines: &[&str]| {
+        let relevant: Vec<_> = lines
+            .iter()
+            .filter(|l| l.contains("metadata repository"))
+            .collect();
+        if relevant.is_empty() {
+            return Err("no metadata drop log line found".to_string());
+        }
+        if relevant.iter().all(|l| l.contains("DEBUG")) {
+            Ok(())
+        } else {
+            Err(format!("metadata drop must be DEBUG level: {relevant:?}"))
+        }
+    });
+    logs_assert(|lines: &[&str]| {
+        if lines.iter().any(|l| l.contains("WARN")) {
+            Err("metadata drop must not emit any WARN line".to_string())
+        } else {
+            Ok(())
+        }
+    });
+}
+
+#[tokio::test]
+async fn test_handle_event_metadata_repo_is_dropped_with_empty_allow_list() {
+    // No ALLOWED_REPOS configuration at all: still Ok(()) and nothing forwarded.
+    let (handler, mut rx) = metadata_handler(&[], &[]);
+    let envelope =
+        make_envelope_for_repo("pull_request", "myorg/.release-regent", merged_pr_payload());
+    handler.handle_event(&envelope).await.expect("must be Ok");
+
+    assert!(rx.try_recv().is_err());
+}
+
+#[tokio::test]
+#[traced_test]
+async fn test_handle_event_metadata_repo_drop_does_not_use_allow_list_warning_when_empty() {
+    let (handler, _rx) = metadata_handler(&[], &[]);
+    let envelope =
+        make_envelope_for_repo("pull_request", "myorg/.release-regent", merged_pr_payload());
+    handler.handle_event(&envelope).await.expect("must be Ok");
+
+    assert!(
+        !logs_contain("not_in_allow_list"),
+        "metadata repo must be dropped before the allow-list check"
+    );
+}
+
+#[tokio::test]
+async fn test_handle_event_metadata_repo_is_dropped_when_explicitly_allowed_by_exact_pattern() {
+    let (handler, mut rx) = metadata_handler(&["myorg/.release-regent"], &[]);
+    let envelope =
+        make_envelope_for_repo("pull_request", "myorg/.release-regent", merged_pr_payload());
+    handler.handle_event(&envelope).await.expect("must be Ok");
+
+    assert!(rx.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn test_handle_event_metadata_repo_is_dropped_for_non_pull_request_event_types() {
+    for event_type in ["push", "issues", "check_run"] {
+        let (handler, mut rx) = metadata_handler(&["*"], &[]);
+        let envelope =
+            make_envelope_for_repo(event_type, "myorg/.release-regent", merged_pr_payload());
+        handler.handle_event(&envelope).await.expect("must be Ok");
+
+        assert!(
+            rx.try_recv().is_err(),
+            "{event_type} from metadata repo must not be forwarded"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_handle_event_metadata_repo_name_under_different_owner_is_not_dropped() {
+    // Envelope owner.login is "myorg" but full_name names another owner, so the
+    // repo is not `{owner}/.release-regent` for its own owner.
+    let (handler, mut rx) = metadata_handler(&["*"], &[]);
+    let mut repo = make_sdk_repository("other/.release-regent");
+    repo.owner.login = "myorg".to_string();
+    let envelope = EventEnvelope::new(
+        "pull_request".to_string(),
+        repo,
+        EventPayload::new(merged_pr_payload()),
+    );
+    handler.handle_event(&envelope).await.expect("must be Ok");
+
+    assert!(
+        rx.try_recv().is_ok(),
+        ".release-regent under a mismatched owner must not be dropped"
+    );
+}
+
+#[tokio::test]
+async fn test_handle_event_lookalike_repo_names_are_not_dropped_as_metadata() {
+    for name in [
+        "myorg/.release-regent-old",
+        "myorg/release-regent",
+        "myorg/..release-regent",
+        "myorg/.release-regent.git",
+        "myorg/x.release-regent",
+        "myorg/.release_regent",
+    ] {
+        let (handler, mut rx) = metadata_handler(&["*"], &[]);
+        let envelope = make_envelope_for_repo("pull_request", name, merged_pr_payload());
+        handler.handle_event(&envelope).await.expect("must be Ok");
+
+        assert!(rx.try_recv().is_ok(), "{name} must be forwarded");
+    }
+}
+
+#[tokio::test]
+#[traced_test]
+async fn test_handle_event_non_metadata_repo_not_in_allow_list_is_still_rejected_with_warning() {
+    let (handler, mut rx) = metadata_handler(&["myorg/allowed-*"], &[]);
+    let envelope = make_envelope_for_repo("pull_request", "myorg/service-api", merged_pr_payload());
+    handler.handle_event(&envelope).await.expect("must be Ok");
+
+    assert!(rx.try_recv().is_err(), "allow-list must still reject");
+    assert!(logs_contain("not_in_allow_list"));
+}
+
+#[tokio::test]
+async fn test_handle_event_non_metadata_repo_in_allow_list_is_still_forwarded_after_metadata_event()
+{
+    let (handler, mut rx) = metadata_handler(&["*"], &[]);
+    let meta = make_envelope_for_repo("pull_request", "myorg/.release-regent", merged_pr_payload());
+    let other = make_envelope_for_repo("pull_request", "myorg/service-api", merged_pr_payload());
+    handler.handle_event(&meta).await.expect("must be Ok");
+    handler.handle_event(&other).await.expect("must be Ok");
+
+    let received = rx.try_recv().expect("service-api event must be forwarded");
+    assert_eq!(received.repository.name, "service-api");
+    assert!(rx.try_recv().is_err(), "only one event must be forwarded");
+}
+
+#[tokio::test]
+async fn test_handle_event_metadata_repo_of_another_org_is_also_dropped() {
+    let (handler, mut rx) = metadata_handler(&["*"], &[]);
+    let envelope =
+        make_envelope_for_repo("pull_request", "acme/.release-regent", merged_pr_payload());
+    handler.handle_event(&envelope).await.expect("must be Ok");
+
+    assert!(rx.try_recv().is_err());
+}

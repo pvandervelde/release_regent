@@ -88,6 +88,10 @@ response returned to GitHub reflects only signature validation and is **not** ch
 allow-list/exclude-list outcome — GitHub always sees `200 OK` for a validly-signed request,
 regardless of whether the repository was ultimately processed.
 
+Events from the [metadata repository](../explanation/configuration-hierarchy.md#the-metadata-repository)
+(`{owner}/.release-regent`) are always dropped before this check, at `debug` log level, so you do
+not need to exclude it here or in `EXCLUDED_REPOS`.
+
 An explicit empty list (`ALLOWED_REPOS=`) denies every repository — an operational kill switch,
 distinct from leaving the variable unset.
 

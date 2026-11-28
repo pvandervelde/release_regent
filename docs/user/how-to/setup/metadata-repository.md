@@ -54,6 +54,9 @@ Create a new GitHub repository named exactly `.release-regent` in your organisat
     repositories is recommended. Selecting **All repositories** also works, but is not
     required. Add new target repositories to the selection when you start managing them.
 
+Webhook events from `.release-regent` itself are ignored automatically (logged at `debug`
+level), so you do not need to exclude it from `ALLOWED_REPOS` or `EXCLUDED_REPOS`.
+
 Release Regent discovers the App installation automatically when it processes the first event
 for a repository in your organisation.
 
